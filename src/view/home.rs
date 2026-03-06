@@ -163,7 +163,7 @@ impl View for HomeView {
       KeyCode::Enter => {
         if !self.is_input_empty() {
           let input = self.take_input();
-          data.messages.push(format!("You: {}", input));
+          data.messages.push(input);
           // Switch to ChatView
           return Some(Box::new(ChatView::new()));
         }

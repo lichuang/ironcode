@@ -1,2 +1,2 @@
-# crustcode
+# Talos
 Rust AI CLI Coding Agent 

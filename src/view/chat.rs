@@ -1,10 +1,11 @@
 use crossterm::event::KeyCode;
 use ratatui::{
   Frame,
-  layout::{Constraint, Direction, Layout},
+  layout::{Constraint, Direction, Layout, Rect},
   style::{Color, Style},
-  text::Text,
-  widgets::{Block, Borders, Clear, Paragraph, Wrap},
+  symbols::border,
+  text::{Line, Span},
+  widgets::{Block, Borders, Paragraph, Wrap},
 };
 
 use crate::app::AppData;
@@ -16,15 +17,33 @@ pub struct ChatView {
   pub input: String,
   /// Cursor position in the input (character index, not byte index)
   pub cursor_position: usize,
+  /// Prompt string (username@directory)
+  pub prompt: String,
 }
 
 impl ChatView {
   /// Create a new chat view
   pub fn new() -> Self {
+    let prompt = Self::build_prompt();
     Self {
       input: String::new(),
       cursor_position: 0,
+      prompt,
     }
+  }
+
+  /// Build the prompt string (username@current_dir)
+  fn build_prompt() -> String {
+    let username = std::env::var("USER")
+      .or_else(|_| std::env::var("USERNAME"))
+      .unwrap_or_else(|_| "user".to_string());
+
+    let current_dir = std::env::current_dir()
+      .ok()
+      .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+      .unwrap_or_else(|| "~".to_string());
+
+    format!("{}@{}>", username, current_dir)
   }
 
   /// Get byte position from character position
@@ -89,9 +108,37 @@ impl ChatView {
   pub fn submit_message(&mut self, data: &mut AppData) {
     if !self.input.is_empty() {
       let message = std::mem::take(&mut self.input);
-      data.messages.push(format!("You: {}", message));
+      data.messages.push(message);
       self.cursor_position = 0;
     }
+  }
+
+  /// Render an input line (prompt + input)
+  fn render_input_line(&self, f: &mut Frame, area: Rect, input: &str) {
+    let prompt_span = Span::styled(&self.prompt, Style::default().fg(Color::Green));
+    let input_span = Span::raw(input);
+
+    let line = Line::from(vec![prompt_span, input_span]);
+    let widget = Paragraph::new(line);
+
+    f.render_widget(widget, area);
+  }
+
+  /// Render a message in a box
+  fn render_message_box(&self, f: &mut Frame, area: Rect, message: &str) {
+    let block = Block::default()
+      .borders(Borders::ALL)
+      .border_set(border::ROUNDED)
+      .border_style(Style::default().fg(Color::Cyan));
+
+    let inner_area = block.inner(area);
+
+    // Render the border block
+    f.render_widget(block, area);
+
+    // Render the message text inside
+    let text = Paragraph::new(message).wrap(Wrap { trim: true });
+    f.render_widget(text, inner_area);
   }
 }
 
@@ -134,66 +181,79 @@ impl View for ChatView {
   fn draw(&self, f: &mut Frame, data: &AppData) {
     let area = f.area();
 
-    // Clear the background
-    f.render_widget(Clear, area);
+    // Calculate layout:
+    // For each message: 1 line (prompt + input) + 3 lines (box) = 4 lines
+    // For current input: 1 line
+    let message_count = data.messages.len();
+    let history_lines = message_count * 4; // Each message takes 4 lines
+    let total_lines = history_lines + 1; // +1 for current input
 
-    // Create vertical layout: messages on top, input at bottom
+    // Build constraints
+    let mut constraints: Vec<Constraint> = (0..message_count)
+      .flat_map(|_| vec![Constraint::Length(1), Constraint::Length(3)])
+      .collect();
+    constraints.push(Constraint::Length(1)); // Current input line
+
+    // Add remaining space
+    let available_height = area.height as usize;
+    if total_lines < available_height {
+      constraints.push(Constraint::Min(0));
+    }
+
     let chunks = Layout::default()
       .direction(Direction::Vertical)
-      .constraints([
-        Constraint::Min(3),    // Message display area
-        Constraint::Length(3), // Input area
-      ])
+      .constraints(constraints)
       .split(area);
 
-    // Render message display area
-    let messages_text = if data.messages.is_empty() {
-      Text::from("Type a message and press Enter to send, ESC to go back\n")
-    } else {
-      Text::from(data.messages.join("\n"))
-    };
+    // Render history: for each message, show input line then box
+    let mut chunk_idx = 0;
+    for message in &data.messages {
+      // Input line (prompt + message)
+      if chunk_idx < chunks.len() {
+        self.render_input_line(f, chunks[chunk_idx], message);
+        chunk_idx += 1;
+      }
+      // Box with message
+      if chunk_idx < chunks.len() {
+        self.render_message_box(f, chunks[chunk_idx], message);
+        chunk_idx += 1;
+      }
+    }
 
-    let messages_widget = Paragraph::new(messages_text)
-      .block(
-        Block::default()
-          .title(" Chat ")
-          .borders(Borders::ALL)
-          .border_style(Style::default().fg(Color::Cyan)),
-      )
-      .wrap(Wrap { trim: true });
+    // Render current input line
+    if chunk_idx < chunks.len() {
+      self.render_input_line(f, chunks[chunk_idx], &self.input);
 
-    f.render_widget(messages_widget, chunks[0]);
+      // Set cursor position (after the prompt + input position)
+      let prompt_display_width: usize = self
+        .prompt
+        .chars()
+        .map(|c| {
+          if c >= '\u{4e00}' && c <= '\u{9fff}' {
+            2
+          } else {
+            1
+          }
+        })
+        .sum();
 
-    // Render input area
-    let input_widget = Paragraph::new(self.input.as_str())
-      .block(
-        Block::default()
-          .title(" Input ")
-          .borders(Borders::ALL)
-          .border_style(Style::default().fg(Color::Yellow)),
-      )
-      .style(Style::default().fg(Color::White));
+      let input_display_width: usize = self
+        .input
+        .chars()
+        .take(self.cursor_position)
+        .map(|c| {
+          if c >= '\u{4e00}' && c <= '\u{9fff}' {
+            2
+          } else {
+            1
+          }
+        })
+        .sum();
 
-    f.render_widget(input_widget, chunks[1]);
-
-    // Set cursor position
-    // Calculate display width (accounting for wide characters)
-    let display_width: usize = self
-      .input
-      .chars()
-      .take(self.cursor_position)
-      .map(|c| {
-        // CJK characters are width 2, others are width 1
-        if c >= '\u{4e00}' && c <= '\u{9fff}' {
-          2
-        } else {
-          1
-        }
-      })
-      .sum();
-    let cursor_x = chunks[1].x + display_width as u16 + 2;
-    let cursor_y = chunks[1].y + 1;
-    f.set_cursor_position((cursor_x, cursor_y));
+      let cursor_x = chunks[chunk_idx].x + prompt_display_width as u16 + input_display_width as u16;
+      let cursor_y = chunks[chunk_idx].y;
+      f.set_cursor_position((cursor_x, cursor_y));
+    }
   }
 }
 
