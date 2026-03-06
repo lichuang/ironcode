@@ -1,4 +1,5 @@
 mod app;
+mod view;
 
 use anyhow::Result;
 use app::App;
@@ -8,12 +9,8 @@ use crossterm::{
   terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
-  Frame, Terminal,
+  Terminal,
   backend::{Backend, CrosstermBackend},
-  layout::{Constraint, Direction, Layout},
-  style::{Color, Style},
-  text::Text,
-  widgets::{Block, Borders, Paragraph, Wrap},
 };
 use std::io;
 
@@ -51,7 +48,7 @@ where
 {
   loop {
     // Draw the UI
-    terminal.draw(|f| draw_ui(f, app))?;
+    terminal.draw(|f| app.draw(f))?;
 
     // Handle keyboard events
     if let Event::Key(key) = event::read()? {
@@ -66,46 +63,4 @@ where
       return Ok(());
     }
   }
-}
-
-/// Draw the user interface
-fn draw_ui(f: &mut Frame, app: &App) {
-  // Create vertical layout: messages on top, input at bottom
-  let chunks = Layout::default()
-    .direction(Direction::Vertical)
-    .constraints([
-      Constraint::Min(3),    // Message display area, minimum height 3
-      Constraint::Length(3), // Input area, fixed height 3
-    ])
-    .split(f.area());
-
-  // Render message display area
-  let messages_text = if app.messages.is_empty() {
-    Text::from("Press ESC to exit, type a message and press Enter to send\n")
-  } else {
-    Text::from(app.messages.join("\n"))
-  };
-
-  let messages_widget = Paragraph::new(messages_text)
-    .block(
-      Block::default()
-        .title(" Talos - AI Coding Agent ")
-        .borders(Borders::ALL),
-    )
-    .wrap(Wrap { trim: true });
-
-  f.render_widget(messages_widget, chunks[0]);
-
-  // Render input area
-  let input_widget = Paragraph::new(app.input.as_str())
-    .block(Block::default().title(" Input ").borders(Borders::ALL))
-    .style(Style::default().fg(Color::Yellow));
-
-  f.render_widget(input_widget, chunks[1]);
-
-  // Set cursor position so user can see where they are typing
-  // +2 for left border and padding
-  let cursor_x = chunks[1].x + app.cursor_position as u16 + 2;
-  let cursor_y = chunks[1].y + 1;
-  f.set_cursor_position((cursor_x, cursor_y));
 }

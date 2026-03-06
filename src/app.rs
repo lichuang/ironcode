@@ -1,87 +1,38 @@
-use crossterm::event::KeyCode;
+use crate::view::{HomeView, View};
 
 /// Application state
 pub struct App {
-  /// Current input text
-  pub input: String,
-  /// Message history
-  pub messages: Vec<String>,
-  /// Cursor position in the input
-  pub cursor_position: usize,
   /// Whether the app should exit
   pub should_exit: bool,
+  /// Current view (dynamic dispatch)
+  pub view: Box<dyn View>,
+  /// Message history (for chat)
+  pub messages: Vec<String>,
 }
 
 impl App {
   /// Create a new app instance
   pub fn new() -> Self {
     Self {
-      input: String::new(),
-      messages: Vec::new(),
-      cursor_position: 0,
       should_exit: false,
+      view: Box::new(HomeView::new()),
+      messages: Vec::new(),
     }
   }
 
   /// Handle keyboard events
-  pub fn handle_key(&mut self, key: KeyCode) {
-    match key {
-      // ESC to exit
-      KeyCode::Esc => {
-        self.should_exit = true;
-      }
-      // Enter to submit input
-      KeyCode::Enter => {
-        if !self.input.is_empty() {
-          let message = self.input.clone();
-          self.messages.push(format!("You: {}", message));
-          // Process user input here, e.g., send to AI
-          println!("\rUser input: {}", message); // For debugging
-          self.input.clear();
-          self.cursor_position = 0;
-        }
-      }
-      // Backspace to delete character before cursor
-      KeyCode::Backspace => {
-        if self.cursor_position > 0 {
-          self.input.remove(self.cursor_position - 1);
-          self.cursor_position -= 1;
-        }
-      }
-      // Delete to delete character after cursor
-      KeyCode::Delete => {
-        if self.cursor_position < self.input.len() {
-          self.input.remove(self.cursor_position);
-        }
-      }
-      // Left arrow to move cursor left
-      KeyCode::Left => {
-        if self.cursor_position > 0 {
-          self.cursor_position -= 1;
-        }
-      }
-      // Right arrow to move cursor right
-      KeyCode::Right => {
-        if self.cursor_position < self.input.len() {
-          self.cursor_position += 1;
-        }
-      }
-      // Home to move cursor to start of line
-      KeyCode::Home => {
-        self.cursor_position = 0;
-      }
-      // End to move cursor to end of line
-      KeyCode::End => {
-        self.cursor_position = self.input.len();
-      }
-      // Character input
-      KeyCode::Char(c) => {
-        self.input.insert(self.cursor_position, c);
-        self.cursor_position += 1;
-      }
-      // Ignore other keys
-      _ => {}
-    }
+  pub fn handle_key(&mut self, key: crossterm::event::KeyCode) {
+    // Note: self.view.handle_key needs &mut self.view and &mut self
+    // This is a bit tricky because we can't borrow self mutably twice
+    // We need to temporarily take ownership of the view
+    let mut view = std::mem::replace(&mut self.view, Box::new(NullView));
+    view.handle_key(self, key);
+    self.view = view;
+  }
+
+  /// Draw the current view
+  pub fn draw(&self, f: &mut ratatui::Frame) {
+    self.view.draw(f);
   }
 }
 
@@ -89,4 +40,13 @@ impl Default for App {
   fn default() -> Self {
     Self::new()
   }
+}
+
+/// A null view placeholder used during view swapping
+struct NullView;
+
+impl View for NullView {
+  fn handle_key(&mut self, _app: &mut App, _key: crossterm::event::KeyCode) {}
+
+  fn draw(&self, _f: &mut ratatui::Frame) {}
 }
