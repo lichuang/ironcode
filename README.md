@@ -1,2 +1,2 @@
-# Talos
-Rust AI CLI Coding Agent 
+# IronCode
+AI CLI Coding Agent build with Rust

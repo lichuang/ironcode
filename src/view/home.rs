@@ -102,7 +102,7 @@ impl HomeView {
     let title_text = Text::from(vec![
       Line::from(""),
       Line::from(vec![Span::styled(
-        "Talos",
+        "IronCode",
         Style::default()
           .fg(Color::Cyan)
           .add_modifier(Modifier::BOLD),
