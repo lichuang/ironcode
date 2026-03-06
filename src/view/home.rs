@@ -8,13 +8,13 @@ use ratatui::{
 };
 
 use crate::app::App;
-use crate::view::View;
+use crate::view::{ChatView, View};
 
 /// Home view state
 pub struct HomeView {
   /// Current input text in the chat input box
   pub input: String,
-  /// Cursor position in the input
+  /// Cursor position in the input (character index, not byte index)
   pub cursor_position: usize,
 }
 
@@ -27,24 +27,36 @@ impl HomeView {
     }
   }
 
+  /// Get byte position from character position
+  fn char_pos_to_byte_pos(&self, char_pos: usize) -> usize {
+    self.input
+      .char_indices()
+      .nth(char_pos)
+      .map(|(i, _)| i)
+      .unwrap_or(self.input.len())
+  }
+
   /// Handle character input
   pub fn insert_char(&mut self, c: char) {
-    self.input.insert(self.cursor_position, c);
+    let byte_pos = self.char_pos_to_byte_pos(self.cursor_position);
+    self.input.insert(byte_pos, c);
     self.cursor_position += 1;
   }
 
   /// Handle backspace
   pub fn backspace(&mut self) {
     if self.cursor_position > 0 {
-      self.input.remove(self.cursor_position - 1);
+      let byte_pos = self.char_pos_to_byte_pos(self.cursor_position - 1);
+      self.input.remove(byte_pos);
       self.cursor_position -= 1;
     }
   }
 
   /// Handle delete
   pub fn delete(&mut self) {
-    if self.cursor_position < self.input.len() {
-      self.input.remove(self.cursor_position);
+    if self.cursor_position < self.input.chars().count() {
+      let byte_pos = self.char_pos_to_byte_pos(self.cursor_position);
+      self.input.remove(byte_pos);
     }
   }
 
@@ -55,9 +67,9 @@ impl HomeView {
     }
   }
 
-  /// Move cursor right(&mut self)
+  /// Move cursor right
   pub fn move_cursor_right(&mut self) {
-    if self.cursor_position < self.input.len() {
+    if self.cursor_position < self.input.chars().count() {
       self.cursor_position += 1;
     }
   }
@@ -69,7 +81,7 @@ impl HomeView {
 
   /// Move cursor to end
   pub fn move_cursor_end(&mut self) {
-    self.cursor_position = self.input.len();
+    self.cursor_position = self.input.chars().count();
   }
 
   /// Check if input is empty
@@ -79,8 +91,7 @@ impl HomeView {
 
   /// Take the input (clear and return)
   pub fn take_input(&mut self) -> String {
-    let input = self.input.clone();
-    self.input.clear();
+    let input = std::mem::take(&mut self.input);
     self.cursor_position = 0;
     input
   }
@@ -149,7 +160,7 @@ impl HomeView {
 }
 
 impl View for HomeView {
-  fn handle_key(&mut self, app: &mut App, key: KeyCode) {
+  fn handle_key(&mut self, app: &mut App, key: KeyCode) -> Option<Box<dyn View>> {
     match key {
       KeyCode::Esc => {
         app.should_exit = true;
@@ -158,7 +169,8 @@ impl View for HomeView {
         if !self.is_input_empty() {
           let input = self.take_input();
           app.messages.push(format!("You: {}", input));
-          // TODO: Switch to Chat view when implemented
+          // Switch to ChatView
+          return Some(Box::new(ChatView::new()));
         }
       }
       KeyCode::Backspace => {
@@ -184,9 +196,10 @@ impl View for HomeView {
       }
       _ => {}
     }
+    None
   }
 
-  fn draw(&self, f: &mut Frame) {
+  fn draw(&self, f: &mut Frame, _app: &App) {
     let area = f.area();
 
     // Clear the background
@@ -212,8 +225,12 @@ impl View for HomeView {
     self.render_status_bar(f, main_chunks[2]);
 
     // Set cursor position in input box
+    // Calculate display width (CJK characters are width 2, others are width 1)
+    let display_width: usize = self.input.chars().take(self.cursor_position).map(|c| {
+      if c >= '\u{4e00}' && c <= '\u{9fff}' { 2 } else { 1 }
+    }).sum();
     let input_chunk = main_chunks[1];
-    let cursor_x = input_chunk.x + self.cursor_position as u16 + 2;
+    let cursor_x = input_chunk.x + display_width as u16 + 2;
     let cursor_y = input_chunk.y + 1;
     f.set_cursor_position((cursor_x, cursor_y));
   }
@@ -224,3 +241,5 @@ impl Default for HomeView {
     Self::new()
   }
 }
+
+

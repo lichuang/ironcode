@@ -22,17 +22,20 @@ impl App {
 
   /// Handle keyboard events
   pub fn handle_key(&mut self, key: crossterm::event::KeyCode) {
-    // Note: self.view.handle_key needs &mut self.view and &mut self
-    // This is a bit tricky because we can't borrow self mutably twice
-    // We need to temporarily take ownership of the view
+    // Take ownership of the view temporarily
     let mut view = std::mem::replace(&mut self.view, Box::new(NullView));
-    view.handle_key(self, key);
-    self.view = view;
+    
+    // Handle the key and check if we need to switch views
+    if let Some(new_view) = view.handle_key(self, key) {
+      self.view = new_view;
+    } else {
+      self.view = view;
+    }
   }
 
   /// Draw the current view
   pub fn draw(&self, f: &mut ratatui::Frame) {
-    self.view.draw(f);
+    self.view.draw(f, self);
   }
 }
 
@@ -46,7 +49,9 @@ impl Default for App {
 struct NullView;
 
 impl View for NullView {
-  fn handle_key(&mut self, _app: &mut App, _key: crossterm::event::KeyCode) {}
+  fn handle_key(&mut self, _app: &mut App, _key: crossterm::event::KeyCode) -> Option<Box<dyn View>> {
+    None
+  }
 
-  fn draw(&self, _f: &mut ratatui::Frame) {}
+  fn draw(&self, _f: &mut ratatui::Frame, _app: &App) {}
 }
