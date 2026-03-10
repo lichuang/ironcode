@@ -18,6 +18,9 @@ use crate::view::View;
 /// Spinner animation frames (classic terminal loading)
 const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
+/// Moon phase animation frames (🌑 → 🌕 → 🌑)
+const MOON_FRAMES: &[char] = &['🌑', '🌒', '🌓', '🌔', '🌕', '🌖', '🌗', '🌘'];
+
 /// Chat view state
 pub struct ChatView {
   /// Current input text
@@ -34,6 +37,10 @@ pub struct ChatView {
   last_spinner_update: Instant,
   /// Current spinner frame index
   spinner_frame: usize,
+  /// Last time the moon was updated (None means animation is disabled)
+  last_moon_update: Option<Instant>,
+  /// Current moon frame index
+  moon_frame: usize,
 }
 
 impl ChatView {
@@ -48,7 +55,14 @@ impl ChatView {
       animation_enabled: true,
       last_spinner_update: Instant::now(),
       spinner_frame: 0,
+      last_moon_update: None,
+      moon_frame: 0,
     }
+  }
+
+  /// Check if moon animation is currently enabled
+  fn is_moon_animation_enabled(&self) -> bool {
+    self.last_moon_update.is_some()
   }
 
   /// Build the prompt string (username@current_dir)
@@ -143,6 +157,28 @@ impl ChatView {
       let message = std::mem::take(&mut self.input);
       data.messages.push(message);
       self.cursor_position = 0;
+      // Start moon animation after submitting
+      self.start_moon_animation();
+    }
+  }
+
+  /// Start the moon phase animation
+  pub fn start_moon_animation(&mut self) {
+    self.moon_frame = 0;
+    self.last_moon_update = Some(Instant::now());
+  }
+
+  /// Stop the moon phase animation
+  pub fn stop_moon_animation(&mut self) {
+    self.last_moon_update = None;
+  }
+
+  /// Get the current moon character
+  fn current_moon(&self) -> char {
+    if self.is_moon_animation_enabled() {
+      MOON_FRAMES[self.moon_frame % MOON_FRAMES.len()]
+    } else {
+      ' '
     }
   }
 
@@ -301,6 +337,22 @@ impl ChatView {
     let text = Paragraph::new(Text::from(lines));
     f.render_widget(text, inner_area);
   }
+
+  /// Render the moon animation
+  fn render_moon_animation(&self, f: &mut Frame, area: Rect) {
+    if !self.is_moon_animation_enabled() {
+      return;
+    }
+
+    let moon = self.current_moon();
+    let text = Text::from(vec![Line::from(vec![
+      Span::raw("  "),
+      Span::styled(moon.to_string(), Style::default().fg(Color::Yellow)),
+    ])]);
+
+    let widget = Paragraph::new(text);
+    f.render_widget(widget, area);
+  }
 }
 
 impl View for ChatView {
@@ -359,11 +411,12 @@ impl View for ChatView {
     let input_height = input_height.min(max_input_height);
 
     // Calculate layout:
-    // For each message: dynamic lines (prompt + wrapped input) + dynamic lines for box
-    // For current input: dynamic lines
+    // For each message: prompt line + box
+    // Moon animation after last message (if enabled)
+    // For current input: dynamic lines (if not showing moon animation)
     let mut constraints: Vec<Constraint> = Vec::new();
 
-    // History messages
+    // History messages: prompt line + box
     // Box has borders on both sides, so inner width is available_width - 2
     let box_inner_width = available_width.saturating_sub(2);
     for message in &data.messages {
@@ -375,13 +428,17 @@ impl View for ChatView {
       let box_height = box_content_lines + 2; // +2 for top and bottom borders
       constraints.push(Constraint::Length(box_height as u16));
     }
+    // Moon animation row (shown after the last message if enabled)
+    if self.is_moon_animation_enabled() && !data.messages.is_empty() {
+      constraints.push(Constraint::Length(1));
+    }
 
     // Current input
     constraints.push(Constraint::Length(input_height as u16));
 
     // Add remaining space
     let prompt_width = Self::display_width(&self.full_prompt());
-    let total_fixed_height: usize = data
+    let mut total_fixed_height: usize = data
       .messages
       .iter()
       .map(|m| {
@@ -389,8 +446,16 @@ impl View for ChatView {
           + Self::calculate_line_count(m, box_inner_width)
           + 2
       })
-      .sum::<usize>()
-      + input_height;
+      .sum::<usize>();
+    // Add moon animation height if enabled
+    if self.is_moon_animation_enabled() && !data.messages.is_empty() {
+      total_fixed_height += 1;
+    }
+    // Only add input height if not showing moon animation (waiting for response)
+    if !self.is_moon_animation_enabled() {
+      total_fixed_height += input_height;
+    }
+
     let available_height = area.height as usize;
     if total_fixed_height < available_height {
       constraints.push(Constraint::Min(0));
@@ -415,9 +480,14 @@ impl View for ChatView {
         chunk_idx += 1;
       }
     }
+    // Moon animation (shown after all messages if enabled)
+    if self.is_moon_animation_enabled() && !data.messages.is_empty() && chunk_idx < chunks.len() {
+      self.render_moon_animation(f, chunks[chunk_idx]);
+      chunk_idx += 1;
+    }
 
-    // Render current input line
-    if chunk_idx < chunks.len() {
+    // Render current input line (only if not showing moon animation)
+    if !self.is_moon_animation_enabled() && chunk_idx < chunks.len() {
       self.render_input_line(f, chunks[chunk_idx], &self.input);
 
       // Set cursor position
@@ -440,16 +510,26 @@ impl View for ChatView {
       return;
     }
 
-    // Update spinner animation
     let now = Instant::now();
-    let elapsed = now.duration_since(self.last_spinner_update);
 
+    // Update spinner animation
+    let elapsed = now.duration_since(self.last_spinner_update);
     // Update spinner frame every 200ms (relaxed rotation)
     const SPINNER_INTERVAL: Duration = Duration::from_millis(200);
-
     if elapsed >= SPINNER_INTERVAL {
       self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
       self.last_spinner_update = now;
+    }
+
+    // Update moon animation
+    if let Some(last_update) = self.last_moon_update {
+      let moon_elapsed = now.duration_since(last_update);
+      // Moon cycles slower than spinner - one phase every 300ms
+      const MOON_INTERVAL: Duration = Duration::from_millis(300);
+      if moon_elapsed >= MOON_INTERVAL {
+        self.moon_frame = (self.moon_frame + 1) % MOON_FRAMES.len();
+        self.last_moon_update = Some(now);
+      }
     }
 
     // Schedule next frame for smooth animation
