@@ -17,10 +17,14 @@ use tokio::sync::broadcast;
 mod event_stream;
 mod frame_rate_limiter;
 mod frame_requester;
+mod message;
+mod message_broker;
 
 pub use event_stream::TuiEventBroker;
 pub use event_stream::TuiEventStream;
 pub use frame_requester::FrameRequester;
+pub use message::UiMessage;
+pub use message_broker::MessageBroker;
 
 /// Target frame interval for UI redraw scheduling (120 FPS max).
 pub const TARGET_FRAME_INTERVAL: std::time::Duration = frame_rate_limiter::MIN_FRAME_INTERVAL;

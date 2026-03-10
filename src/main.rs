@@ -42,6 +42,11 @@ async fn run_app(tui: &mut Tui, app: &mut App, event_stream: &mut TuiEventStream
 
   // Process events from the stream
   while let Some(event) = event_stream.next().await {
+    // First, drain any pending UI messages from background tasks
+    while let Some(msg) = app.try_recv_message() {
+      app.handle_message(msg);
+    }
+
     match event {
       TuiEvent::Key(key) => {
         // Only handle key press events to avoid duplicate processing

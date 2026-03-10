@@ -1,4 +1,4 @@
-use crate::tui::FrameRequester;
+use crate::tui::{FrameRequester, MessageBroker, UiMessage};
 use crate::view::{HomeView, View};
 
 /// Application data that can be modified by views
@@ -33,6 +33,8 @@ pub struct App {
   pub view: Box<dyn View>,
   /// Frame requester for animation scheduling
   frame_requester: Option<FrameRequester>,
+  /// Message broker for UI communication
+  message_broker: MessageBroker,
 }
 
 impl App {
@@ -42,6 +44,7 @@ impl App {
       data: AppData::new(),
       view: Box::new(HomeView::new()),
       frame_requester: None,
+      message_broker: MessageBroker::new(),
     }
   }
 
@@ -70,6 +73,35 @@ impl App {
   pub fn set_frame_requester(&mut self, frame_requester: FrameRequester) {
     self.frame_requester = Some(frame_requester.clone());
     self.view.set_frame_requester(frame_requester);
+  }
+
+  /// Handle an incoming UI message
+  ///
+  /// This is called by the main event loop to process messages
+  /// from background tasks.
+  pub fn handle_message(&mut self, msg: UiMessage) {
+    match msg {
+      UiMessage::AppendChat { content } => {
+        self.data.messages.push(content);
+      }
+    }
+    // Trigger a redraw after handling the message
+    if let Some(ref fr) = self.frame_requester {
+      fr.schedule_frame();
+    }
+  }
+
+  /// Get a clone of the message sender for background tasks
+  pub fn message_sender(&self) -> tokio::sync::mpsc::UnboundedSender<UiMessage> {
+    self.message_broker.sender()
+  }
+
+  /// Try to receive a pending message from the queue
+  ///
+  /// Returns `Some(msg)` if available, `None` otherwise.
+  /// This should be called in the main event loop.
+  pub fn try_recv_message(&mut self) -> Option<UiMessage> {
+    self.message_broker.try_recv()
   }
 }
 
