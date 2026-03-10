@@ -405,10 +405,8 @@ impl View for ChatView {
     let available_width = area.width;
 
     // Calculate input height (dynamic based on content, including prompt width)
-    let input_height = self.calculate_input_line_count(&self.input, available_width);
-    // Ensure at least 1 line and cap at reasonable max (e.g., 10 lines or half screen)
-    let max_input_height = std::cmp::min(10, area.height / 2).max(1) as usize;
-    let input_height = input_height.min(max_input_height);
+    // No height limit - content will wrap naturally based on available width
+    let input_height = self.calculate_input_line_count(&self.input, available_width).max(1);
 
     // Calculate layout:
     // For each message: prompt line + box
