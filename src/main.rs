@@ -1,4 +1,5 @@
 mod cli;
+mod llm;
 mod tui;
 mod utils;
 mod view;
