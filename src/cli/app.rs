@@ -1,12 +1,13 @@
+use crate::cli::runtime::Runtime;
 use crate::tui::{FrameRequester, MessageBroker, UiMessage};
 use crate::view::{HomeView, View};
 
 /// Application data that can be modified by views
 pub struct AppData {
   /// Whether the app should exit
-  pub should_exit: bool,
+  pub(crate) should_exit: bool,
   /// Message history (for chat)
-  pub messages: Vec<String>,
+  pub(crate) messages: Vec<String>,
 }
 
 impl AppData {
@@ -28,24 +29,33 @@ impl Default for AppData {
 /// Application state
 pub struct App {
   /// Application data
-  pub data: AppData,
+  data: AppData,
   /// Current view (dynamic dispatch)
   pub view: Box<dyn View>,
   /// Frame requester for animation scheduling
   frame_requester: Option<FrameRequester>,
   /// Message broker for UI communication
   message_broker: MessageBroker,
+  /// Runtime data loaded at startup
+  pub(crate) runtime: Runtime,
 }
 
 impl App {
   /// Create a new app instance
-  pub fn new() -> Self {
-    Self {
+  pub fn new() -> anyhow::Result<Self> {
+    let runtime = Runtime::new()?;
+
+    Ok(Self {
       data: AppData::new(),
       view: Box::new(HomeView::new()),
       frame_requester: None,
       message_broker: MessageBroker::new(),
-    }
+      runtime,
+    })
+  }
+
+  pub fn should_exit(&self) -> bool {
+    self.data.should_exit
   }
 
   /// Handle keyboard events
@@ -102,11 +112,5 @@ impl App {
   /// This should be called in the main event loop.
   pub fn try_recv_message(&mut self) -> Option<UiMessage> {
     self.message_broker.try_recv()
-  }
-}
-
-impl Default for App {
-  fn default() -> Self {
-    Self::new()
   }
 }

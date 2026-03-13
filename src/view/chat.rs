@@ -10,7 +10,7 @@ use ratatui::{
   widgets::{Block, Borders, Paragraph, Wrap},
 };
 
-use crate::app::AppData;
+use crate::cli::AppData;
 use crate::tui::{FrameRequester, TARGET_FRAME_INTERVAL};
 use crate::utils::{char_display_width, string_display_width};
 use crate::view::View;

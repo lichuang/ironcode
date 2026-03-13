@@ -7,7 +7,7 @@ use ratatui::{
   widgets::{Block, Borders, Clear, Paragraph},
 };
 
-use crate::app::AppData;
+use crate::cli::AppData;
 use crate::utils::prefix_display_width;
 use crate::view::{ChatView, View};
 

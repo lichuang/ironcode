@@ -1,10 +1,10 @@
-mod app;
+mod cli;
 mod tui;
 mod utils;
 mod view;
 
 use anyhow::Result;
-use app::App;
+use cli::App;
 use crossterm::event::KeyEventKind;
 use futures::StreamExt;
 use tui::{Tui, TuiEvent, TuiEventStream, init_terminal, restore_terminal};
@@ -18,7 +18,7 @@ async fn main() -> Result<()> {
   let mut tui = Tui::new()?;
 
   // Create app state
-  let mut app = App::new();
+  let mut app = App::new()?;
 
   // Give the view a frame requester for animations
   app.set_frame_requester(tui.frame_requester());
@@ -67,7 +67,7 @@ async fn run_app(tui: &mut Tui, app: &mut App, event_stream: &mut TuiEventStream
     }
 
     // Check if we should exit
-    if app.data.should_exit {
+    if app.should_exit() {
       return Ok(());
     }
 

@@ -1,7 +1,7 @@
 use crossterm::event::KeyEvent;
 use ratatui::Frame;
 
-use crate::app::AppData;
+use crate::cli::AppData;
 use crate::tui::FrameRequester;
 
 pub mod chat;
