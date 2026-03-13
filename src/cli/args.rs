@@ -9,23 +9,28 @@ use std::path::PathBuf;
 #[command(about = "AI-powered terminal code assistant")]
 #[command(version)]
 pub struct Args {
-  /// Path to configuration file
+  /// Path to configuration directory
   ///
-  /// If not specified, defaults to ~/.ironcode/config.toml
-  #[arg(short = 'c', long, value_name = "FILE")]
+  /// If not specified, defaults to ~/.ironcode/
+  /// The directory should contain config.toml and optionally system.md
+  #[arg(short = 'c', long, value_name = "DIR")]
   pub config: Option<PathBuf>,
 }
 
 impl Args {
-  /// Get the configuration file path
+  /// Get the configuration directory path
   ///
-  /// Returns the user-specified path or the default location
-  pub fn config_path(&self) -> PathBuf {
+  /// Returns the user-specified directory or the default location
+  pub fn config_dir(&self) -> PathBuf {
     self.config.clone().unwrap_or_else(|| {
       dirs::home_dir()
         .expect("Could not determine home directory")
         .join(".ironcode")
-        .join("config.toml")
     })
+  }
+
+  /// Get the configuration file path (config.toml in the config directory)
+  pub fn config_path(&self) -> PathBuf {
+    self.config_dir().join("config.toml")
   }
 }

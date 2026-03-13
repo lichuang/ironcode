@@ -1,3 +1,4 @@
+use crate::config::loader::system_prompt_path;
 use crate::error::{Result, RuntimeError};
 use std::fs;
 use std::path::PathBuf;
@@ -109,8 +110,11 @@ pub(crate) struct Runtime {
 
 impl Runtime {
   /// Create a new Runtime instance by loading all environment data
-  pub(crate) fn new() -> Result<Self> {
-    let system_prompt_template = Self::load_system_prompt_template()?;
+  ///
+  /// Loads system prompt from config_dir/prompts/system.md
+  /// Returns empty string if prompt file doesn't exist
+  pub(crate) fn new(config_dir: &PathBuf) -> Result<Self> {
+    let system_prompt_template = Self::load_system_prompt_template(config_dir);
     let args = RuntimeArgs::new()?;
 
     Ok(Self {
@@ -119,12 +123,13 @@ impl Runtime {
     })
   }
 
-  /// Load the system prompt template from prompts/system.md
-  fn load_system_prompt_template() -> Result<String> {
-    let prompt_path = PathBuf::from("prompts/system.md");
-    let content = fs::read_to_string(&prompt_path)
-      .map_err(|e| RuntimeError::read_system_prompt(&prompt_path, e))?;
-    Ok(content)
+  /// Load the system prompt template from config directory
+  ///
+  /// Reads from config_dir/prompts/system.md
+  /// Returns empty string if file doesn't exist
+  fn load_system_prompt_template(config_dir: &PathBuf) -> String {
+    let prompt_path = system_prompt_path(config_dir);
+    fs::read_to_string(&prompt_path).unwrap_or_default()
   }
 
   /// Render the system prompt with all template variables substituted

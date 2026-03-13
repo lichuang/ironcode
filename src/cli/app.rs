@@ -3,6 +3,7 @@ use crate::config::Config;
 use crate::error::Result;
 use crate::tui::{FrameRequester, MessageBroker, UiMessage};
 use crate::view::{HomeView, View};
+use std::path::PathBuf;
 
 /// Application data that can be modified by views
 pub struct AppData {
@@ -46,8 +47,12 @@ pub struct App {
 
 impl App {
   /// Create a new app instance with the given configuration
-  pub fn new(config: Config) -> Result<Self> {
-    let runtime = Runtime::new()?;
+  ///
+  /// # Arguments
+  /// * `config` - The loaded configuration
+  /// * `config_dir` - The directory where config was loaded from (for loading system prompt)
+  pub fn new(config: Config, config_dir: &PathBuf) -> Result<Self> {
+    let runtime = Runtime::new(config_dir)?;
 
     Ok(Self {
       data: AppData::new(),

@@ -10,35 +10,35 @@ const CONFIG_DIR: &str = ".ironcode";
 /// Default configuration file name
 const CONFIG_FILE: &str = "config.toml";
 
-/// Load configuration from standard locations
+/// Default system prompt directory name
+const PROMPTS_DIR: &str = "prompts";
+/// Default system prompt file name
+const SYSTEM_PROMPT_FILE: &str = "system.md";
+
+/// Load configuration from standard location
 ///
-/// Configuration is loaded from (in order of precedence):
-/// 1. `./ironcode.toml` (project-local)
-/// 2. `~/.ironcode/config.toml` (user-global)
-///
-/// Later files override earlier ones.
+/// Configuration is loaded from `~/.ironcode/config.toml`.
 pub fn load_config() -> Result<Config> {
-  let config_path = user_config_path().ok_or(ConfigError::HomeDirNotFound)?;
+  let config_dir = user_config_dir().ok_or(ConfigError::HomeDirNotFound)?;
+  load_config_from_dir(&config_dir)
+}
+
+/// Load configuration from a specific directory
+///
+/// Reads config.toml from the specified directory.
+pub fn load_config_from_dir(config_dir: &PathBuf) -> Result<Config> {
+  let config_path = config_dir.join(CONFIG_FILE);
   load_config_from(&config_path)
 }
 
 /// Load configuration from a specific file path
-///
-/// Also merges with project-local `./ironcode.toml` if it exists.
 pub fn load_config_from(path: &PathBuf) -> Result<Config> {
   let mut config = Config::default();
 
-  // Load from specified config file (lower priority)
+  // Load from config file
   if path.exists() {
     let file_config = load_from_file(path)?;
     config = merge_configs(config, file_config);
-  }
-
-  // Load from project-local config (higher priority)
-  let local_config_path = PathBuf::from("ironcode.toml");
-  if local_config_path.exists() {
-    let local_config = load_from_file(&local_config_path)?;
-    config = merge_configs(config, local_config);
   }
 
   // Validate configuration
@@ -56,9 +56,21 @@ pub fn load_from_file(path: &PathBuf) -> Result<Config> {
   Ok(config)
 }
 
-/// Get the user configuration directory path (~/.ironcode/config.toml)
+/// Get the user configuration directory path (~/.ironcode)
+fn user_config_dir() -> Option<PathBuf> {
+  dirs::home_dir().map(|dir| dir.join(CONFIG_DIR))
+}
+
+/// Get the user configuration file path (~/.ironcode/config.toml)
 fn user_config_path() -> Option<PathBuf> {
-  dirs::home_dir().map(|dir| dir.join(CONFIG_DIR).join(CONFIG_FILE))
+  user_config_dir().map(|dir| dir.join(CONFIG_FILE))
+}
+
+/// Get the system prompt file path in the config directory
+/// 
+/// Returns: config_dir/prompts/system.md
+pub fn system_prompt_path(config_dir: &PathBuf) -> PathBuf {
+  config_dir.join(PROMPTS_DIR).join(SYSTEM_PROMPT_FILE)
 }
 
 /// Merge two configurations (second overrides first)

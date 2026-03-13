@@ -1,8 +1,7 @@
 //! Configuration management for IronCode.
 //!
-//! Configuration is loaded from TOML files at:
-//! - ~/.config/ironcode/config.toml (primary)
-//! - ./ironcode.toml (project-local, overrides primary)
+//! Configuration is loaded from TOML file at:
+//! - ~/.ironcode/config.toml (default location)
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -10,7 +9,7 @@ use std::path::PathBuf;
 
 pub mod loader;
 
-pub use loader::load_config;
+pub use loader::{load_config, load_config_from_dir, system_prompt_path};
 
 /// Root configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize)]

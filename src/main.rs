@@ -9,7 +9,7 @@ mod view;
 use anyhow::Result;
 use clap::Parser;
 use cli::{App, Args};
-use config::loader::load_config_from;
+use config::loader::load_config_from_dir;
 use crossterm::event::KeyEventKind;
 use futures::StreamExt;
 use tui::{Tui, TuiEvent, TuiEventStream, init_terminal, restore_terminal};
@@ -23,8 +23,8 @@ async fn main() -> Result<()> {
   let args = Args::parse();
 
   // Load configuration
-  let config_path = args.config_path();
-  let config = load_config_from(&config_path)?;
+  let config_dir = args.config_dir();
+  let config = load_config_from_dir(&config_dir)?;
 
   // Initialize terminal
   init_terminal()?;
@@ -33,7 +33,7 @@ async fn main() -> Result<()> {
   let mut tui = Tui::new()?;
 
   // Create app state with configuration
-  let mut app = App::new(config)?;
+  let mut app = App::new(config, &config_dir)?;
 
   // Give the view a frame requester for animations
   app.set_frame_requester(tui.frame_requester());
