@@ -1,3 +1,4 @@
+use crate::error::{Result, RuntimeError};
 use std::fs;
 use std::path::PathBuf;
 
@@ -25,7 +26,7 @@ pub(crate) struct RuntimeArgs {
 
 impl RuntimeArgs {
   /// Create a new RuntimeArgs instance by loading all environment data
-  pub(crate) fn new() -> anyhow::Result<Self> {
+  pub(crate) fn new() -> Result<Self> {
     Ok(Self {
       now: Self::load_now(),
       work_dir: Self::load_work_dir()?,
@@ -43,21 +44,23 @@ impl RuntimeArgs {
   }
 
   /// Get current working directory
-  fn load_work_dir() -> anyhow::Result<String> {
+  fn load_work_dir() -> Result<String> {
     std::env::current_dir()
       .map(|p| p.to_string_lossy().to_string())
-      .map_err(|e| anyhow::anyhow!("Failed to get current directory: {}", e))
+      .map_err(|e| RuntimeError::GetCurrentDir { source: e }.into())
   }
 
   /// Get directory listing of working directory
-  fn load_work_dir_ls() -> anyhow::Result<String> {
-    let work_dir = std::env::current_dir()?;
+  fn load_work_dir_ls() -> Result<String> {
+    let work_dir = std::env::current_dir().map_err(|e| RuntimeError::GetCurrentDir { source: e })?;
     let mut entries = Vec::new();
 
-    for entry in fs::read_dir(&work_dir)? {
-      let entry = entry?;
+    for entry in fs::read_dir(&work_dir).map_err(|e| RuntimeError::read_dir(&work_dir, e))? {
+      let entry = entry.map_err(|e| RuntimeError::read_dir(&work_dir, e))?;
       let name = entry.file_name().to_string_lossy().to_string();
-      let metadata = entry.metadata()?;
+      let metadata = entry
+        .metadata()
+        .map_err(|e| RuntimeError::read_metadata(&work_dir, e))?;
       let size = metadata.len();
       let is_dir = metadata.is_dir();
       let permissions = metadata.permissions();
@@ -86,7 +89,7 @@ impl RuntimeArgs {
   }
 
   /// Load available skills (placeholder for now)
-  fn load_skills() -> anyhow::Result<String> {
+  fn load_skills() -> Result<String> {
     // TODO: Implement skills discovery
     // For now, return empty or load from a skills directory
     Ok(String::new())
@@ -106,7 +109,7 @@ pub(crate) struct Runtime {
 
 impl Runtime {
   /// Create a new Runtime instance by loading all environment data
-  pub(crate) fn new() -> anyhow::Result<Self> {
+  pub(crate) fn new() -> Result<Self> {
     let system_prompt_template = Self::load_system_prompt_template()?;
     let args = RuntimeArgs::new()?;
 
@@ -117,10 +120,10 @@ impl Runtime {
   }
 
   /// Load the system prompt template from prompts/system.md
-  fn load_system_prompt_template() -> anyhow::Result<String> {
+  fn load_system_prompt_template() -> Result<String> {
     let prompt_path = PathBuf::from("prompts/system.md");
     let content = fs::read_to_string(&prompt_path)
-      .map_err(|e| anyhow::anyhow!("Failed to read system prompt from {:?}: {}", prompt_path, e))?;
+      .map_err(|e| RuntimeError::read_system_prompt(&prompt_path, e))?;
     Ok(content)
   }
 

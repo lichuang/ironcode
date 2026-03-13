@@ -1,5 +1,6 @@
 use crate::cli::runtime::Runtime;
 use crate::config::Config;
+use crate::error::Result;
 use crate::tui::{FrameRequester, MessageBroker, UiMessage};
 use crate::view::{HomeView, View};
 
@@ -45,7 +46,7 @@ pub struct App {
 
 impl App {
   /// Create a new app instance with the given configuration
-  pub fn new(config: Config) -> anyhow::Result<Self> {
+  pub fn new(config: Config) -> Result<Self> {
     let runtime = Runtime::new()?;
 
     Ok(Self {

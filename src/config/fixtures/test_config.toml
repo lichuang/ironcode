@@ -3,12 +3,12 @@
 default_model = "openai/gpt-4o"
 
 [providers.openai]
-type = "openai"
+type = "openai-compatible"
 base_url = "https://api.openai.com/v1"
 api_key = "${OPENAI_API_KEY}"
 
 [providers.ollama]
-type = "ollama"
+type = "openai-compatible"
 base_url = "http://localhost:11434/v1"
 
 [models."openai/gpt-4o"]

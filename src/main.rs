@@ -1,5 +1,6 @@
 mod cli;
 mod config;
+mod error;
 mod llm;
 mod tui;
 mod utils;
@@ -12,6 +13,9 @@ use config::loader::load_config_from;
 use crossterm::event::KeyEventKind;
 use futures::StreamExt;
 use tui::{Tui, TuiEvent, TuiEventStream, init_terminal, restore_terminal};
+
+// Re-export error types for convenience
+pub use error::{Error, Result as IronResult};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -47,7 +51,7 @@ async fn main() -> Result<()> {
 }
 
 /// Run the main application loop
-async fn run_app(tui: &mut Tui, app: &mut App, event_stream: &mut TuiEventStream) -> Result<()> {
+async fn run_app(tui: &mut Tui, app: &mut App, event_stream: &mut TuiEventStream) -> anyhow::Result<()> {
   // Initial draw
   tui.draw(|f| app.draw(f))?;
 

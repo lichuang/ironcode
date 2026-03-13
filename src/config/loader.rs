@@ -1,7 +1,7 @@
 //! Configuration file loader
 
 use super::Config;
-use anyhow::{Context, Result};
+use crate::error::{ConfigError, Result};
 use std::path::PathBuf;
 
 /// Default configuration directory name (in home directory)
@@ -18,8 +18,7 @@ const CONFIG_FILE: &str = "config.toml";
 ///
 /// Later files override earlier ones.
 pub fn load_config() -> Result<Config> {
-  let config_path = user_config_path()
-    .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+  let config_path = user_config_path().ok_or(ConfigError::HomeDirNotFound)?;
   load_config_from(&config_path)
 }
 
@@ -31,16 +30,14 @@ pub fn load_config_from(path: &PathBuf) -> Result<Config> {
 
   // Load from specified config file (lower priority)
   if path.exists() {
-    let file_config = load_from_file(path)
-      .with_context(|| format!("Failed to load config from {:?}", path))?;
+    let file_config = load_from_file(path)?;
     config = merge_configs(config, file_config);
   }
 
   // Load from project-local config (higher priority)
   let local_config_path = PathBuf::from("ironcode.toml");
   if local_config_path.exists() {
-    let local_config = load_from_file(&local_config_path)
-      .with_context(|| format!("Failed to load config from {:?}", local_config_path))?;
+    let local_config = load_from_file(&local_config_path)?;
     config = merge_configs(config, local_config);
   }
 
@@ -52,11 +49,9 @@ pub fn load_config_from(path: &PathBuf) -> Result<Config> {
 
 /// Load configuration from a specific file path
 pub fn load_from_file(path: &PathBuf) -> Result<Config> {
-  let content = std::fs::read_to_string(path)
-    .with_context(|| format!("Failed to read config file: {:?}", path))?;
+  let content = std::fs::read_to_string(path).map_err(|e| ConfigError::read_file(path, e))?;
 
-  let config: Config = toml::from_str(&content)
-    .with_context(|| format!("Failed to parse TOML config from: {:?}", path))?;
+  let config: Config = toml::from_str(&content).map_err(|e| ConfigError::parse_toml(path, e))?;
 
   Ok(config)
 }
@@ -91,17 +86,15 @@ fn merge_configs(base: Config, override_: Config) -> Config {
 /// Validate configuration
 fn validate_config(config: &Config) -> Result<()> {
   if config.default_model.is_empty() {
-    return Err(anyhow::anyhow!(
-      "Missing required field: default_model. Please specify a default model in your configuration."
-    ));
+    return Err(ConfigError::MissingDefaultModel.into());
   }
 
   // Check that default_model exists in models
   if !config.models.contains_key(&config.default_model) {
-    return Err(anyhow::anyhow!(
-      "Default model '{}' not found in [models] section.",
-      config.default_model
-    ));
+    return Err(ConfigError::ModelNotFound {
+      model: config.default_model.clone(),
+    }
+    .into());
   }
 
   Ok(())
@@ -110,12 +103,12 @@ fn validate_config(config: &Config) -> Result<()> {
 /// Ensure configuration directory exists
 pub fn ensure_config_dir() -> Result<PathBuf> {
   let config_dir = dirs::config_dir()
-    .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?
+    .ok_or(ConfigError::ConfigDirNotFound)?
     .join(CONFIG_DIR);
 
   if !config_dir.exists() {
     std::fs::create_dir_all(&config_dir)
-      .with_context(|| format!("Failed to create config directory: {:?}", config_dir))?;
+      .map_err(|e| ConfigError::create_dir(&config_dir, e))?;
   }
 
   Ok(config_dir)
@@ -135,7 +128,7 @@ default_model = "openai/gpt-4o"
 
 # Provider definitions
 [providers.openai]
-type = "openai"
+type = "openai-compatible"
 base_url = "https://api.openai.com/v1"
 api_key = "${OPENAI_API_KEY}"
 
@@ -153,7 +146,7 @@ level = "info"
 "#;
 
     std::fs::write(&config_path, default_config)
-      .with_context(|| format!("Failed to write default config to {:?}", config_path))?;
+      .map_err(|e| ConfigError::write_file(&config_path, e))?;
   }
 
   Ok(config_path)
@@ -179,7 +172,7 @@ mod tests {
 default_model = "openai/gpt-4o"
 
 [providers.openai]
-type = "openai"
+type = "openai-compatible"
 base_url = "https://api.openai.com/v1"
 api_key = "${OPENAI_API_KEY}"
 
@@ -314,10 +307,8 @@ supports_streaming = true
   fn test_provider_type_requires_api_key() {
     use super::super::ProviderType;
 
-    assert!(ProviderType::Openai.requires_api_key());
-    assert!(ProviderType::Azure.requires_api_key());
+    // OpenAI-compatible providers typically require an API key
     assert!(ProviderType::OpenaiCompatible.requires_api_key());
-    assert!(!ProviderType::Ollama.requires_api_key());
   }
 
   #[test]
@@ -352,5 +343,51 @@ supports_streaming = true
     assert!(result.is_err());
     let err_msg = result.unwrap_err().to_string();
     assert!(err_msg.contains("not found in [models] section"));
+  }
+
+  #[test]
+  fn test_invalid_provider_type_rejected() {
+    // Test that deprecated provider types are rejected
+    let toml = r#"
+default_model = "openai/gpt-4o"
+
+[providers.openai]
+type = "openai"
+base_url = "https://api.openai.com/v1"
+api_key = "${OPENAI_API_KEY}"
+
+[models."openai/gpt-4o"]
+provider = "openai"
+model = "gpt-4o"
+"#;
+
+    let result: std::result::Result<Config, _> = toml::from_str(toml);
+    assert!(result.is_err(), "Deprecated 'openai' provider type should be rejected");
+    let err_msg = result.unwrap_err().to_string();
+    assert!(err_msg.contains("openai") || err_msg.contains("unknown variant"), 
+            "Error message should indicate invalid provider type: {}", err_msg);
+  }
+
+  #[test]
+  fn test_valid_provider_type_accepted() {
+    // Test that 'openai-compatible' provider type is accepted
+    let toml = r#"
+default_model = "openai/gpt-4o"
+
+[providers.openai]
+type = "openai-compatible"
+base_url = "https://api.openai.com/v1"
+api_key = "${OPENAI_API_KEY}"
+
+[models."openai/gpt-4o"]
+provider = "openai"
+model = "gpt-4o"
+"#;
+
+    let result: std::result::Result<Config, _> = toml::from_str(toml);
+    assert!(result.is_ok(), "Valid 'openai-compatible' provider type should be accepted");
+    let config = result.unwrap();
+    let provider = config.providers.get("openai").unwrap();
+    assert!(matches!(provider.provider_type, crate::config::ProviderType::OpenaiCompatible));
   }
 }

@@ -10,19 +10,22 @@ default_model = "openai/gpt-4o"
 # A provider can be shared by multiple models
 # =============================================================================
 
+# All providers use OpenAI-compatible API
+# This includes OpenAI official, Azure OpenAI, Ollama, and other compatible providers
+
 [providers.openai]
-type = "openai"
+type = "openai-compatible"
 base_url = "https://api.openai.com/v1"
 api_key = "${OPENAI_API_KEY}"
 
 [providers.azure]
-type = "azure"
+type = "openai-compatible"
 base_url = "https://your-resource.openai.azure.com/openai/deployments"
 api_key = "${AZURE_OPENAI_API_KEY}"
 api_version = "2024-02-01"
 
 [providers.ollama]
-type = "ollama"
+type = "openai-compatible"
 base_url = "http://localhost:11434/v1"
 # No api_key needed for local Ollama
 

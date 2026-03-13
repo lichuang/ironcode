@@ -3,12 +3,12 @@
 //! Provides the building blocks for an async event-driven terminal interface,
 //! including frame scheduling and unified event handling.
 
+use crate::error::{Result, TuiError};
 use std::io::Stdout;
 use std::io::stdout;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use anyhow::Result;
 use crossterm::event::KeyEvent;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -52,7 +52,8 @@ pub struct Tui {
 impl Tui {
   /// Create a new TUI instance.
   pub fn new() -> Result<Self> {
-    let terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
+    let terminal = Terminal::new(CrosstermBackend::new(stdout()))
+      .map_err(|e| TuiError::CreateBackend { source: e })?;
     let event_broker = Arc::new(TuiEventBroker::new());
     let terminal_focused = Arc::new(AtomicBool::new(true));
 
@@ -94,21 +95,23 @@ impl Tui {
   where
     F: FnOnce(&mut ratatui::Frame),
   {
-    self.terminal.draw(f)?;
+    self.terminal.draw(f).map_err(|e| TuiError::DrawFrame { source: e })?;
     Ok(())
   }
 }
 
 /// Initialize the terminal for TUI mode.
 pub fn init_terminal() -> Result<()> {
-  crossterm::terminal::enable_raw_mode()?;
-  crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen)?;
+  crossterm::terminal::enable_raw_mode().map_err(|e| TuiError::InitTerminal { source: e })?;
+  crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen)
+    .map_err(|e| TuiError::InitTerminal { source: e })?;
   Ok(())
 }
 
 /// Restore the terminal to normal mode.
 pub fn restore_terminal() -> Result<()> {
-  crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen)?;
-  crossterm::terminal::disable_raw_mode()?;
+  crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen)
+    .map_err(|e| TuiError::RestoreTerminal { source: e })?;
+  crossterm::terminal::disable_raw_mode().map_err(|e| TuiError::RestoreTerminal { source: e })?;
   Ok(())
 }

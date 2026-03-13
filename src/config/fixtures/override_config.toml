@@ -3,7 +3,7 @@
 default_model = "ollama/llama3.1"
 
 [providers.local]
-type = "ollama"
+type = "openai-compatible"
 base_url = "http://localhost:11434/v1"
 
 [models."ollama/llama3.1"]

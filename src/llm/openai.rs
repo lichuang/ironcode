@@ -1,3 +1,5 @@
+use crate::error::{LlmError, Result};
+use crate::llm::types::{ChatConfig, Message, Role};
 use async_openai::{
   Client,
   config::OpenAIConfig,
@@ -6,8 +8,6 @@ use async_openai::{
     ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs,
   },
 };
-
-use crate::llm::types::{ChatConfig, Message, Role};
 
 /// OpenAI API client wrapper
 #[derive(Debug, Clone)]
@@ -18,7 +18,7 @@ pub struct OpenAIClient {
 
 impl OpenAIClient {
   /// Create a new OpenAI client with the API key from environment
-  pub fn new(config: ChatConfig) -> anyhow::Result<Self> {
+  pub fn new(config: ChatConfig) -> Result<Self> {
     let client = Client::new();
     Ok(Self { client, config })
   }
@@ -46,26 +46,24 @@ impl OpenAIClient {
   }
 
   /// Send a chat completion request
-  pub async fn chat(&self, messages: Vec<Message>) -> anyhow::Result<String> {
+  pub async fn chat(&self, messages: Vec<Message>) -> Result<String> {
     let request_messages: Vec<ChatCompletionRequestMessage> = messages
       .into_iter()
       .map(|msg| Self::convert_message(msg))
-      .collect::<Result<Vec<_>, _>>()?;
+      .collect::<std::result::Result<Vec<_>, _>>()?;
 
-    let mut request_builder = CreateChatCompletionRequestArgs::default();
-    request_builder
-      .model(&self.config.model)
-      .messages(request_messages);
+    let mut request = CreateChatCompletionRequestArgs::default();
+    request.model(&self.config.model).messages(request_messages);
 
     if let Some(max_tokens) = self.config.max_tokens {
-      request_builder.max_tokens(max_tokens);
+      request.max_tokens(max_tokens);
     }
 
     if let Some(temperature) = self.config.temperature {
-      request_builder.temperature(temperature);
+      request.temperature(temperature);
     }
 
-    let request = request_builder.build()?;
+    let request = request.build().map_err(|e| LlmError::BuildRequest { source: e })?;
 
     let response = self.client.chat().create(request).await?;
 
@@ -82,27 +80,27 @@ impl OpenAIClient {
   pub async fn chat_stream(
     &self,
     messages: Vec<Message>,
-  ) -> anyhow::Result<async_openai::types::chat::ChatCompletionResponseStream> {
+  ) -> Result<async_openai::types::chat::ChatCompletionResponseStream> {
     let request_messages: Vec<ChatCompletionRequestMessage> = messages
       .into_iter()
       .map(|msg| Self::convert_message(msg))
-      .collect::<Result<Vec<_>, _>>()?;
+      .collect::<std::result::Result<Vec<_>, _>>()?;
 
-    let mut request_builder = CreateChatCompletionRequestArgs::default();
-    request_builder
+    let mut request = CreateChatCompletionRequestArgs::default();
+    request
       .model(&self.config.model)
       .messages(request_messages)
       .stream(true);
 
     if let Some(max_tokens) = self.config.max_tokens {
-      request_builder.max_tokens(max_tokens);
+      request.max_tokens(max_tokens);
     }
 
     if let Some(temperature) = self.config.temperature {
-      request_builder.temperature(temperature);
+      request.temperature(temperature);
     }
 
-    let request = request_builder.build()?;
+    let request = request.build().map_err(|e| LlmError::BuildRequest { source: e })?;
 
     let stream = self.client.chat().create_stream(request).await?;
 
@@ -112,7 +110,7 @@ impl OpenAIClient {
   /// Convert our Message type to async-openai's message type
   fn convert_message(
     msg: Message,
-  ) -> Result<ChatCompletionRequestMessage, async_openai::error::OpenAIError> {
+  ) -> std::result::Result<ChatCompletionRequestMessage, async_openai::error::OpenAIError> {
     match msg.role {
       Role::System => {
         ChatCompletionRequestSystemMessageArgs::default()

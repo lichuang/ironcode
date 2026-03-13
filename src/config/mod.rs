@@ -77,7 +77,7 @@ impl Config {
 /// Provider configuration (connection settings)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderConfig {
-  /// Provider type: "openai", "azure", "ollama", "openai-compatible"
+  /// Provider type: currently only "openai-compatible" is supported
   #[serde(rename = "type")]
   pub provider_type: ProviderType,
 
@@ -94,27 +94,26 @@ pub struct ProviderConfig {
 }
 
 /// Provider types
+/// 
+/// Currently only OpenAI-compatible APIs are supported.
+/// This includes OpenAI official API, Azure OpenAI, Ollama, and other compatible providers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProviderType {
-  /// OpenAI official API
-  Openai,
-  /// Azure OpenAI
-  Azure,
-  /// Local Ollama instance
-  Ollama,
-  /// OpenAI-compatible API (other providers)
+  /// OpenAI-compatible API (covers OpenAI, Azure, Ollama, and other compatible providers)
   #[serde(rename = "openai-compatible")]
   OpenaiCompatible,
 }
 
 impl ProviderType {
   /// Check if this provider requires an API key
+  /// 
+  /// OpenAI-compatible providers typically require an API key,
+  /// except for local instances like Ollama which can be configured without one.
   pub fn requires_api_key(&self) -> bool {
-    matches!(
-      self,
-      ProviderType::Openai | ProviderType::Azure | ProviderType::OpenaiCompatible
-    )
+    // OpenAI-compatible providers may or may not require an API key
+    // depending on the actual provider (e.g., Ollama locally doesn't need one)
+    true
   }
 }
 
