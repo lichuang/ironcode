@@ -1,0 +1,100 @@
+# IronCode Configuration Example
+# Copy this file to ~/.ironcode/config.toml or ./ironcode.toml
+
+# Default model to use (must match a key in [models] section)
+# Format: "provider-name/model-name" or just "model-name"
+default_model = "openai/gpt-4o"
+
+# =============================================================================
+# Providers - Define LLM API endpoints
+# A provider can be shared by multiple models
+# =============================================================================
+
+[providers.openai]
+type = "openai"
+base_url = "https://api.openai.com/v1"
+api_key = "${OPENAI_API_KEY}"
+
+[providers.azure]
+type = "azure"
+base_url = "https://your-resource.openai.azure.com/openai/deployments"
+api_key = "${AZURE_OPENAI_API_KEY}"
+api_version = "2024-02-01"
+
+[providers.ollama]
+type = "ollama"
+base_url = "http://localhost:11434/v1"
+# No api_key needed for local Ollama
+
+[providers.siliconflow]
+type = "openai-compatible"
+base_url = "https://api.siliconflow.cn/v1"
+api_key = "${SILICONFLOW_API_KEY}"
+
+[providers.deepseek]
+type = "openai-compatible"
+base_url = "https://api.deepseek.com/v1"
+api_key = "${DEEPSEEK_API_KEY}"
+
+# =============================================================================
+# Models - Define available models and their settings
+# Each model references a provider by name
+# =============================================================================
+
+[models."openai/gpt-4o"]
+provider = "openai"
+model = "gpt-4o"
+max_context_size = 128000
+temperature = 0.7
+max_tokens = 4096
+supports_streaming = true
+supports_vision = true
+
+[models."openai/gpt-4o-mini"]
+provider = "openai"
+model = "gpt-4o-mini"
+max_context_size = 128000
+temperature = 0.7
+max_tokens = 4096
+supports_streaming = true
+supports_vision = true
+
+[models."azure/gpt-4"]
+provider = "azure"
+model = "gpt-4-deployment"
+max_context_size = 8192
+temperature = 0.7
+max_tokens = 4096
+supports_streaming = true
+
+[models."local/llama3.1"]
+provider = "ollama"
+model = "llama3.1"
+max_context_size = 128000
+temperature = 0.7
+max_tokens = 4096
+supports_streaming = true
+
+[models."siliconflow/deepseek-v3"]
+provider = "siliconflow"
+model = "deepseek-ai/DeepSeek-V3"
+max_context_size = 64000
+temperature = 0.7
+max_tokens = 4096
+supports_streaming = true
+
+[models."deepseek/deepseek-chat"]
+provider = "deepseek"
+model = "deepseek-chat"
+max_context_size = 64000
+temperature = 0.7
+max_tokens = 4096
+supports_streaming = true
+
+# =============================================================================
+# Logging
+# =============================================================================
+
+[logging]
+level = "info"        # Options: "trace", "debug", "info", "warn", "error"
+# log_file = "~/.config/ironcode/ironcode.log"

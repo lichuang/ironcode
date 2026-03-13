@@ -1,4 +1,5 @@
 use crate::cli::runtime::Runtime;
+use crate::config::Config;
 use crate::tui::{FrameRequester, MessageBroker, UiMessage};
 use crate::view::{HomeView, View};
 
@@ -38,11 +39,13 @@ pub struct App {
   message_broker: MessageBroker,
   /// Runtime data loaded at startup
   pub(crate) runtime: Runtime,
+  /// Application configuration
+  pub(crate) config: Config,
 }
 
 impl App {
-  /// Create a new app instance
-  pub fn new() -> anyhow::Result<Self> {
+  /// Create a new app instance with the given configuration
+  pub fn new(config: Config) -> anyhow::Result<Self> {
     let runtime = Runtime::new()?;
 
     Ok(Self {
@@ -51,6 +54,7 @@ impl App {
       frame_requester: None,
       message_broker: MessageBroker::new(),
       runtime,
+      config,
     })
   }
 

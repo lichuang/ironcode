@@ -1,25 +1,35 @@
 mod cli;
+mod config;
 mod llm;
 mod tui;
 mod utils;
 mod view;
 
 use anyhow::Result;
-use cli::App;
+use clap::Parser;
+use cli::{App, Args};
+use config::loader::load_config_from;
 use crossterm::event::KeyEventKind;
 use futures::StreamExt;
 use tui::{Tui, TuiEvent, TuiEventStream, init_terminal, restore_terminal};
 
 #[tokio::main]
 async fn main() -> Result<()> {
+  // Parse command line arguments
+  let args = Args::parse();
+
+  // Load configuration
+  let config_path = args.config_path();
+  let config = load_config_from(&config_path)?;
+
   // Initialize terminal
   init_terminal()?;
 
   // Create TUI infrastructure
   let mut tui = Tui::new()?;
 
-  // Create app state
-  let mut app = App::new()?;
+  // Create app state with configuration
+  let mut app = App::new(config)?;
 
   // Give the view a frame requester for animations
   app.set_frame_requester(tui.frame_requester());

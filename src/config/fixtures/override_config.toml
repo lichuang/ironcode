@@ -1,0 +1,17 @@
+# Override configuration for testing merge
+
+default_model = "ollama/llama3.1"
+
+[providers.local]
+type = "ollama"
+base_url = "http://localhost:11434/v1"
+
+[models."ollama/llama3.1"]
+provider = "ollama"
+model = "llama3.1"
+max_context_size = 8192
+temperature = 0.5
+supports_streaming = true
+
+[logging]
+level = "warn"
