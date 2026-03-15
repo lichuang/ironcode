@@ -1,8 +1,11 @@
 use crate::cli::runtime::Runtime;
 use crate::config::Config;
 use crate::error::Result;
+use crate::llm::{ChatSession, SessionEvent, SessionHandle};
 use crate::tui::{FrameRequester, MessageBroker, UiMessage};
 use crate::view::{HomeView, View};
+use crossterm::event::KeyEvent;
+use log::{error, info};
 use std::path::PathBuf;
 
 /// Application data that can be modified by views
@@ -11,6 +14,11 @@ pub struct AppData {
   pub(crate) should_exit: bool,
   /// Message history (for chat)
   pub(crate) messages: Vec<String>,
+  /// Flag indicating that a new chat session should be initialized
+  /// (set by views when switching to chat, cleared by App after initialization)
+  pub(crate) init_session_requested: bool,
+  /// First user message to send after session is initialized
+  pub(crate) pending_first_message: Option<String>,
 }
 
 impl AppData {
@@ -19,6 +27,8 @@ impl AppData {
     Self {
       should_exit: false,
       messages: Vec::new(),
+      init_session_requested: false,
+      pending_first_message: None,
     }
   }
 }
@@ -43,6 +53,8 @@ pub struct App {
   pub(crate) runtime: Runtime,
   /// Application configuration
   pub(crate) config: Config,
+  /// Chat session for LLM communication (initialized when first chat starts)
+  chat_session: Option<ChatSession>,
 }
 
 impl App {
@@ -61,6 +73,7 @@ impl App {
       message_broker: MessageBroker::new(),
       runtime,
       config,
+      chat_session: None,
     })
   }
 
@@ -69,12 +82,19 @@ impl App {
   }
 
   /// Handle keyboard events
-  pub fn handle_key(&mut self, key: crossterm::event::KeyEvent) {
+  pub fn handle_key(&mut self, key: KeyEvent) {
     if let Some(new_view) = self.view.handle_key(&mut self.data, key) {
       self.view = new_view;
       // Re-set frame requester when view changes
       if let Some(ref frame_requester) = self.frame_requester {
         self.view.set_frame_requester(frame_requester.clone());
+      }
+      // Check if we need to initialize a chat session
+      if self.data.init_session_requested {
+        self.data.init_session_requested = false;
+        if let Err(e) = self.init_chat_session_from_runtime() {
+          error!("Failed to initialize chat session: {}", e);
+        }
       }
     }
   }
@@ -122,5 +142,111 @@ impl App {
   /// This should be called in the main event loop.
   pub fn try_recv_message(&mut self) -> Option<UiMessage> {
     self.message_broker.try_recv()
+  }
+
+  /// Update chat session state and process any pending events
+  ///
+  /// This should be called regularly in the main event loop to
+  /// process streaming responses from the LLM.
+  ///
+  /// Returns true if any updates were processed.
+  pub fn update_chat_session(&mut self) -> bool {
+    let mut updated = false;
+
+    if let Some(ref mut session) = self.chat_session {
+      // Process all pending events
+      while let Some(event) = session.poll_event() {
+        updated = true;
+        match event {
+          SessionEvent::ContentChunk(_chunk) => {
+            // Content is accumulated in session, we can use it to update UI
+            // For now, we don't modify AppData.messages to keep UI unchanged
+            // In the future, this could update the last message incrementally
+          }
+          SessionEvent::Completed => {
+            // Stream completed, the complete response is now in session history
+            // We could add it to AppData.messages here if needed
+          }
+          SessionEvent::Error(err) => {
+            // Log error or handle it appropriately
+            error!("LLM stream error: {}", err);
+          }
+          SessionEvent::Shutdown => {
+            // Session has been shutdown
+            info!("ChatSession {} shutdown", session.handle.id);
+          }
+        }
+      }
+
+      // Trigger redraw if there were updates
+      if updated {
+        if let Some(ref fr) = self.frame_requester {
+          fr.schedule_frame();
+        }
+      }
+    }
+
+    updated
+  }
+
+  /// Get the session handle if initialized
+  pub fn session_handle(&self) -> Option<&SessionHandle> {
+    self.chat_session.as_ref().map(|s| &s.handle)
+  }
+
+  /// Check if session has pending events
+  pub fn session_has_event(&self) -> bool {
+    self
+      .chat_session
+      .as_ref()
+      .map(|s| s.has_event())
+      .unwrap_or(false)
+  }
+
+  /// Initialize the chat session using runtime system prompt
+  ///
+  /// This is called when transitioning from HomeView to ChatView
+  pub fn init_chat_session_from_runtime(&mut self) -> Result<()> {
+    assert!(self.chat_session.is_none());
+
+    // Get system prompt from runtime
+    let system_prompt = self.runtime.render_system_prompt();
+
+    // Create session from config and system prompt
+    self.chat_session = Some(ChatSession::from_config(&self.config, system_prompt)?);
+
+    // Send pending first message if exists
+    if let Some(first_message) = self.data.pending_first_message.take() {
+      self.send_to_llm(first_message);
+    }
+
+    Ok(())
+  }
+
+  /// Send a message to the LLM (non-blocking, queued)
+  ///
+  /// Returns true if the message was queued
+  pub fn send_to_llm(&mut self, content: impl Into<String>) -> bool {
+    if let Some(ref session) = self.chat_session {
+      session.handle.send_message(content);
+      true
+    } else {
+      error!("receive content but no session running");
+      false
+    }
+  }
+
+  /// Cancel the current LLM request if any
+  pub fn cancel_llm_request(&self) {
+    if let Some(ref session) = self.chat_session {
+      session.handle.cancel();
+    }
+  }
+
+  /// Shutdown the chat session
+  pub fn shutdown_chat_session(&self) {
+    if let Some(ref session) = self.chat_session {
+      session.handle.shutdown();
+    }
   }
 }

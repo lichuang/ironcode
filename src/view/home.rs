@@ -167,7 +167,10 @@ impl View for HomeView {
       KeyCode::Enter => {
         if !self.is_input_empty() {
           let input = self.take_input();
-          data.messages.push(input);
+          // Store first message to be sent after session is initialized
+          data.pending_first_message = Some(input);
+          // Request session initialization when switching to ChatView
+          data.init_session_requested = true;
           // Switch to ChatView
           return Some(Box::new(ChatView::new()));
         }

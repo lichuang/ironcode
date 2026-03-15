@@ -10,12 +10,53 @@ use anyhow::Result;
 use clap::Parser;
 use cli::{App, Args};
 use config::loader::load_config_from_dir;
+use config::LoggingConfig;
 use crossterm::event::KeyEventKind;
 use futures::StreamExt;
+use log::{info, warn};
 use tui::{Tui, TuiEvent, TuiEventStream, init_terminal, restore_terminal};
 
 // Re-export error types for convenience
 pub use error::{Error, Result as IronResult};
+
+/// Initialize logging based on configuration
+fn init_logging(config: &LoggingConfig) {
+  use env_logger::Target;
+  
+  let mut builder = env_logger::Builder::new();
+  
+  // Parse RUST_LOG env var first, then fall back to config level
+  if let Ok(rust_log) = std::env::var("RUST_LOG") {
+    builder.parse_filters(&rust_log);
+  } else {
+    builder.parse_filters(&config.level);
+  }
+  
+  // If a log file is specified, write to file instead of stderr
+  if let Some(log_file) = &config.log_file {
+    use std::fs::OpenOptions;
+    
+    match OpenOptions::new()
+      .create(true)
+      .append(true)
+      .open(log_file)
+    {
+      Ok(file) => {
+        builder.target(Target::Pipe(Box::new(file)));
+      }
+      Err(e) => {
+        // Initialize default logger first, then log the warning
+        builder.init();
+        warn!("Failed to open log file {:?}: {}", log_file, e);
+        return;
+      }
+    }
+  } else {
+    builder.target(Target::Stderr);
+  }
+  
+  builder.init();
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -25,6 +66,10 @@ async fn main() -> Result<()> {
   // Load configuration
   let config_dir = args.config_dir();
   let config = load_config_from_dir(&config_dir)?;
+
+  // Initialize logging based on configuration
+  init_logging(&config.logging);
+  info!("IronCode started successfully");
 
   // Initialize terminal
   init_terminal()?;
