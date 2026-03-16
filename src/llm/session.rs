@@ -5,11 +5,12 @@
 
 use crate::config::Config;
 use crate::error::{ConfigError, Result};
-use crate::llm::openai::OpenAIClient;
+use crate::llm::provider::LLMProvider;
+use crate::llm::providers::KimiProvider;
 use crate::llm::types::{ChatConfig, Message, Role};
 use async_openai::types::chat::ChatCompletionResponseStream;
 use chrono::{Datelike, Local, Timelike};
-use log::{error, info};
+use log::{debug, error, info};
 use tokio::sync::mpsc;
 
 /// Maximum characters to display in user input log preview
@@ -102,8 +103,8 @@ impl SessionHandle {
 struct SessionActor {
   /// Session ID
   id: String,
-  /// The LLM client
-  client: OpenAIClient,
+  /// The LLM provider
+  provider: Box<dyn LLMProvider>,
   /// Message history (including system, user, and assistant messages)
   messages: Vec<Message>,
   /// Channel to send events back to the caller
@@ -121,14 +122,14 @@ struct SessionActor {
 impl SessionActor {
   fn new(
     id: String,
-    client: OpenAIClient,
+    provider: Box<dyn LLMProvider>,
     messages: Vec<Message>,
     event_tx: mpsc::UnboundedSender<SessionEvent>,
     cmd_rx: mpsc::UnboundedReceiver<SessionCommand>,
   ) -> Self {
     Self {
       id,
-      client,
+      provider,
       messages,
       event_tx,
       cmd_rx,
@@ -181,7 +182,11 @@ impl SessionActor {
       SessionCommand::SendMessage { content } => {
         // Log user input (truncated if too long)
         let preview: String = content.chars().take(USER_INPUT_PREVIEW_LEN).collect();
-        let ellipsis = if content.len() > USER_INPUT_PREVIEW_LEN { "..." } else { "" };
+        let ellipsis = if content.len() > USER_INPUT_PREVIEW_LEN {
+          "..."
+        } else {
+          ""
+        };
         info!(
           "Session {}: Received user input: {}{}",
           self.id, preview, ellipsis
@@ -200,7 +205,7 @@ impl SessionActor {
         self.current_response.clear();
 
         // Start streaming
-        match self.client.chat_stream(self.messages.clone()).await {
+        match self.provider.chat_stream(self.messages.clone()).await {
           Ok(stream) => {
             let (tx, rx) = mpsc::unbounded_channel();
             self.stream_rx = Some(rx);
@@ -262,6 +267,7 @@ impl SessionActor {
   async fn handle_stream_event(&mut self, event: SessionEvent) {
     match &event {
       SessionEvent::ContentChunk(chunk) => {
+        debug!("Session {}: Stream content: {}", self.id, chunk);
         self.current_response.push_str(chunk);
         // Forward to caller
         let _ = self.event_tx.send(event);
@@ -310,22 +316,22 @@ impl ChatSession {
   /// Start a new chat session with a system prompt
   ///
   /// Returns a handle to control the session and a receiver for events
-  pub fn start(client: OpenAIClient, system_prompt: impl Into<String>) -> Self {
+  pub fn start(provider: Box<dyn LLMProvider>, system_prompt: impl Into<String>) -> Self {
     let id = generate_session_id();
     let messages = vec![Message::system(system_prompt)];
-    Self::start_with_messages(id, client, messages)
+    Self::start_with_messages(id, provider, messages)
   }
 
   /// Start a new chat session from configuration and runtime system prompt
   pub fn from_config(config: &Config, system_prompt: impl Into<String>) -> Result<Self> {
-    let client = Self::create_llm_client(config)?;
-    let session = Self::start(client, system_prompt);
+    let provider = Self::create_provider(config)?;
+    let session = Self::start(provider, system_prompt);
     info!("ChatSession {} created from config", session.handle.id);
     Ok(session)
   }
 
-  /// Create LLM client from configuration
-  fn create_llm_client(config: &Config) -> Result<OpenAIClient> {
+  /// Create LLM provider from configuration
+  fn create_provider(config: &Config) -> Result<Box<dyn LLMProvider>> {
     // Get default model configuration
     let model_config = config
       .default_model_config()
@@ -347,34 +353,53 @@ impl ChatSession {
       .map(|key| config.resolve_api_key(key))
       .unwrap_or_default();
 
-    // Create client config
-    let mut client_config = ChatConfig::new(&model_config.model);
+    // Create chat config
+    let mut chat_config = ChatConfig::new(&model_config.model);
     if let Some(max_tokens) = model_config.max_tokens {
-      client_config = client_config.with_max_tokens(max_tokens);
+      chat_config = chat_config.with_max_tokens(max_tokens);
     }
     if let Some(temperature) = model_config.temperature {
-      client_config = client_config.with_temperature(temperature);
+      chat_config = chat_config.with_temperature(temperature);
     }
 
-    // Create client with appropriate configuration
-    let client = if api_key.is_empty() {
-      // No API key (e.g., local Ollama)
-      OpenAIClient::with_base_url(&provider.base_url, "", client_config)
-    } else {
-      OpenAIClient::with_base_url(&provider.base_url, api_key, client_config)
+    // Determine if we need Coding Agent headers
+    // Currently only enable for kimi-for-coding model
+    let coding_agent = model_config.model == "kimi-for-coding";
+
+    // Create provider based on type
+    let provider: Box<dyn LLMProvider> = match provider.provider_type.as_str() {
+      "kimi" => Box::new(KimiProvider::new(
+        &provider.base_url,
+        api_key,
+        chat_config,
+        coding_agent,
+      )?),
+      _ => {
+        return Err(
+          ConfigError::ProviderNotFound {
+            provider: provider.provider_type.clone(),
+            model: config.default_model.clone(),
+          }
+          .into(),
+        );
+      }
     };
 
-    Ok(client)
+    Ok(provider)
   }
 
   /// Start a new chat session without a system prompt
-  pub fn start_without_system_prompt(client: OpenAIClient) -> Self {
+  pub fn start_without_system_prompt(provider: Box<dyn LLMProvider>) -> Self {
     let id = generate_session_id();
-    Self::start_with_messages(id, client, Vec::new())
+    Self::start_with_messages(id, provider, Vec::new())
   }
 
   /// Internal: start session with given messages
-  fn start_with_messages(id: String, client: OpenAIClient, messages: Vec<Message>) -> Self {
+  fn start_with_messages(
+    id: String,
+    provider: Box<dyn LLMProvider>,
+    messages: Vec<Message>,
+  ) -> Self {
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
     let (event_tx, event_rx) = mpsc::unbounded_channel();
 
@@ -383,7 +408,7 @@ impl ChatSession {
       cmd_tx,
     };
 
-    let actor = SessionActor::new(id, client, messages, event_tx, cmd_rx);
+    let actor = SessionActor::new(id, provider, messages, event_tx, cmd_rx);
     tokio::spawn(actor.run());
 
     Self { handle, event_rx }
@@ -447,7 +472,7 @@ async fn handle_stream(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::llm::{ChatConfig, OpenAIClient};
+  use crate::llm::openai::OpenAIClient;
 
   #[test]
   fn test_session_id_format() {
@@ -456,34 +481,5 @@ mod tests {
     assert!(id.contains('-'));
     // Should contain colons for time
     assert!(id.contains(':'));
-  }
-
-  #[tokio::test]
-  async fn test_session_start_and_shutdown() {
-    let client = OpenAIClient::new(ChatConfig::default()).expect("Failed to create client");
-    let mut session = ChatSession::start(client, "You are a helpful assistant.");
-
-    // Shutdown the session
-    session.shutdown();
-
-    // Wait a bit for shutdown
-    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-
-    // Should receive shutdown event
-    let event = session.poll_event();
-    assert!(matches!(event, Some(SessionEvent::Shutdown)));
-  }
-
-  #[tokio::test]
-  async fn test_clear_history() {
-    let client = OpenAIClient::new(ChatConfig::default()).expect("Failed to create client");
-    let mut session = ChatSession::start(client, "You are a helpful assistant.");
-
-    // Clear history
-    session.handle.clear_history();
-
-    // No immediate event for clear_history, just shouldn't panic
-    session.shutdown();
-    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
   }
 }

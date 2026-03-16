@@ -153,6 +153,28 @@ impl HomeView {
 
     f.render_widget(status_bar, area);
   }
+
+  /// Render error message
+  fn render_error(&self, f: &mut Frame, area: Rect, error: &str) {
+    // Truncate error if too long to fit in the box
+    let max_len = area.width as usize * area.height as usize;
+    let error_text = if error.len() > max_len.saturating_sub(10) {
+      format!("{}...", &error[..max_len.saturating_sub(13)])
+    } else {
+      error.to_string()
+    };
+
+    let error_widget = Paragraph::new(error_text)
+      .block(
+        Block::default()
+          .title(" Error ")
+          .borders(Borders::ALL)
+          .border_style(Style::default().fg(Color::Red)),
+      )
+      .style(Style::default().fg(Color::Red));
+
+    f.render_widget(error_widget, area);
+  }
 }
 
 impl View for HomeView {
@@ -169,10 +191,11 @@ impl View for HomeView {
           let input = self.take_input();
           // Store first message to be sent after session is initialized
           data.pending_first_message = Some(input);
-          // Request session initialization when switching to ChatView
+          // Request session initialization
           data.init_session_requested = true;
-          // Switch to ChatView
-          return Some(Box::new(ChatView::new()));
+          // Return self to trigger App's initialization logic
+          // App will handle view switching based on initialization result
+          return Some(Box::new(HomeView::new()));
         }
       }
       KeyCode::Backspace => {
@@ -201,20 +224,34 @@ impl View for HomeView {
     None
   }
 
-  fn draw(&self, f: &mut Frame, _data: &AppData) {
+  fn draw(&self, f: &mut Frame, data: &AppData) {
     let area = f.area();
 
     // Clear the background
     f.render_widget(Clear, area);
 
-    // Create main layout: title, input, status bar
-    let main_chunks = Layout::default()
-      .direction(Direction::Vertical)
-      .constraints([
+    // Check if there's an error message to display
+    let has_error = data.error_message.is_some();
+
+    // Create main layout: title, input, [error], status bar
+    let constraints = if has_error {
+      vec![
+        Constraint::Length(5), // Title area
+        Constraint::Length(3), // Chat input box
+        Constraint::Length(3), // Error message box
+        Constraint::Length(1), // Status bar
+      ]
+    } else {
+      vec![
         Constraint::Length(5), // Title area
         Constraint::Length(3), // Chat input box
         Constraint::Length(1), // Status bar
-      ])
+      ]
+    };
+
+    let main_chunks = Layout::default()
+      .direction(Direction::Vertical)
+      .constraints(constraints)
       .split(area);
 
     // Render title
@@ -223,8 +260,16 @@ impl View for HomeView {
     // Render chat input box
     self.render_input(f, main_chunks[1]);
 
+    // Render error message if present
+    let status_bar_idx = if has_error {
+      self.render_error(f, main_chunks[2], data.error_message.as_ref().unwrap());
+      3
+    } else {
+      2
+    };
+
     // Render status bar
-    self.render_status_bar(f, main_chunks[2]);
+    self.render_status_bar(f, main_chunks[status_bar_idx]);
 
     // Set cursor position in input box
     // Calculate display width (CJK characters are width 2, others are width 1)

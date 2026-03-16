@@ -315,13 +315,7 @@ supports_streaming = true
     assert_eq!(merged.logging.level, "warn");
   }
 
-  #[test]
-  fn test_provider_type_requires_api_key() {
-    use super::super::ProviderType;
 
-    // OpenAI-compatible providers typically require an API key
-    assert!(ProviderType::OpenaiCompatible.requires_api_key());
-  }
 
   #[test]
   fn test_default_config() {
@@ -384,22 +378,22 @@ model = "gpt-4o"
   fn test_valid_provider_type_accepted() {
     // Test that 'openai-compatible' provider type is accepted
     let toml = r#"
-default_model = "openai/gpt-4o"
+default_model = "kimi/kimi-for-coding"
 
-[providers.openai]
-type = "openai-compatible"
-base_url = "https://api.openai.com/v1"
-api_key = "${OPENAI_API_KEY}"
+[providers.kimi]
+type = "kimi"
+base_url = "https://api.moonshot.cn/v1"
+api_key = "${KIMI_API_KEY}"
 
-[models."openai/gpt-4o"]
-provider = "openai"
-model = "gpt-4o"
+[models."kimi/kimi-for-coding"]
+provider = "kimi"
+model = "kimi-for-coding"
 "#;
 
     let result: std::result::Result<Config, _> = toml::from_str(toml);
-    assert!(result.is_ok(), "Valid 'openai-compatible' provider type should be accepted");
+    assert!(result.is_ok(), "Valid provider type should be accepted");
     let config = result.unwrap();
-    let provider = config.providers.get("openai").unwrap();
-    assert!(matches!(provider.provider_type, crate::config::ProviderType::OpenaiCompatible));
+    let provider = config.providers.get("kimi").unwrap();
+    assert_eq!(provider.provider_type, "kimi");
   }
 }

@@ -3,7 +3,7 @@ use crate::config::Config;
 use crate::error::Result;
 use crate::llm::{ChatSession, SessionEvent, SessionHandle};
 use crate::tui::{FrameRequester, MessageBroker, UiMessage};
-use crate::view::{HomeView, View};
+use crate::view::{ChatView, HomeView, View};
 use crossterm::event::KeyEvent;
 use log::{error, info};
 use std::path::PathBuf;
@@ -19,6 +19,8 @@ pub struct AppData {
   pub(crate) init_session_requested: bool,
   /// First user message to send after session is initialized
   pub(crate) pending_first_message: Option<String>,
+  /// Error message to display in the UI (e.g., session initialization failed)
+  pub(crate) error_message: Option<String>,
 }
 
 impl AppData {
@@ -29,6 +31,7 @@ impl AppData {
       messages: Vec::new(),
       init_session_requested: false,
       pending_first_message: None,
+      error_message: None,
     }
   }
 }
@@ -84,17 +87,31 @@ impl App {
   /// Handle keyboard events
   pub fn handle_key(&mut self, key: KeyEvent) {
     if let Some(new_view) = self.view.handle_key(&mut self.data, key) {
-      self.view = new_view;
+      // Check if we need to initialize a chat session
+      if self.data.init_session_requested {
+        // Try to initialize session first before switching to chat view
+        if let Err(e) = self.init_chat_session_from_runtime() {
+          // Initialization failed - show error in UI and stay in current view
+          let err_msg = format!("Failed to initialize chat session: {}", e);
+          error!("{}", err_msg);
+          self.data.error_message = Some(err_msg);
+          self.data.init_session_requested = false;
+          // Don't switch view - stay in HomeView to show the error
+          return;
+        }
+        // Initialization succeeded - clear any previous error and switch to ChatView
+        self.data.error_message = None;
+        self.data.init_session_requested = false;
+        self.view = Box::new(ChatView::new());
+      } else {
+        // Normal view switch - clear error message
+        self.data.error_message = None;
+        self.view = new_view;
+      }
+
       // Re-set frame requester when view changes
       if let Some(ref frame_requester) = self.frame_requester {
         self.view.set_frame_requester(frame_requester.clone());
-      }
-      // Check if we need to initialize a chat session
-      if self.data.init_session_requested {
-        self.data.init_session_requested = false;
-        if let Err(e) = self.init_chat_session_from_runtime() {
-          error!("Failed to initialize chat session: {}", e);
-        }
       }
     }
   }
