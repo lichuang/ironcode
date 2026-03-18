@@ -207,10 +207,9 @@ impl App {
                 "LLM response completed, len={}",
                 self.current_response.len()
               );
-              log::debug!(
-                "AI response content (first 100 chars): {}",
-                &self.current_response[..self.current_response.len().min(100)]
-              );
+              // Safely get first 100 chars, handling multi-byte UTF-8 boundaries
+              let preview: String = self.current_response.chars().take(100).collect();
+              log::debug!("AI response content (first 100 chars): {}", preview);
               self.data.last_ai_response = Some(self.current_response.clone());
             }
             // Clear streaming state
