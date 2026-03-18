@@ -25,6 +25,7 @@ pub struct AppData {
   pub(crate) streaming_response: Option<String>,
   /// Last completed AI response (for display after streaming ends)
   pub(crate) last_ai_response: Option<String>,
+
 }
 
 impl AppData {
@@ -111,7 +112,15 @@ impl App {
         // Initialization succeeded - clear any previous error and switch to ChatView
         self.data.error_message = None;
         self.data.init_session_requested = false;
-        self.view = Box::new(ChatView::new(&self.data));
+        // Get session handle - chat_session must exist after successful initialization
+        let session_handle = self
+          .chat_session
+          .as_ref()
+          .expect("chat_session must exist after successful initialization")
+          .handle
+          .clone();
+        let chat_view = ChatView::new(&self.data, session_handle);
+        self.view = Box::new(chat_view);
       } else {
         // Normal view switch - clear error message
         self.data.error_message = None;
@@ -172,15 +181,16 @@ impl App {
 
   /// Update chat session state and process any pending events
   ///
-  /// This should be called regularly in the main event loop to
-  /// process streaming responses from the LLM.
+  /// This should be called regularly in the main event loop to:
+  /// 1. Send pending user messages to LLM
+  /// 2. Process streaming responses from the LLM
   ///
   /// Returns true if any updates were processed.
   pub fn update_chat_session(&mut self) -> bool {
     let mut updated = false;
 
     if let Some(ref mut session) = self.chat_session {
-      // Process all pending events
+      // Process all pending events from LLM
       while let Some(event) = session.poll_event() {
         updated = true;
         match event {

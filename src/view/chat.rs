@@ -11,9 +11,14 @@ use ratatui::{
 };
 
 use crate::cli::AppData;
+use crate::llm::SessionHandle;
 use crate::tui::{FrameRequester, TARGET_FRAME_INTERVAL};
 use crate::utils::{char_display_width, string_display_width};
 use crate::view::View;
+
+/// Error when creating ChatView without a valid session
+#[derive(Debug)]
+pub struct NoSessionError;
 
 /// Spinner animation frames (classic terminal loading)
 const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -59,6 +64,8 @@ pub struct ChatView {
   moon_frame: usize,
   /// Current display state (state machine driven)
   state: ChatDisplayState,
+  /// Session handle for sending messages directly to LLM
+  session_handle: SessionHandle,
 }
 
 impl ChatView {
@@ -68,7 +75,11 @@ impl ChatView {
   /// - Has streaming response → Streaming state
   /// - Has user messages but no AI response → Animating state
   /// - Otherwise → WaitingInput state
-  pub fn new(data: &AppData) -> Self {
+  /// 
+  /// # Arguments
+  /// * `data` - Application data for determining initial state
+  /// * `session_handle` - Handle to the chat session (must be valid)
+  pub fn new(data: &AppData, session_handle: SessionHandle) -> Self {
     let prompt = Self::build_prompt();
     
     // Determine initial state
@@ -79,6 +90,8 @@ impl ChatView {
     } else {
       ChatDisplayState::WaitingInput
     };
+    
+    log::debug!("ChatView created with initial state: {:?}", state);
     
     Self {
       input: String::new(),
@@ -91,6 +104,7 @@ impl ChatView {
       last_moon_update: Instant::now(),
       moon_frame: 0,
       state,
+      session_handle,
     }
   }
 
@@ -101,7 +115,9 @@ impl ChatView {
 
   /// State transition: enter Animating state
   fn enter_animating(&mut self) {
+    let old_state = self.state;
     self.state = ChatDisplayState::Animating;
+    log::debug!("State transition: {:?} → {:?}", old_state, self.state);
     // Reset moon animation frame
     self.moon_frame = 0;
     self.last_moon_update = Instant::now();
@@ -109,12 +125,16 @@ impl ChatView {
 
   /// State transition: enter Streaming state
   fn enter_streaming(&mut self) {
+    let old_state = self.state;
     self.state = ChatDisplayState::Streaming;
+    log::debug!("State transition: {:?} → {:?}", old_state, self.state);
   }
 
   /// State transition: enter WaitingInput state
   fn enter_waiting_input(&mut self) {
+    let old_state = self.state;
     self.state = ChatDisplayState::WaitingInput;
+    log::debug!("State transition: {:?} → {:?}", old_state, self.state);
   }
 
   /// Build the prompt string (username@current_dir)
@@ -206,14 +226,21 @@ impl ChatView {
   /// Submit the current input as a message
   /// 
   /// State transition: WaitingInput → Animating
+  /// Sends message directly to LLM via SessionHandle
   pub fn submit_message(&mut self, data: &mut AppData) {
     if !self.input.is_empty() {
       let message = std::mem::take(&mut self.input);
-      data.messages.push(message);
+      data.messages.push(message.clone());
       self.cursor_position = 0;
       // Clear previous AI response
       data.last_ai_response = None;
+      
+      // Send message directly to LLM via SessionHandle
+      log::debug!("Sending message to LLM: {}", &message[..message.len().min(50)]);
+      self.session_handle.send_message(message);
+      
       // Enter Animating state (show moon animation)
+      log::debug!("State will transition: WaitingInput → Animating");
       self.enter_animating();
     }
   }
@@ -692,20 +719,5 @@ impl View for ChatView {
   }
 }
 
-impl Default for ChatView {
-  fn default() -> Self {
-    // Create default instance with empty AppData (for testing etc.)
-    Self {
-      input: String::new(),
-      cursor_position: 0,
-      prompt: Self::build_prompt(),
-      frame_requester: None,
-      animation_enabled: true,
-      last_spinner_update: Instant::now(),
-      spinner_frame: 0,
-      last_moon_update: Instant::now(),
-      moon_frame: 0,
-      state: ChatDisplayState::WaitingInput,
-    }
-  }
-}
+// Note: ChatView cannot implement Default because it requires a SessionHandle.
+// Use ChatView::new(data, session_handle) to create an instance.
