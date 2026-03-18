@@ -3,6 +3,7 @@ use crate::config::Config;
 use crate::error::Result;
 use crate::llm::{ChatSession, SessionEvent, SessionHandle};
 use crate::tui::{FrameRequester, MessageBroker, UiMessage};
+use crate::view::chat::ChatMessage;
 use crate::view::{ChatView, HomeView, View};
 use crossterm::event::KeyEvent;
 use log::{error, info};
@@ -12,8 +13,8 @@ use std::path::PathBuf;
 pub struct AppData {
   /// Whether the app should exit
   pub(crate) should_exit: bool,
-  /// Message history (for chat)
-  pub(crate) messages: Vec<String>,
+  /// Complete chat history (user messages and AI responses)
+  pub(crate) chat_history: Vec<ChatMessage>,
   /// Flag indicating that a new chat session should be initialized
   /// (set by views when switching to chat, cleared by App after initialization)
   pub(crate) init_session_requested: bool,
@@ -23,9 +24,6 @@ pub struct AppData {
   pub(crate) error_message: Option<String>,
   /// Current streaming response from LLM (for real-time display)
   pub(crate) streaming_response: Option<String>,
-  /// Last completed AI response (for display after streaming ends)
-  pub(crate) last_ai_response: Option<String>,
-
 }
 
 impl AppData {
@@ -33,12 +31,11 @@ impl AppData {
   pub fn new() -> Self {
     Self {
       should_exit: false,
-      messages: Vec::new(),
+      chat_history: Vec::new(),
       init_session_requested: false,
       pending_first_message: None,
       error_message: None,
       streaming_response: None,
-      last_ai_response: None,
     }
   }
 }
@@ -157,7 +154,8 @@ impl App {
   pub fn handle_message(&mut self, msg: UiMessage) {
     match msg {
       UiMessage::AppendChat { content } => {
-        self.data.messages.push(content);
+        // Add as user message to chat history
+        self.data.chat_history.push(ChatMessage::User { content });
       }
     }
     // Trigger a redraw after handling the message
@@ -201,7 +199,7 @@ impl App {
             self.data.streaming_response = Some(self.current_response.clone());
           }
           SessionEvent::Completed => {
-            // Stream completed - save AI response separately from user messages
+            // Stream completed - save AI response to chat history
             if !self.current_response.is_empty() {
               info!(
                 "LLM response completed, len={}",
@@ -210,7 +208,10 @@ impl App {
               // Safely get first 100 chars, handling multi-byte UTF-8 boundaries
               let preview: String = self.current_response.chars().take(100).collect();
               log::debug!("AI response content (first 100 chars): {}", preview);
-              self.data.last_ai_response = Some(self.current_response.clone());
+              // Add AI response to chat history
+              self.data.chat_history.push(ChatMessage::Assistant { 
+                content: self.current_response.clone() 
+              });
             }
             // Clear streaming state
             self.data.streaming_response = None;
@@ -268,8 +269,8 @@ impl App {
 
     // Send pending first message if exists
     if let Some(first_message) = self.data.pending_first_message.take() {
-      // Add user message to history so it appears in ChatView
-      self.data.messages.push(first_message.clone());
+      // Add user message to chat history so it appears in ChatView
+      self.data.chat_history.push(ChatMessage::User { content: first_message.clone() });
       self.send_to_llm(first_message);
     }
 

@@ -20,6 +20,35 @@ use crate::view::View;
 #[derive(Debug)]
 pub struct NoSessionError;
 
+/// A message in the chat history
+#[derive(Debug, Clone)]
+pub enum ChatMessage {
+  /// User message
+  User { content: String },
+  /// AI assistant response
+  Assistant { content: String },
+}
+
+impl ChatMessage {
+  /// Get the content of the message
+  pub fn content(&self) -> &str {
+    match self {
+      ChatMessage::User { content } => content,
+      ChatMessage::Assistant { content } => content,
+    }
+  }
+
+  /// Check if this is a user message
+  pub fn is_user(&self) -> bool {
+    matches!(self, ChatMessage::User { .. })
+  }
+
+  /// Check if this is an assistant message
+  pub fn is_assistant(&self) -> bool {
+    matches!(self, ChatMessage::Assistant { .. })
+  }
+}
+
 /// Spinner animation frames (classic terminal loading)
 const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
@@ -73,7 +102,7 @@ impl ChatView {
   /// 
   /// Initialize state machine based on AppData state:
   /// - Has streaming response → Streaming state
-  /// - Has user messages but no AI response → Animating state
+  /// - Has user messages but waiting for AI response → Animating state
   /// - Otherwise → WaitingInput state
   /// 
   /// # Arguments
@@ -82,10 +111,17 @@ impl ChatView {
   pub fn new(data: &AppData, session_handle: SessionHandle) -> Self {
     let prompt = Self::build_prompt();
     
+    // Check if waiting for AI response (last message is from user)
+    let waiting_for_ai = data
+      .chat_history
+      .last()
+      .map(|msg| msg.is_user())
+      .unwrap_or(false);
+    
     // Determine initial state
     let state = if data.streaming_response.is_some() {
       ChatDisplayState::Streaming
-    } else if !data.messages.is_empty() && data.last_ai_response.is_none() {
+    } else if waiting_for_ai {
       ChatDisplayState::Animating
     } else {
       ChatDisplayState::WaitingInput
@@ -230,10 +266,9 @@ impl ChatView {
   pub fn submit_message(&mut self, data: &mut AppData) {
     if !self.input.is_empty() {
       let message = std::mem::take(&mut self.input);
-      data.messages.push(message.clone());
+      // Add user message to chat history
+      data.chat_history.push(ChatMessage::User { content: message.clone() });
       self.cursor_position = 0;
-      // Clear previous AI response
-      data.last_ai_response = None;
       
       // Send message directly to LLM via SessionHandle
       log::debug!("Sending message to LLM: {}", &message[..message.len().min(50)]);
@@ -489,6 +524,13 @@ impl View for ChatView {
       return;
     }
 
+    // Check if last message is from user (waiting for AI response)
+    let last_is_user = data
+      .chat_history
+      .last()
+      .map(|msg| msg.is_user())
+      .unwrap_or(false);
+
     // State machine transition logic
     match self.state {
       ChatDisplayState::Animating => {
@@ -496,8 +538,8 @@ impl View for ChatView {
         if data.streaming_response.is_some() {
           self.enter_streaming();
         }
-        // Animating → WaitingInput: response completed directly (edge case)
-        if data.streaming_response.is_none() && data.last_ai_response.is_some() {
+        // Animating → WaitingInput: AI response added to history
+        if data.streaming_response.is_none() && !last_is_user {
           self.enter_waiting_input();
         }
       }
@@ -509,13 +551,8 @@ impl View for ChatView {
       }
       ChatDisplayState::WaitingInput => {
         // WaitingInput → Animating: user submits message (handled in submit_message)
-        // Additional logic: check if need to enter Animating
-        if !data.messages.is_empty() 
-          && data.last_ai_response.is_none() 
-          && data.streaming_response.is_none()
-          && self.state != ChatDisplayState::Animating 
-        {
-          // This happens when switching from HomeView
+        // Additional logic: check if need to enter Animating (e.g., when switching from HomeView)
+        if last_is_user && data.streaming_response.is_none() {
           self.enter_animating();
         }
       }
@@ -562,17 +599,25 @@ impl View for ChatView {
     // For current input: dynamic lines (if not showing moon animation)
     let mut constraints: Vec<Constraint> = Vec::new();
 
-    // History messages: prompt line + box
+    // History messages: render based on message type
     // Box has borders on both sides, so inner width is available_width - 2
     let box_inner_width = available_width.saturating_sub(2);
-    for message in &data.messages {
-      // Prompt line height (prompt + message)
-      let prompt_lines = self.calculate_input_line_count(message, available_width);
-      constraints.push(Constraint::Length(prompt_lines as u16));
-      // Box height = border top (1) + content lines + border bottom (1)
-      let box_content_lines = Self::calculate_line_count(message, box_inner_width);
-      let box_height = box_content_lines + 2; // +2 for top and bottom borders
-      constraints.push(Constraint::Length(box_height as u16));
+    for message in &data.chat_history {
+      match message {
+        ChatMessage::User { content } => {
+          // User message: prompt line + box
+          let prompt_lines = self.calculate_input_line_count(content, available_width);
+          constraints.push(Constraint::Length(prompt_lines as u16));
+          let box_content_lines = Self::calculate_line_count(content, box_inner_width);
+          let box_height = box_content_lines + 2; // +2 for top and bottom borders
+          constraints.push(Constraint::Length(box_height as u16));
+        }
+        ChatMessage::Assistant { content } => {
+          // AI message: plain text only
+          let content_lines = Self::calculate_line_count(content, available_width);
+          constraints.push(Constraint::Length(content_lines as u16));
+        }
+      }
     }
     // Moon animation row (only shown in Animating state)
     if self.state == ChatDisplayState::Animating {
@@ -582,12 +627,6 @@ impl View for ChatView {
     // Streaming response (if any) - plain text, no box
     if let Some(ref streaming) = data.streaming_response {
       let content_lines = Self::calculate_line_count(streaming, available_width);
-      constraints.push(Constraint::Length(content_lines as u16));
-    }
-    // Last completed AI response (if any and not currently streaming) - plain text, no box
-    if data.streaming_response.is_none() && data.last_ai_response.is_some() {
-      let ai_response = data.last_ai_response.as_ref().unwrap();
-      let content_lines = Self::calculate_line_count(ai_response, available_width);
       constraints.push(Constraint::Length(content_lines as u16));
     }
     
@@ -605,12 +644,17 @@ impl View for ChatView {
     // Add remaining space
     let prompt_width = Self::display_width(&self.full_prompt());
     let mut total_fixed_height: usize = data
-      .messages
+      .chat_history
       .iter()
-      .map(|m| {
-        Self::calculate_line_count_with_prefix(m, prompt_width, available_width)
-          + Self::calculate_line_count(m, box_inner_width)
-          + 2
+      .map(|msg| match msg {
+        ChatMessage::User { content } => {
+          Self::calculate_line_count_with_prefix(content, prompt_width, available_width)
+            + Self::calculate_line_count(content, box_inner_width)
+            + 2
+        }
+        ChatMessage::Assistant { content } => {
+          Self::calculate_line_count(content, available_width)
+        }
       })
       .sum::<usize>();
     // Add moon animation height if in Animating state
@@ -620,11 +664,6 @@ impl View for ChatView {
     // Add streaming response height if present (plain text, no box)
     if let Some(ref streaming) = data.streaming_response {
       total_fixed_height += Self::calculate_line_count(streaming, available_width);
-    }
-    // Add last AI response height if present and not streaming (plain text, no box)
-    if data.streaming_response.is_none() && data.last_ai_response.is_some() {
-      let ai_response = data.last_ai_response.as_ref().unwrap();
-      total_fixed_height += Self::calculate_line_count(ai_response, available_width);
     }
     // Add spinner line height if in WaitingInput state
     if self.state == ChatDisplayState::WaitingInput {
@@ -645,19 +684,28 @@ impl View for ChatView {
       .constraints(constraints)
       .split(area);
 
-    // Render history: for each message, show input line then box
-    // Odd indices (0, 2, 4...) are user messages with ">"
-    // Even indices (1, 3, 5...) are AI responses without ">"
+    // Render history: user messages and AI responses
     let mut chunk_idx = 0;
-    for message in &data.messages {
-      // User message: input line with ">" then box
-      if chunk_idx < chunks.len() {
-        self.render_input_line(f, chunks[chunk_idx], message, true);
-        chunk_idx += 1;
-      }
-      if chunk_idx < chunks.len() {
-        self.render_message_box(f, chunks[chunk_idx], message);
-        chunk_idx += 1;
+    for message in &data.chat_history {
+      match message {
+        ChatMessage::User { content } => {
+          // User message: input line with ">" then box
+          if chunk_idx < chunks.len() {
+            self.render_input_line(f, chunks[chunk_idx], content, true);
+            chunk_idx += 1;
+          }
+          if chunk_idx < chunks.len() {
+            self.render_message_box(f, chunks[chunk_idx], content);
+            chunk_idx += 1;
+          }
+        }
+        ChatMessage::Assistant { content } => {
+          // AI message: plain text only
+          if chunk_idx < chunks.len() {
+            self.render_ai_response(f, chunks[chunk_idx], content);
+            chunk_idx += 1;
+          }
+        }
       }
     }
     
@@ -671,14 +719,6 @@ impl View for ChatView {
     if let Some(ref streaming) = data.streaming_response {
       if chunk_idx < chunks.len() {
         self.render_ai_response(f, chunks[chunk_idx], streaming);
-        chunk_idx += 1;
-      }
-    }
-    // Render last completed AI response (if not currently streaming) - plain text, no box
-    if data.streaming_response.is_none() && data.last_ai_response.is_some() {
-      if chunk_idx < chunks.len() {
-        let ai_response = data.last_ai_response.as_ref().unwrap();
-        self.render_ai_response(f, chunks[chunk_idx], ai_response);
         chunk_idx += 1;
       }
     }
