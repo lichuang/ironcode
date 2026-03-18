@@ -71,9 +71,9 @@ impl App {
   ///
   /// # Arguments
   /// * `config` - The loaded configuration
-  /// * `config_dir` - The directory where config was loaded from (for loading system prompt)
-  pub fn new(config: Config, config_dir: &PathBuf) -> Result<Self> {
-    let runtime = Runtime::new(config_dir)?;
+  /// * `data_dir` - The data directory for loading system prompt (data_dir/prompts/system.md)
+  pub fn new(config: Config, data_dir: &PathBuf) -> Result<Self> {
+    let runtime = Runtime::new(data_dir)?;
 
     Ok(Self {
       data: AppData::new(),

@@ -1,11 +1,11 @@
 //! Configuration file loader
 
-use super::Config;
+use super::{Config, LoggingConfig};
 use crate::error::{ConfigError, Result};
 use std::path::PathBuf;
 
 /// Default configuration directory name (in home directory)
-const CONFIG_DIR: &str = ".ironcode";
+const DEFAULT_DIR: &str = ".ironcode";
 
 /// Default configuration file name
 const CONFIG_FILE: &str = "config.toml";
@@ -15,11 +15,47 @@ const PROMPTS_DIR: &str = "prompts";
 /// Default system prompt file name
 const SYSTEM_PROMPT_FILE: &str = "system.md";
 
+/// Get the default data directory (~/.ironcode)
+pub fn default_data_dir() -> Option<PathBuf> {
+  dirs::home_dir().map(|dir| dir.join(DEFAULT_DIR))
+}
+
+/// Get the data directory from config or default
+/// 
+/// If config.dir is set, use that (with ~ expanded to home directory);
+/// otherwise use ~/.ironcode
+pub fn data_dir(config: &Config) -> PathBuf {
+  config
+    .dir
+    .as_ref()
+    .map(|dir| {
+      // Expand ~ to home directory if present
+      let dir_str = dir.to_string_lossy();
+      let expanded = shellexpand::tilde(&dir_str);
+      PathBuf::from(expanded.as_ref())
+    })
+    .or_else(default_data_dir)
+    .unwrap_or_else(|| {
+      // Fallback to current directory if home dir is not available
+      PathBuf::from(DEFAULT_DIR)
+    })
+}
+
+/// Get the prompts directory path
+pub fn prompts_dir(config: &Config) -> PathBuf {
+  data_dir(config).join(PROMPTS_DIR)
+}
+
+/// Get the logs directory path
+pub fn logs_dir(config: &Config) -> PathBuf {
+  data_dir(config).join("logs")
+}
+
 /// Load configuration from standard location
 ///
 /// Configuration is loaded from `~/.ironcode/config.toml`.
 pub fn load_config() -> Result<Config> {
-  let config_dir = user_config_dir().ok_or(ConfigError::HomeDirNotFound)?;
+  let config_dir = default_data_dir().ok_or(ConfigError::HomeDirNotFound)?;
   load_config_from_dir(&config_dir)
 }
 
@@ -56,14 +92,9 @@ pub fn load_from_file(path: &PathBuf) -> Result<Config> {
   Ok(config)
 }
 
-/// Get the user configuration directory path (~/.ironcode)
-fn user_config_dir() -> Option<PathBuf> {
-  dirs::home_dir().map(|dir| dir.join(CONFIG_DIR))
-}
-
 /// Get the user configuration file path (~/.ironcode/config.toml)
 fn user_config_path() -> Option<PathBuf> {
-  user_config_dir().map(|dir| dir.join(CONFIG_FILE))
+  default_data_dir().map(|dir| dir.join(CONFIG_FILE))
 }
 
 /// Get the system prompt file path in the config directory
@@ -76,6 +107,7 @@ pub fn system_prompt_path(config_dir: &PathBuf) -> PathBuf {
 /// Merge two configurations (second overrides first)
 fn merge_configs(base: Config, override_: Config) -> Config {
   Config {
+    dir: override_.dir.or(base.dir),
     default_model: if !override_.default_model.is_empty() {
       override_.default_model
     } else {
@@ -91,7 +123,13 @@ fn merge_configs(base: Config, override_: Config) -> Config {
       merged.extend(override_.models);
       merged
     },
-    logging: override_.logging,
+    logging: LoggingConfig {
+      level: if !override_.logging.level.is_empty() {
+        override_.logging.level
+      } else {
+        base.logging.level
+      },
+    },
   }
 }
 
@@ -112,28 +150,39 @@ fn validate_config(config: &Config) -> Result<()> {
   Ok(())
 }
 
-/// Ensure configuration directory exists
-pub fn ensure_config_dir() -> Result<PathBuf> {
-  let config_dir = dirs::config_dir()
-    .ok_or(ConfigError::ConfigDirNotFound)?
-    .join(CONFIG_DIR);
+/// Ensure data directory exists
+pub fn ensure_data_dir(config: &Config) -> Result<PathBuf> {
+  let data_dir_path = data_dir(config);
 
+  if !data_dir_path.exists() {
+    std::fs::create_dir_all(&data_dir_path)
+      .map_err(|e| ConfigError::create_dir(&data_dir_path, e))?;
+  }
+
+  Ok(data_dir_path)
+}
+
+/// Create a default configuration file if it doesn't exist
+/// 
+/// Creates the config file in the default location (~/.ironcode/)
+pub fn create_default_config() -> Result<PathBuf> {
+  let config_dir = default_data_dir().ok_or(ConfigError::HomeDirNotFound)?;
+  
+  // Ensure the config directory exists
   if !config_dir.exists() {
     std::fs::create_dir_all(&config_dir)
       .map_err(|e| ConfigError::create_dir(&config_dir, e))?;
   }
-
-  Ok(config_dir)
-}
-
-/// Create a default configuration file if it doesn't exist
-pub fn create_default_config() -> Result<PathBuf> {
-  let config_dir = ensure_config_dir()?;
+  
   let config_path = config_dir.join(CONFIG_FILE);
 
   if !config_path.exists() {
     let default_config = r#"# IronCode Configuration File
-# Location: ~/.config/ironcode/config.toml
+# Location: ~/.ironcode/config.toml
+
+# Data directory for ironcode files (logs, prompts, etc.)
+# Defaults to ~/.ironcode/ if not specified
+# dir = "~/.ironcode"
 
 # Default model to use (required)
 default_model = "openai/gpt-4o"
@@ -340,6 +389,7 @@ supports_streaming = true
   #[test]
   fn test_validate_config_missing_model() {
     let config = Config {
+      dir: None,
       default_model: "nonexistent/model".to_string(),
       providers: HashMap::new(),
       models: HashMap::new(),

@@ -9,11 +9,16 @@ use std::path::PathBuf;
 
 pub mod loader;
 
-pub use loader::{load_config, load_config_from_dir, system_prompt_path};
+pub use loader::{data_dir, load_config_from_dir, system_prompt_path};
 
 /// Root configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
+  /// Data directory path for ironcode files (logs, prompts, etc.)
+  /// Defaults to ~/.ironcode/ if not specified
+  #[serde(default)]
+  pub dir: Option<PathBuf>,
+
   /// Default model to use (format: "provider/model-name")
   /// Required field, cannot be empty
   pub default_model: String,
@@ -34,6 +39,7 @@ pub struct Config {
 impl Default for Config {
   fn default() -> Self {
     Self {
+      dir: None,
       default_model: String::new(),
       providers: HashMap::new(),
       models: HashMap::new(),
@@ -128,10 +134,6 @@ pub struct LoggingConfig {
   /// Log level: "trace", "debug", "info", "warn", "error"
   #[serde(default = "default_log_level")]
   pub level: String,
-
-  /// Optional log file path
-  #[serde(skip_serializing_if = "Option::is_none")]
-  pub log_file: Option<PathBuf>,
 }
 
 fn default_log_level() -> String {
@@ -142,7 +144,6 @@ impl Default for LoggingConfig {
   fn default() -> Self {
     Self {
       level: default_log_level(),
-      log_file: None,
     }
   }
 }

@@ -9,8 +9,8 @@ mod view;
 use anyhow::Result;
 use clap::Parser;
 use cli::{App, Args};
-use config::LoggingConfig;
-use config::loader::load_config_from_dir;
+use config::Config;
+use config::loader::{data_dir, load_config_from_dir};
 use crossterm::event::KeyEventKind;
 use futures::StreamExt;
 use log::{info, warn};
@@ -20,8 +20,12 @@ use tui::{Tui, TuiEvent, TuiEventStream, init_terminal, restore_terminal};
 pub use error::{Error, Result as IronResult};
 
 /// Initialize logging based on configuration
-fn init_logging(config: &LoggingConfig) {
+/// 
+/// Logs are always written to ${data_dir}/logs/ironcode.log
+/// where data_dir is determined by the config.dir setting (defaults to ~/.ironcode/)
+fn init_logging(config: &Config) {
   use env_logger::Target;
+  use std::fs::OpenOptions;
 
   let mut builder = env_logger::Builder::new();
 
@@ -29,26 +33,34 @@ fn init_logging(config: &LoggingConfig) {
   if let Ok(rust_log) = std::env::var("RUST_LOG") {
     builder.parse_filters(&rust_log);
   } else {
-    builder.parse_filters(&config.level);
+    builder.parse_filters(&config.logging.level);
   }
 
-  // If a log file is specified, write to file instead of stderr
-  if let Some(log_file) = &config.log_file {
-    use std::fs::OpenOptions;
+  // Determine log file path: ${data_dir}/logs/ironcode.log
+  let data_dir = data_dir(config);
+  let logs_dir = data_dir.join("logs");
+  let log_file = logs_dir.join("ironcode.log");
 
-    match OpenOptions::new().create(true).append(true).open(log_file) {
-      Ok(file) => {
-        builder.target(Target::Pipe(Box::new(file)));
-      }
-      Err(e) => {
-        // Initialize default logger first, then log the warning
-        builder.init();
-        warn!("Failed to open log file {:?}: {}", log_file, e);
-        return;
-      }
+  // Create logs directory if it doesn't exist
+  if !logs_dir.exists() {
+    if let Err(e) = std::fs::create_dir_all(&logs_dir) {
+      builder.init();
+      warn!("Failed to create logs directory {:?}: {}", logs_dir, e);
+      return;
     }
-  } else {
-    builder.target(Target::Stderr);
+  }
+
+  // Open log file and write to it
+  match OpenOptions::new().create(true).append(true).open(&log_file) {
+    Ok(file) => {
+      builder.target(Target::Pipe(Box::new(file)));
+    }
+    Err(e) => {
+      // Initialize default logger first, then log the warning
+      builder.init();
+      warn!("Failed to open log file {:?}: {}", log_file, e);
+      return;
+    }
   }
 
   builder.init();
@@ -60,12 +72,17 @@ async fn main() -> Result<()> {
   let args = Args::parse();
 
   // Load configuration
-  let config_dir = args.config_dir();
-  let config = load_config_from_dir(&config_dir)?;
+  // First, get the config file directory (either from -c arg or default ~/.ironcode/)
+  let config_file_dir = args.config_dir();
+  let config = load_config_from_dir(&config_file_dir)?;
+  
+  // Get the data directory from config (defaults to ~/.ironcode/ if not specified)
+  let data_dir = data_dir(&config);
 
   // Initialize logging based on configuration
-  init_logging(&config.logging);
+  init_logging(&config);
   info!("IronCode started successfully");
+  info!("Config file dir: {:?}, Data dir: {:?}", config_file_dir, data_dir);
 
   // Initialize terminal
   init_terminal()?;
@@ -74,7 +91,8 @@ async fn main() -> Result<()> {
   let mut tui = Tui::new()?;
 
   // Create app state with configuration
-  let mut app = App::new(config, &config_dir)?;
+  // Pass data_dir for loading system prompt from data_dir/prompts/system.md
+  let mut app = App::new(config, &data_dir)?;
 
   // Give the view a frame requester for animations
   app.set_frame_requester(tui.frame_requester());

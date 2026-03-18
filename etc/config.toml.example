@@ -1,6 +1,27 @@
 # IronCode Configuration Example
 # Copy this file to ~/.ironcode/config.toml or ./ironcode.toml
 
+# =============================================================================
+# Data Directory - Root directory for ironcode data files
+# =============================================================================
+
+# Data directory for ironcode files (logs, prompts, etc.)
+# If not specified, defaults to ~/.ironcode/
+# 
+# When specified, the following paths will be resolved relative to this directory:
+# - prompts/         : Directory containing system prompt templates
+# - logs/            : Directory containing log files
+#
+# Note: This config file itself should be located at either:
+# - ~/.ironcode/config.toml (default), or
+# - A location specified via -c/--config command line option
+#
+# dir = "~/.ironcode"
+
+# =============================================================================
+# Default Model - Which model to use by default
+# =============================================================================
+
 # Default model to use (must match a key in [models] section)
 # Format: "provider-name/model-name" or just "model-name"
 default_model = "openai/gpt-4o"
@@ -100,4 +121,9 @@ supports_streaming = true
 
 [logging]
 level = "info"        # Options: "trace", "debug", "info", "warn", "error"
-# log_file = "~/.config/ironcode/ironcode.log"
+
+# Logs are always written to ${dir}/logs/ironcode.log
+# where ${dir} is the data directory specified above (defaults to ~/.ironcode/)
+# 
+# To output logs to stderr instead of file, set the RUST_LOG environment variable:
+#   RUST_LOG=debug ironcode

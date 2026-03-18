@@ -1,5 +1,6 @@
 use crate::config::loader::system_prompt_path;
 use crate::error::{Result, RuntimeError};
+use log::{debug, warn};
 use std::fs;
 use std::path::PathBuf;
 
@@ -129,7 +130,22 @@ impl Runtime {
   /// Returns empty string if file doesn't exist
   fn load_system_prompt_template(config_dir: &PathBuf) -> String {
     let prompt_path = system_prompt_path(config_dir);
-    fs::read_to_string(&prompt_path).unwrap_or_default()
+    debug!("Loading system prompt from: {:?}", prompt_path);
+    
+    match fs::read_to_string(&prompt_path) {
+      Ok(content) => {
+        if content.trim().is_empty() {
+          warn!("System prompt file exists but is empty: {:?}", prompt_path);
+        } else {
+          debug!("Loaded system prompt, length: {} chars", content.len());
+        }
+        content
+      }
+      Err(e) => {
+        warn!("Failed to load system prompt from {:?}: {}", prompt_path, e);
+        String::new()
+      }
+    }
   }
 
   /// Render the system prompt with all template variables substituted
