@@ -21,6 +21,10 @@ pub struct AppData {
   pub(crate) pending_first_message: Option<String>,
   /// Error message to display in the UI (e.g., session initialization failed)
   pub(crate) error_message: Option<String>,
+  /// Current streaming response from LLM (for real-time display)
+  pub(crate) streaming_response: Option<String>,
+  /// Last completed AI response (for display after streaming ends)
+  pub(crate) last_ai_response: Option<String>,
 }
 
 impl AppData {
@@ -32,6 +36,8 @@ impl AppData {
       init_session_requested: false,
       pending_first_message: None,
       error_message: None,
+      streaming_response: None,
+      last_ai_response: None,
     }
   }
 }
@@ -58,6 +64,8 @@ pub struct App {
   pub(crate) config: Config,
   /// Chat session for LLM communication (initialized when first chat starts)
   chat_session: Option<ChatSession>,
+  /// Current LLM response being accumulated (for streaming display)
+  current_response: String,
 }
 
 impl App {
@@ -77,6 +85,7 @@ impl App {
       runtime,
       config,
       chat_session: None,
+      current_response: String::new(),
     })
   }
 
@@ -102,7 +111,7 @@ impl App {
         // Initialization succeeded - clear any previous error and switch to ChatView
         self.data.error_message = None;
         self.data.init_session_requested = false;
-        self.view = Box::new(ChatView::new());
+        self.view = Box::new(ChatView::new(&self.data));
       } else {
         // Normal view switch - clear error message
         self.data.error_message = None;
@@ -117,13 +126,13 @@ impl App {
   }
 
   /// Draw the current view
-  pub fn draw(&self, f: &mut ratatui::Frame) {
+  pub fn draw(&mut self, f: &mut ratatui::Frame) {
     self.view.draw(f, &self.data);
   }
 
   /// Called when a new frame is about to be rendered
   pub fn on_frame(&mut self, frame_requester: &FrameRequester) {
-    self.view.on_frame(frame_requester);
+    self.view.on_frame(frame_requester, &self.data);
   }
 
   /// Set the frame requester for the current view
@@ -175,18 +184,34 @@ impl App {
       while let Some(event) = session.poll_event() {
         updated = true;
         match event {
-          SessionEvent::ContentChunk(_chunk) => {
-            // Content is accumulated in session, we can use it to update UI
-            // For now, we don't modify AppData.messages to keep UI unchanged
-            // In the future, this could update the last message incrementally
+          SessionEvent::ContentChunk(chunk) => {
+            // Accumulate content for streaming display
+            self.current_response.push_str(&chunk);
+            // Update streaming response for UI display
+            self.data.streaming_response = Some(self.current_response.clone());
           }
           SessionEvent::Completed => {
-            // Stream completed, the complete response is now in session history
-            // We could add it to AppData.messages here if needed
+            // Stream completed - save AI response separately from user messages
+            if !self.current_response.is_empty() {
+              info!(
+                "LLM response completed, len={}",
+                self.current_response.len()
+              );
+              log::debug!(
+                "AI response content (first 100 chars): {}",
+                &self.current_response[..self.current_response.len().min(100)]
+              );
+              self.data.last_ai_response = Some(self.current_response.clone());
+            }
+            // Clear streaming state
+            self.data.streaming_response = None;
+            self.current_response.clear();
           }
           SessionEvent::Error(err) => {
-            // Log error or handle it appropriately
+            // Log error and clear any partial response
             error!("LLM stream error: {}", err);
+            self.current_response.clear();
+            self.data.streaming_response = None;
           }
           SessionEvent::Shutdown => {
             // Session has been shutdown
@@ -234,6 +259,8 @@ impl App {
 
     // Send pending first message if exists
     if let Some(first_message) = self.data.pending_first_message.take() {
+      // Add user message to history so it appears in ChatView
+      self.data.messages.push(first_message.clone());
       self.send_to_llm(first_message);
     }
 
@@ -248,7 +275,7 @@ impl App {
       session.handle.send_message(content);
       true
     } else {
-      error!("receive content but no session running");
+      error!("receive input but no active session");
       false
     }
   }

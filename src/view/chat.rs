@@ -21,6 +21,22 @@ const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦
 /// Moon phase animation frames (🌑 → 🌕 → 🌑)
 const MOON_FRAMES: &[char] = &['🌑', '🌒', '🌓', '🌔', '🌕', '🌖', '🌗', '🌘'];
 
+/// Chat display state machine
+/// 
+/// State transitions:
+/// - User submits message → Animating (show moon animation)
+/// - LLM starts responding → Streaming (show streaming content)
+/// - Response completed → WaitingInput (show spinner waiting for input)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatDisplayState {
+  /// Waiting for LLM to start responding: show moon animation
+  Animating,
+  /// LLM is streaming response: show streaming content
+  Streaming,
+  /// Waiting for user input: show bottom spinner
+  WaitingInput,
+}
+
 /// Chat view state
 pub struct ChatView {
   /// Current input text
@@ -37,16 +53,33 @@ pub struct ChatView {
   last_spinner_update: Instant,
   /// Current spinner frame index
   spinner_frame: usize,
-  /// Last time the moon was updated (None means animation is disabled)
-  last_moon_update: Option<Instant>,
+  /// Last time the moon was updated
+  last_moon_update: Instant,
   /// Current moon frame index
   moon_frame: usize,
+  /// Current display state (state machine driven)
+  state: ChatDisplayState,
 }
 
 impl ChatView {
   /// Create a new chat view
-  pub fn new() -> Self {
+  /// 
+  /// Initialize state machine based on AppData state:
+  /// - Has streaming response → Streaming state
+  /// - Has user messages but no AI response → Animating state
+  /// - Otherwise → WaitingInput state
+  pub fn new(data: &AppData) -> Self {
     let prompt = Self::build_prompt();
+    
+    // Determine initial state
+    let state = if data.streaming_response.is_some() {
+      ChatDisplayState::Streaming
+    } else if !data.messages.is_empty() && data.last_ai_response.is_none() {
+      ChatDisplayState::Animating
+    } else {
+      ChatDisplayState::WaitingInput
+    };
+    
     Self {
       input: String::new(),
       cursor_position: 0,
@@ -55,14 +88,33 @@ impl ChatView {
       animation_enabled: true,
       last_spinner_update: Instant::now(),
       spinner_frame: 0,
-      last_moon_update: None,
+      last_moon_update: Instant::now(),
       moon_frame: 0,
+      state,
     }
   }
 
-  /// Check if moon animation is currently enabled
-  fn is_moon_animation_enabled(&self) -> bool {
-    self.last_moon_update.is_some()
+  /// Get current state
+  pub fn state(&self) -> ChatDisplayState {
+    self.state
+  }
+
+  /// State transition: enter Animating state
+  fn enter_animating(&mut self) {
+    self.state = ChatDisplayState::Animating;
+    // Reset moon animation frame
+    self.moon_frame = 0;
+    self.last_moon_update = Instant::now();
+  }
+
+  /// State transition: enter Streaming state
+  fn enter_streaming(&mut self) {
+    self.state = ChatDisplayState::Streaming;
+  }
+
+  /// State transition: enter WaitingInput state
+  fn enter_waiting_input(&mut self) {
+    self.state = ChatDisplayState::WaitingInput;
   }
 
   /// Build the prompt string (username@current_dir)
@@ -152,34 +204,23 @@ impl ChatView {
   }
 
   /// Submit the current input as a message
+  /// 
+  /// State transition: WaitingInput → Animating
   pub fn submit_message(&mut self, data: &mut AppData) {
     if !self.input.is_empty() {
       let message = std::mem::take(&mut self.input);
       data.messages.push(message);
       self.cursor_position = 0;
-      // Start moon animation after submitting
-      self.start_moon_animation();
+      // Clear previous AI response
+      data.last_ai_response = None;
+      // Enter Animating state (show moon animation)
+      self.enter_animating();
     }
-  }
-
-  /// Start the moon phase animation
-  pub fn start_moon_animation(&mut self) {
-    self.moon_frame = 0;
-    self.last_moon_update = Some(Instant::now());
-  }
-
-  /// Stop the moon phase animation
-  pub fn stop_moon_animation(&mut self) {
-    self.last_moon_update = None;
   }
 
   /// Get the current moon character
   fn current_moon(&self) -> char {
-    if self.is_moon_animation_enabled() {
-      MOON_FRAMES[self.moon_frame % MOON_FRAMES.len()]
-    } else {
-      ' '
-    }
+    MOON_FRAMES[self.moon_frame % MOON_FRAMES.len()]
   }
 
   /// Calculate display width of a string (CJK characters are width 2)
@@ -298,18 +339,30 @@ impl ChatView {
     (line, col)
   }
 
-  /// Render an input line (prompt + spinner + input) with wrapping
-  fn render_input_line(&self, f: &mut Frame, area: Rect, input: &str) {
-    // Build prompt with styled spinner
-    // Prompt: green, Spinner: cyan (to make it stand out)
-    let spinner = self.current_spinner();
-    let text = Text::from(vec![Line::from(vec![
-      Span::styled(&self.prompt, Style::default().fg(Color::Green)),
-      Span::raw(" "),
-      Span::styled(spinner.to_string(), Style::default().fg(Color::Cyan)),
-      Span::raw(" "),
-      Span::raw(input),
-    ])]);
+  /// Render an input line (prompt + arrow/indicator + input) with wrapping
+  /// 
+  /// # Arguments
+  /// * `with_arrow` - If true, show ">" before input (user message style)
+  ///                  If false, show spinner (waiting for input style)
+  fn render_input_line(&self, f: &mut Frame, area: Rect, input: &str, with_arrow: bool) {
+    let text = if with_arrow {
+      // User message style: prompt > input
+      Text::from(vec![Line::from(vec![
+        Span::styled(&self.prompt, Style::default().fg(Color::Green)),
+        Span::raw(" "),
+        Span::styled(">", Style::default().fg(Color::Yellow)),
+        Span::raw(" "),
+        Span::raw(input),
+      ])])
+    } else {
+      // Waiting for input style: prompt spinner
+      let spinner = self.current_spinner();
+      Text::from(vec![Line::from(vec![
+        Span::styled(&self.prompt, Style::default().fg(Color::Green)),
+        Span::raw(" "),
+        Span::styled(spinner.to_string(), Style::default().fg(Color::Cyan)),
+      ])])
+    };
 
     let widget = Paragraph::new(text).wrap(Wrap { trim: false });
     f.render_widget(widget, area);
@@ -340,10 +393,6 @@ impl ChatView {
 
   /// Render the moon animation
   fn render_moon_animation(&self, f: &mut Frame, area: Rect) {
-    if !self.is_moon_animation_enabled() {
-      return;
-    }
-
     let moon = self.current_moon();
     let text = Text::from(vec![Line::from(vec![
       Span::raw("  "),
@@ -352,6 +401,14 @@ impl ChatView {
 
     let widget = Paragraph::new(text);
     f.render_widget(widget, area);
+  }
+
+  /// Render AI response as plain text (without box)
+  fn render_ai_response(&self, f: &mut Frame, area: Rect, response: &str) {
+    let wrapped_lines = Self::wrap_text(response, area.width);
+    let lines: Vec<Line> = wrapped_lines.into_iter().map(Line::from).collect();
+    let text = Paragraph::new(Text::from(lines));
+    f.render_widget(text, area);
   }
 }
 
@@ -400,7 +457,71 @@ impl View for ChatView {
     None
   }
 
-  fn draw(&self, f: &mut Frame, data: &AppData) {
+  fn on_frame(&mut self, frame_requester: &FrameRequester, data: &AppData) {
+    if !self.animation_enabled {
+      return;
+    }
+
+    // State machine transition logic
+    match self.state {
+      ChatDisplayState::Animating => {
+        // Animating → Streaming: LLM starts responding
+        if data.streaming_response.is_some() {
+          self.enter_streaming();
+        }
+        // Animating → WaitingInput: response completed directly (edge case)
+        if data.streaming_response.is_none() && data.last_ai_response.is_some() {
+          self.enter_waiting_input();
+        }
+      }
+      ChatDisplayState::Streaming => {
+        // Streaming → WaitingInput: streaming response completed
+        if data.streaming_response.is_none() {
+          self.enter_waiting_input();
+        }
+      }
+      ChatDisplayState::WaitingInput => {
+        // WaitingInput → Animating: user submits message (handled in submit_message)
+        // Additional logic: check if need to enter Animating
+        if !data.messages.is_empty() 
+          && data.last_ai_response.is_none() 
+          && data.streaming_response.is_none()
+          && self.state != ChatDisplayState::Animating 
+        {
+          // This happens when switching from HomeView
+          self.enter_animating();
+        }
+      }
+    }
+
+    let now = Instant::now();
+
+    // Update spinner animation (for waiting user input prompt)
+    let elapsed = now.duration_since(self.last_spinner_update);
+    // Update spinner frame every 200ms (relaxed rotation)
+    const SPINNER_INTERVAL: Duration = Duration::from_millis(200);
+    if elapsed >= SPINNER_INTERVAL {
+      self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
+      self.last_spinner_update = now;
+    }
+
+    // Update moon animation (only in Animating state)
+    if self.state == ChatDisplayState::Animating {
+      let moon_elapsed = now.duration_since(self.last_moon_update);
+      // Moon cycles slower than spinner - one phase every 300ms
+      const MOON_INTERVAL: Duration = Duration::from_millis(300);
+      if moon_elapsed >= MOON_INTERVAL {
+        self.moon_frame = (self.moon_frame + 1) % MOON_FRAMES.len();
+        self.last_moon_update = now;
+      }
+    }
+
+    // Schedule next frame for smooth animation
+    frame_requester.schedule_frame_in(TARGET_FRAME_INTERVAL);
+  }
+
+  fn draw(&mut self, f: &mut Frame, data: &AppData) {
+    
     let area = f.area();
     let available_width = area.width;
 
@@ -426,13 +547,33 @@ impl View for ChatView {
       let box_height = box_content_lines + 2; // +2 for top and bottom borders
       constraints.push(Constraint::Length(box_height as u16));
     }
-    // Moon animation row (shown after the last message if enabled)
-    if self.is_moon_animation_enabled() && !data.messages.is_empty() {
+    // Moon animation row (only shown in Animating state)
+    if self.state == ChatDisplayState::Animating {
+      constraints.push(Constraint::Length(1));
+    }
+    
+    // Streaming response (if any) - plain text, no box
+    if let Some(ref streaming) = data.streaming_response {
+      let content_lines = Self::calculate_line_count(streaming, available_width);
+      constraints.push(Constraint::Length(content_lines as u16));
+    }
+    // Last completed AI response (if any and not currently streaming) - plain text, no box
+    if data.streaming_response.is_none() && data.last_ai_response.is_some() {
+      let ai_response = data.last_ai_response.as_ref().unwrap();
+      let content_lines = Self::calculate_line_count(ai_response, available_width);
+      constraints.push(Constraint::Length(content_lines as u16));
+    }
+    
+    // Waiting for user input: spinner line (1 line height)
+    // Only shown in WaitingInput state
+    if self.state == ChatDisplayState::WaitingInput {
       constraints.push(Constraint::Length(1));
     }
 
-    // Current input
-    constraints.push(Constraint::Length(input_height as u16));
+    // Current input (only if there's actual input text)
+    if !self.input.is_empty() {
+      constraints.push(Constraint::Length(input_height as u16));
+    }
 
     // Add remaining space
     let prompt_width = Self::display_width(&self.full_prompt());
@@ -445,12 +586,25 @@ impl View for ChatView {
           + 2
       })
       .sum::<usize>();
-    // Add moon animation height if enabled
-    if self.is_moon_animation_enabled() && !data.messages.is_empty() {
+    // Add moon animation height if in Animating state
+    if self.state == ChatDisplayState::Animating {
       total_fixed_height += 1;
     }
-    // Only add input height if not showing moon animation (waiting for response)
-    if !self.is_moon_animation_enabled() {
+    // Add streaming response height if present (plain text, no box)
+    if let Some(ref streaming) = data.streaming_response {
+      total_fixed_height += Self::calculate_line_count(streaming, available_width);
+    }
+    // Add last AI response height if present and not streaming (plain text, no box)
+    if data.streaming_response.is_none() && data.last_ai_response.is_some() {
+      let ai_response = data.last_ai_response.as_ref().unwrap();
+      total_fixed_height += Self::calculate_line_count(ai_response, available_width);
+    }
+    // Add spinner line height if in WaitingInput state
+    if self.state == ChatDisplayState::WaitingInput {
+      total_fixed_height += 1;
+    }
+    // Only add input height if there's actual input
+    if !self.input.is_empty() {
       total_fixed_height += input_height;
     }
 
@@ -465,28 +619,54 @@ impl View for ChatView {
       .split(area);
 
     // Render history: for each message, show input line then box
+    // Odd indices (0, 2, 4...) are user messages with ">"
+    // Even indices (1, 3, 5...) are AI responses without ">"
     let mut chunk_idx = 0;
     for message in &data.messages {
-      // Input line (prompt + message)
+      // User message: input line with ">" then box
       if chunk_idx < chunks.len() {
-        self.render_input_line(f, chunks[chunk_idx], message);
+        self.render_input_line(f, chunks[chunk_idx], message, true);
         chunk_idx += 1;
       }
-      // Box with message
       if chunk_idx < chunks.len() {
         self.render_message_box(f, chunks[chunk_idx], message);
         chunk_idx += 1;
       }
     }
-    // Moon animation (shown after all messages if enabled)
-    if self.is_moon_animation_enabled() && !data.messages.is_empty() && chunk_idx < chunks.len() {
+    
+    // Render moon animation if in Animating state
+    if self.state == ChatDisplayState::Animating && chunk_idx < chunks.len() {
       self.render_moon_animation(f, chunks[chunk_idx]);
       chunk_idx += 1;
     }
+    
+    // Render streaming response if present (AI response in progress) - plain text, no box
+    if let Some(ref streaming) = data.streaming_response {
+      if chunk_idx < chunks.len() {
+        self.render_ai_response(f, chunks[chunk_idx], streaming);
+        chunk_idx += 1;
+      }
+    }
+    // Render last completed AI response (if not currently streaming) - plain text, no box
+    if data.streaming_response.is_none() && data.last_ai_response.is_some() {
+      if chunk_idx < chunks.len() {
+        let ai_response = data.last_ai_response.as_ref().unwrap();
+        self.render_ai_response(f, chunks[chunk_idx], ai_response);
+        chunk_idx += 1;
+      }
+    }
+    
+    // Waiting for user input: prompt + spinner (no input box yet)
+    // Only shown in WaitingInput state
+    if self.state == ChatDisplayState::WaitingInput && chunk_idx < chunks.len() {
+      // Show empty input line with spinner
+      self.render_input_line(f, chunks[chunk_idx], "", false);
+      chunk_idx += 1;
+    }
 
-    // Render current input line (only if not showing moon animation)
-    if !self.is_moon_animation_enabled() && chunk_idx < chunks.len() {
-      self.render_input_line(f, chunks[chunk_idx], &self.input);
+    // Render current input line (only shown in WaitingInput state)
+    if self.state == ChatDisplayState::WaitingInput && chunk_idx < chunks.len() && !self.input.is_empty() {
+      self.render_input_line(f, chunks[chunk_idx], &self.input, true);
 
       // Set cursor position
       let (cursor_line, cursor_col) = self.find_cursor_position(available_width);
@@ -503,37 +683,6 @@ impl View for ChatView {
     }
   }
 
-  fn on_frame(&mut self, frame_requester: &FrameRequester) {
-    if !self.animation_enabled {
-      return;
-    }
-
-    let now = Instant::now();
-
-    // Update spinner animation
-    let elapsed = now.duration_since(self.last_spinner_update);
-    // Update spinner frame every 200ms (relaxed rotation)
-    const SPINNER_INTERVAL: Duration = Duration::from_millis(200);
-    if elapsed >= SPINNER_INTERVAL {
-      self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
-      self.last_spinner_update = now;
-    }
-
-    // Update moon animation
-    if let Some(last_update) = self.last_moon_update {
-      let moon_elapsed = now.duration_since(last_update);
-      // Moon cycles slower than spinner - one phase every 300ms
-      const MOON_INTERVAL: Duration = Duration::from_millis(300);
-      if moon_elapsed >= MOON_INTERVAL {
-        self.moon_frame = (self.moon_frame + 1) % MOON_FRAMES.len();
-        self.last_moon_update = Some(now);
-      }
-    }
-
-    // Schedule next frame for smooth animation
-    frame_requester.schedule_frame_in(TARGET_FRAME_INTERVAL);
-  }
-
   fn set_frame_requester(&mut self, frame_requester: FrameRequester) {
     self.frame_requester = Some(frame_requester.clone());
     // Start animation loop immediately
@@ -545,6 +694,18 @@ impl View for ChatView {
 
 impl Default for ChatView {
   fn default() -> Self {
-    Self::new()
+    // Create default instance with empty AppData (for testing etc.)
+    Self {
+      input: String::new(),
+      cursor_position: 0,
+      prompt: Self::build_prompt(),
+      frame_requester: None,
+      animation_enabled: true,
+      last_spinner_update: Instant::now(),
+      spinner_frame: 0,
+      last_moon_update: Instant::now(),
+      moon_frame: 0,
+      state: ChatDisplayState::WaitingInput,
+    }
   }
 }

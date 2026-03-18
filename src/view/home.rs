@@ -224,7 +224,7 @@ impl View for HomeView {
     None
   }
 
-  fn draw(&self, f: &mut Frame, data: &AppData) {
+  fn draw(&mut self, f: &mut Frame, data: &AppData) {
     let area = f.area();
 
     // Clear the background

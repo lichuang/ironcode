@@ -109,6 +109,9 @@ async fn run_app(
       app.handle_message(msg);
     }
 
+    // Process LLM stream events
+    app.update_chat_session();
+
     match event {
       TuiEvent::Key(key) => {
         // Only handle key press events to avoid duplicate processing

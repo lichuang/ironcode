@@ -28,7 +28,7 @@ pub trait View {
   /// # Arguments
   /// * `f` - The frame to draw on
   /// * `data` - The application data (for accessing messages, etc.)
-  fn draw(&self, f: &mut Frame, data: &AppData);
+  fn draw(&mut self, f: &mut Frame, data: &AppData);
 
   /// Called when a new frame is about to be rendered.
   ///
@@ -37,7 +37,8 @@ pub trait View {
   ///
   /// # Arguments
   /// * `frame_requester` - Use this to schedule additional frames if animation is needed
-  fn on_frame(&mut self, _frame_requester: &FrameRequester) {}
+  /// * `data` - The application data (for checking streaming state, etc.)
+  fn on_frame(&mut self, _frame_requester: &FrameRequester, _data: &AppData) {}
 
   /// Set the frame requester for this view.
   ///
