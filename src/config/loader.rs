@@ -402,8 +402,8 @@ supports_streaming = true
   }
 
   #[test]
-  fn test_invalid_provider_type_rejected() {
-    // Test that deprecated provider types are rejected
+  fn test_provider_type_as_string() {
+    // Test that provider type is parsed as string (accepts any value)
     let toml = r#"
 default_model = "openai/gpt-4o"
 
@@ -418,10 +418,10 @@ model = "gpt-4o"
 "#;
 
     let result: std::result::Result<Config, _> = toml::from_str(toml);
-    assert!(result.is_err(), "Deprecated 'openai' provider type should be rejected");
-    let err_msg = result.unwrap_err().to_string();
-    assert!(err_msg.contains("openai") || err_msg.contains("unknown variant"), 
-            "Error message should indicate invalid provider type: {}", err_msg);
+    assert!(result.is_ok(), "Provider type 'openai' should be accepted as string");
+    let config = result.unwrap();
+    let provider = config.providers.get("openai").unwrap();
+    assert_eq!(provider.provider_type, "openai");
   }
 
   #[test]
