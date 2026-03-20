@@ -2,6 +2,7 @@ mod cli;
 mod config;
 mod error;
 mod llm;
+mod tools;
 mod tui;
 mod utils;
 mod view;
@@ -20,7 +21,7 @@ use tui::{Tui, TuiEvent, TuiEventStream, init_terminal, restore_terminal};
 pub use error::{Error, Result as IronResult};
 
 /// Initialize logging based on configuration
-/// 
+///
 /// Logs are always written to ${data_dir}/logs/ironcode.log
 /// where data_dir is determined by the config.dir setting (defaults to ~/.ironcode/)
 fn init_logging(config: &Config) {
@@ -75,14 +76,17 @@ async fn main() -> Result<()> {
   // First, get the config file directory (either from -c arg or default ~/.ironcode/)
   let config_file_dir = args.config_dir();
   let config = load_config_from_dir(&config_file_dir)?;
-  
+
   // Get the data directory from config (defaults to ~/.ironcode/ if not specified)
   let data_dir = data_dir(&config);
 
   // Initialize logging based on configuration
   init_logging(&config);
   info!("IronCode started successfully");
-  info!("Config file dir: {:?}, Data dir: {:?}", config_file_dir, data_dir);
+  info!(
+    "Config file dir: {:?}, Data dir: {:?}",
+    config_file_dir, data_dir
+  );
 
   // Initialize terminal
   init_terminal()?;

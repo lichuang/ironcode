@@ -1,6 +1,7 @@
 use crate::config::loader::system_prompt_path;
 use crate::error::{Result, RuntimeError};
-use log::{debug, warn};
+use crate::tools::ToolRegistry;
+use log::{debug, info, warn};
 use std::fs;
 use std::path::PathBuf;
 
@@ -100,28 +101,51 @@ impl RuntimeArgs {
 
 
 
-/// Runtime holds the system prompt template and arguments for rendering
+/// Runtime holds the system prompt template, arguments for rendering, and tool registry
 #[derive(Debug, Clone)]
 pub(crate) struct Runtime {
   /// Template arguments for substitution
   pub args: RuntimeArgs,
   /// The raw system prompt template (before substitution)
   pub system_prompt_template: String,
+  /// Tool registry containing all loaded tools
+  pub tool_registry: ToolRegistry,
 }
 
 impl Runtime {
   /// Create a new Runtime instance by loading all environment data
   ///
-  /// Loads system prompt from config_dir/prompts/system.md
+  /// Loads system prompt from data_dir/prompts/system.md
+  /// Loads tools from data_dir/prompts/tools/
   /// Returns empty string if prompt file doesn't exist
-  pub(crate) fn new(config_dir: &PathBuf) -> Result<Self> {
-    let system_prompt_template = Self::load_system_prompt_template(config_dir);
+  pub(crate) fn new(data_dir: &PathBuf) -> Result<Self> {
+    let system_prompt_template = Self::load_system_prompt_template(data_dir);
     let args = RuntimeArgs::new()?;
+    let tool_registry = Self::load_tools(data_dir);
 
     Ok(Self {
       args,
       system_prompt_template,
+      tool_registry,
     })
+  }
+
+  /// Load tools from the data directory
+  /// Tools are loaded from {data_dir}/prompts/tools/
+  fn load_tools(data_dir: &PathBuf) -> ToolRegistry {
+    let tools_dir = data_dir.join("prompts").join("tools");
+    debug!("Loading tools from: {:?}", tools_dir);
+
+    match ToolRegistry::load_from_dir(&tools_dir) {
+      Ok(registry) => {
+        info!("Loaded {} tools from {:?}", registry.len(), tools_dir);
+        registry
+      }
+      Err(e) => {
+        warn!("Failed to load tools from {:?}: {}", tools_dir, e);
+        ToolRegistry::new()
+      }
+    }
   }
 
   /// Load the system prompt template from config directory
