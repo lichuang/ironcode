@@ -209,8 +209,8 @@ impl App {
               let preview: String = self.current_response.chars().take(100).collect();
               log::debug!("AI response content (first 100 chars): {}", preview);
               // Add AI response to chat history
-              self.data.chat_history.push(ChatMessage::Assistant { 
-                content: self.current_response.clone() 
+              self.data.chat_history.push(ChatMessage::Assistant {
+                content: self.current_response.clone(),
               });
             }
             // Clear streaming state
@@ -265,12 +265,18 @@ impl App {
     let system_prompt = self.runtime.render_system_prompt();
 
     // Create session from config and system prompt
-    self.chat_session = Some(ChatSession::from_config(&self.config, system_prompt)?);
+    self.chat_session = Some(ChatSession::create(
+      &self.config,
+      system_prompt,
+      self.runtime.tool_registry.clone(),
+    )?);
 
     // Send pending first message if exists
     if let Some(first_message) = self.data.pending_first_message.take() {
       // Add user message to chat history so it appears in ChatView
-      self.data.chat_history.push(ChatMessage::User { content: first_message.clone() });
+      self.data.chat_history.push(ChatMessage::User {
+        content: first_message.clone(),
+      });
       self.send_to_llm(first_message);
     }
 

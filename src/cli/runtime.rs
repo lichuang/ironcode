@@ -4,6 +4,7 @@ use crate::tools::ToolRegistry;
 use log::{debug, info, warn};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Runtime environment arguments for template substitution
 ///
@@ -108,8 +109,8 @@ pub(crate) struct Runtime {
   pub args: RuntimeArgs,
   /// The raw system prompt template (before substitution)
   pub system_prompt_template: String,
-  /// Tool registry containing all loaded tools
-  pub tool_registry: ToolRegistry,
+  /// Tool registry containing all loaded tools (shared with providers)
+  pub tool_registry: Arc<ToolRegistry>,
 }
 
 impl Runtime {
@@ -121,7 +122,7 @@ impl Runtime {
   pub(crate) fn new(data_dir: &PathBuf) -> Result<Self> {
     let system_prompt_template = Self::load_system_prompt_template(data_dir);
     let args = RuntimeArgs::new()?;
-    let tool_registry = Self::load_tools(data_dir);
+    let tool_registry = Arc::new(Self::load_tools(data_dir));
 
     Ok(Self {
       args,

@@ -8,9 +8,11 @@ use crate::error::{ConfigError, Result};
 use crate::llm::provider::LLMProvider;
 use crate::llm::providers::KimiProvider;
 use crate::llm::types::{ChatConfig, Message, Role};
+use crate::tools::ToolRegistry;
 use async_openai::types::chat::ChatCompletionResponseStream;
 use chrono::{Datelike, Local, Timelike};
 use log::{debug, error, info};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 /// Maximum characters to display in user input log preview
@@ -323,15 +325,31 @@ impl ChatSession {
   }
 
   /// Start a new chat session from configuration and runtime system prompt
-  pub fn from_config(config: &Config, system_prompt: impl Into<String>) -> Result<Self> {
-    let provider = Self::create_provider(config)?;
+  ///
+  /// # Arguments
+  /// * `config` - The application configuration
+  /// * `system_prompt` - The system prompt to use
+  /// * `tool_registry` - Shared tool registry for function calling
+  pub fn create(
+    config: &Config,
+    system_prompt: impl Into<String>,
+    tool_registry: Arc<ToolRegistry>,
+  ) -> Result<Self> {
+    let provider = Self::create_provider(config, tool_registry)?;
     let session = Self::start(provider, system_prompt);
     info!("ChatSession {} created from config", session.handle.id);
     Ok(session)
   }
 
   /// Create LLM provider from configuration
-  fn create_provider(config: &Config) -> Result<Box<dyn LLMProvider>> {
+  ///
+  /// # Arguments
+  /// * `config` - The application configuration
+  /// * `tool_registry` - Shared tool registry for function calling
+  fn create_provider(
+    config: &Config,
+    tool_registry: Arc<ToolRegistry>,
+  ) -> Result<Box<dyn LLMProvider>> {
     // Get default model configuration
     let model_config = config
       .default_model_config()
@@ -373,6 +391,7 @@ impl ChatSession {
         api_key,
         chat_config,
         coding_agent,
+        tool_registry,
       )?),
       _ => {
         return Err(

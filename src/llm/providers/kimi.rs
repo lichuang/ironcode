@@ -5,6 +5,7 @@
 use crate::error::{LlmError, Result};
 use crate::llm::provider::LLMProvider;
 use crate::llm::types::{ChatConfig, Message, Role};
+use crate::tools::ToolRegistry;
 use async_openai::{
   Client,
   config::OpenAIConfig,
@@ -16,6 +17,7 @@ use async_openai::{
 };
 use async_trait::async_trait;
 use reqwest::header::HeaderMap;
+use std::sync::Arc;
 
 /// Kimi CLI version for Coding Agent authentication
 const KIMI_CLI_VERSION: &str = "1.16.0";
@@ -27,6 +29,7 @@ const KIMI_USER_AGENT: &str = "KimiCLI/1.16.0";
 pub struct KimiProvider {
   client: Client<OpenAIConfig>,
   config: ChatConfig,
+  tool_registry: Arc<ToolRegistry>,
 }
 
 impl KimiProvider {
@@ -37,11 +40,13 @@ impl KimiProvider {
   /// * `api_key` - API key
   /// * `config` - Chat configuration
   /// * `coding_agent` - Whether to use Coding Agent headers for kimi-for-coding model
+  /// * `tool_registry` - Tool registry for function calling (shared with Runtime)
   pub fn new(
     base_url: impl Into<String>,
     api_key: impl Into<String>,
     config: ChatConfig,
     coding_agent: bool,
+    tool_registry: Arc<ToolRegistry>,
   ) -> Result<Self> {
     let base_url = base_url.into();
     let api_key = api_key.into();
@@ -142,7 +147,7 @@ impl KimiProvider {
 
     let client = Client::with_config(openai_config).with_http_client(http_client);
 
-    Ok(Self { client, config })
+    Ok(Self { client, config, tool_registry })
   }
 
   /// Convert our Message type to async-openai's message type
@@ -191,6 +196,11 @@ impl LLMProvider for KimiProvider {
 
     if let Some(temperature) = self.config.temperature {
       request.temperature(temperature);
+    }
+
+    // Add tools if any
+    if !self.tool_registry.is_empty() {
+      request.tools(self.tool_registry.to_openai_tools());
     }
 
     let request = request
