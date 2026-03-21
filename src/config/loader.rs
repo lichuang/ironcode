@@ -130,6 +130,7 @@ fn merge_configs(base: Config, override_: Config) -> Config {
         base.logging.level
       },
     },
+    default_thinking: override_.default_thinking,
   }
 }
 

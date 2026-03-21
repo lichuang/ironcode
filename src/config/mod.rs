@@ -34,6 +34,10 @@ pub struct Config {
   /// Logging settings
   #[serde(default)]
   pub logging: LoggingConfig,
+
+  /// Default thinking mode (whether to use think by default)
+  #[serde(default = "default_true")]
+  pub default_thinking: bool,
 }
 
 impl Default for Config {
@@ -44,6 +48,7 @@ impl Default for Config {
       providers: HashMap::new(),
       models: HashMap::new(),
       logging: LoggingConfig::default(),
+      default_thinking: true,
     }
   }
 }

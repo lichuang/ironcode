@@ -379,6 +379,8 @@ impl ChatSession {
     if let Some(temperature) = model_config.temperature {
       chat_config = chat_config.with_temperature(temperature);
     }
+    // Set thinking mode from config
+    chat_config = chat_config.with_thinking(config.default_thinking);
 
     // Determine if we need Coding Agent headers
     // Currently only enable for kimi-for-coding model

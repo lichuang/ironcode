@@ -62,6 +62,8 @@ pub struct ChatConfig {
   pub max_tokens: Option<u32>,
   /// Sampling temperature (0.0 - 2.0)
   pub temperature: Option<f32>,
+  /// Whether to enable thinking mode (for models that support it, like kimi)
+  pub enable_thinking: bool,
 }
 
 impl ChatConfig {
@@ -71,6 +73,7 @@ impl ChatConfig {
       model: model.into(),
       max_tokens: None,
       temperature: None,
+      enable_thinking: false,
     }
   }
 
@@ -83,6 +86,12 @@ impl ChatConfig {
   /// Set temperature
   pub fn with_temperature(mut self, temperature: f32) -> Self {
     self.temperature = Some(temperature);
+    self
+  }
+
+  /// Set thinking mode
+  pub fn with_thinking(mut self, enable: bool) -> Self {
+    self.enable_thinking = enable;
     self
   }
 }

@@ -26,6 +26,13 @@
 # Format: "provider-name/model-name" or just "model-name"
 default_model = "openai/gpt-4o"
 
+# Default thinking mode - whether to use model's thinking capability by default
+# When true, models that support thinking (like kimi) will have thinking enabled
+# via the API's thinking parameter. The thinking content will be displayed
+# in the chat interface with a distinct style (grey italic).
+# Default: true
+default_thinking = true
+
 # =============================================================================
 # Providers - Define LLM API endpoints
 # A provider can be shared by multiple models

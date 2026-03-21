@@ -38,7 +38,7 @@ impl KimiProvider {
   /// # Arguments
   /// * `base_url` - Kimi API base URL (e.g., "https://api.moonshot.cn/v1")
   /// * `api_key` - API key
-  /// * `config` - Chat configuration
+  /// * `config` - Chat configuration (includes enable_thinking)
   /// * `coding_agent` - Whether to use Coding Agent headers for kimi-for-coding model
   /// * `tool_registry` - Tool registry for function calling (shared with Runtime)
   pub fn new(
