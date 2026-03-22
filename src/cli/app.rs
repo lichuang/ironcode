@@ -1,14 +1,17 @@
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use crossterm::event::KeyEvent;
+use log::{error, info};
+use ratatui::Frame;
+
 use crate::cli::runtime::Runtime;
 use crate::config::Config;
 use crate::error::Result;
 use crate::llm::{ChatSession, SessionEvent, SessionHandle};
 use crate::tui::{FrameRequester, MessageBroker, UiMessage};
 use crate::view::chat::{ChatMessage, StreamingChunk};
-use std::sync::Arc;
 use crate::view::{ChatView, HomeView, View};
-use crossterm::event::KeyEvent;
-use log::{error, info};
-use std::path::PathBuf;
 
 /// Application data that can be modified by views
 pub struct AppData {
@@ -136,7 +139,7 @@ impl App {
   }
 
   /// Draw the current view
-  pub fn draw(&mut self, f: &mut ratatui::Frame) {
+  pub fn draw(&mut self, f: &mut Frame) {
     self.view.draw(f, &self.data);
   }
 

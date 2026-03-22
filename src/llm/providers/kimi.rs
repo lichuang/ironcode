@@ -2,18 +2,22 @@
 //!
 //! Supports Kimi API with Coding Agent authentication headers.
 
-use crate::error::{LlmError, Result};
-use crate::llm::provider::LLMProvider;
-use crate::llm::types::{ChatConfig, Message, Role};
-use crate::tools::ToolRegistry;
+use std::sync::Arc;
+
 use async_openai::error::OpenAIError;
-use async_openai::types::chat::{ChatCompletionResponseStream, FinishReason};
+use async_openai::types::chat::{
+  ChatCompletionResponseStream, CreateChatCompletionStreamResponse, FinishReason, Role as OpenAIRole,
+};
 use async_trait::async_trait;
 use futures::StreamExt;
 use reqwest::header::HeaderMap;
 use reqwest_eventsource::RequestBuilderExt;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+
+use crate::error::{LlmError, Result};
+use crate::llm::provider::LLMProvider;
+use crate::llm::types::{ChatConfig, Message, Role};
+use crate::tools::ToolRegistry;
 
 /// Custom delta that includes reasoning_content for Kimi API
 #[derive(Debug, Clone, Deserialize)]
@@ -23,7 +27,7 @@ struct KimiDelta {
   #[serde(default)]
   reasoning_content: Option<String>,
   #[serde(default)]
-  role: Option<async_openai::types::chat::Role>,
+  role: Option<OpenAIRole>,
 }
 
 /// Custom choice stream for Kimi API
@@ -403,7 +407,7 @@ fn generate_device_id(hostname: &str) -> String {
 
 /// Convert Kimi stream response to standard OpenAI format
 /// This embeds reasoning_content as special markers within content for downstream processing
-fn convert_kimi_response(kimi: KimiStreamResponse) -> async_openai::types::chat::CreateChatCompletionStreamResponse {
+fn convert_kimi_response(kimi: KimiStreamResponse) -> CreateChatCompletionStreamResponse {
   use async_openai::types::chat::{ChatChoiceStream, ChatCompletionStreamResponseDelta};
 
   let choices = kimi
@@ -449,7 +453,7 @@ fn convert_kimi_response(kimi: KimiStreamResponse) -> async_openai::types::chat:
     })
     .collect();
 
-  async_openai::types::chat::CreateChatCompletionStreamResponse {
+  CreateChatCompletionStreamResponse {
     id: kimi.id,
     object: kimi.object,
     created: kimi.created,

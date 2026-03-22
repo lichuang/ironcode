@@ -9,12 +9,13 @@ mod view;
 
 use anyhow::Result;
 use clap::Parser;
-use cli::{App, Args};
-use config::Config;
-use config::loader::{data_dir, load_config_from_dir};
 use crossterm::event::KeyEventKind;
 use futures::StreamExt;
 use log::{info, warn};
+
+use cli::{App, Args};
+use config::Config;
+use config::loader::{data_dir, load_config_from_dir};
 use tui::{Tui, TuiEvent, TuiEventStream, init_terminal, restore_terminal};
 
 // Re-export error types for convenience
@@ -120,7 +121,7 @@ async fn run_app(
   tui: &mut Tui,
   app: &mut App,
   event_stream: &mut TuiEventStream,
-) -> anyhow::Result<()> {
+) -> Result<()> {
   // Initial draw
   tui.draw(|f| app.draw(f))?;
 

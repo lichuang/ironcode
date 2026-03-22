@@ -43,12 +43,14 @@ pub enum Role {
   Assistant,
 }
 
-impl From<Role> for async_openai::types::chat::Role {
+use async_openai::types::chat::Role as OpenAIRole;
+
+impl From<Role> for OpenAIRole {
   fn from(role: Role) -> Self {
     match role {
-      Role::System => async_openai::types::chat::Role::System,
-      Role::User => async_openai::types::chat::Role::User,
-      Role::Assistant => async_openai::types::chat::Role::Assistant,
+      Role::System => OpenAIRole::System,
+      Role::User => OpenAIRole::User,
+      Role::Assistant => OpenAIRole::Assistant,
     }
   }
 }

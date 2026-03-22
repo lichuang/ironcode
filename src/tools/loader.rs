@@ -1,14 +1,16 @@
 //! Tool loader from Markdown files.
 
-use super::Tool;
-use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
 use walkdir::WalkDir;
 
+use super::Tool;
+
 /// Load all tools from a directory
-pub fn load_tools_from_dir(dir: impl AsRef<Path>) -> anyhow::Result<super::ToolRegistry> {
+pub fn load_tools_from_dir(dir: impl AsRef<Path>) -> Result<super::ToolRegistry> {
     let dir = dir.as_ref();
     let mut registry = super::ToolRegistry::new();
 

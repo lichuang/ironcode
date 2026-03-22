@@ -3,9 +3,11 @@ use crate::llm::types::{ChatConfig, Message, Role};
 use async_openai::{
   Client,
   config::OpenAIConfig,
+  error::OpenAIError,
   types::chat::{
     ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
-    ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs,
+    ChatCompletionRequestUserMessageArgs, ChatCompletionResponseStream,
+    CreateChatCompletionRequestArgs,
   },
 };
 
@@ -62,7 +64,7 @@ impl OpenAIClient {
   pub async fn chat_stream(
     &self,
     messages: Vec<Message>,
-  ) -> Result<async_openai::types::chat::ChatCompletionResponseStream> {
+  ) -> Result<ChatCompletionResponseStream> {
     let request_messages: Vec<ChatCompletionRequestMessage> = messages
       .into_iter()
       .map(|msg| Self::convert_message(msg))
@@ -100,7 +102,7 @@ impl OpenAIClient {
     &self,
     system_prompt: impl Into<String>,
     user_message: impl Into<String>,
-  ) -> Result<async_openai::types::chat::ChatCompletionResponseStream> {
+  ) -> Result<ChatCompletionResponseStream> {
     let messages = vec![
       Message::system(system_prompt),
       Message::user(user_message),
@@ -111,7 +113,7 @@ impl OpenAIClient {
   /// Convert our Message type to async-openai's message type
   fn convert_message(
     msg: Message,
-  ) -> std::result::Result<ChatCompletionRequestMessage, async_openai::error::OpenAIError> {
+  ) -> std::result::Result<ChatCompletionRequestMessage, OpenAIError> {
     match msg.role {
       Role::System => {
         ChatCompletionRequestSystemMessageArgs::default()
