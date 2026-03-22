@@ -21,7 +21,7 @@ pub fn default_data_dir() -> Option<PathBuf> {
 }
 
 /// Get the data directory from config or default
-/// 
+///
 /// If config.dir is set, use that (with ~ expanded to home directory);
 /// otherwise use ~/.ironcode
 pub fn data_dir(config: &Config) -> PathBuf {
@@ -98,7 +98,7 @@ fn user_config_path() -> Option<PathBuf> {
 }
 
 /// Get the system prompt file path in the config directory
-/// 
+///
 /// Returns: config_dir/prompts/system.md
 pub fn system_prompt_path(config_dir: &PathBuf) -> PathBuf {
   config_dir.join(PROMPTS_DIR).join(SYSTEM_PROMPT_FILE)
@@ -142,10 +142,12 @@ fn validate_config(config: &Config) -> Result<()> {
 
   // Check that default_model exists in models
   if !config.models.contains_key(&config.default_model) {
-    return Err(ConfigError::ModelNotFound {
-      model: config.default_model.clone(),
-    }
-    .into());
+    return Err(
+      ConfigError::ModelNotFound {
+        model: config.default_model.clone(),
+      }
+      .into(),
+    );
   }
 
   Ok(())
@@ -164,17 +166,16 @@ pub fn ensure_data_dir(config: &Config) -> Result<PathBuf> {
 }
 
 /// Create a default configuration file if it doesn't exist
-/// 
+///
 /// Creates the config file in the default location (~/.ironcode/)
 pub fn create_default_config() -> Result<PathBuf> {
   let config_dir = default_data_dir().ok_or(ConfigError::HomeDirNotFound)?;
-  
+
   // Ensure the config directory exists
   if !config_dir.exists() {
-    std::fs::create_dir_all(&config_dir)
-      .map_err(|e| ConfigError::create_dir(&config_dir, e))?;
+    std::fs::create_dir_all(&config_dir).map_err(|e| ConfigError::create_dir(&config_dir, e))?;
   }
-  
+
   let config_path = config_dir.join(CONFIG_FILE);
 
   if !config_path.exists() {
@@ -216,16 +217,13 @@ level = "info"
 
 #[cfg(test)]
 mod tests {
-  use super::*;
   use super::super::{Config, LoggingConfig};
+  use super::*;
   use std::collections::HashMap;
   use std::env;
 
   fn fixtures_dir() -> PathBuf {
-    PathBuf::from(file!())
-      .parent()
-      .unwrap()
-      .join("fixtures")
+    PathBuf::from(file!()).parent().unwrap().join("fixtures")
   }
 
   #[test]
@@ -365,8 +363,6 @@ supports_streaming = true
     assert_eq!(merged.logging.level, "warn");
   }
 
-
-
   #[test]
   fn test_default_config() {
     let config = Config::default();
@@ -395,6 +391,7 @@ supports_streaming = true
       providers: HashMap::new(),
       models: HashMap::new(),
       logging: LoggingConfig::default(),
+      default_thinking: true,
     };
     let result = validate_config(&config);
     assert!(result.is_err());
@@ -419,7 +416,10 @@ model = "gpt-4o"
 "#;
 
     let result: std::result::Result<Config, _> = toml::from_str(toml);
-    assert!(result.is_ok(), "Provider type 'openai' should be accepted as string");
+    assert!(
+      result.is_ok(),
+      "Provider type 'openai' should be accepted as string"
+    );
     let config = result.unwrap();
     let provider = config.providers.get("openai").unwrap();
     assert_eq!(provider.provider_type, "openai");

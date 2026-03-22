@@ -60,6 +60,8 @@ pub enum SessionCommand {
 pub enum SessionEvent {
   /// A chunk of content received from the stream
   ContentChunk(String),
+  /// A chunk of thinking/reasoning content received from the stream
+  ThinkingChunk(String),
   /// Stream completed successfully
   Completed,
   /// Error occurred during streaming
@@ -269,10 +271,29 @@ impl SessionActor {
   async fn handle_stream_event(&mut self, event: SessionEvent) {
     match &event {
       SessionEvent::ContentChunk(chunk) => {
-        debug!("Session {}: Stream content: {}", self.id, chunk);
+        debug!(
+          "Session {}: Stream content: len={}, content={}",
+          self.id,
+          chunk.len(),
+          &chunk[..chunk.len().min(100)]
+        );
         self.current_response.push_str(chunk);
         // Forward to caller
-        let _ = self.event_tx.send(event);
+        if let Err(_) = self.event_tx.send(event) {
+          error!("Session {}: Failed to forward ContentChunk", self.id);
+        }
+      }
+      SessionEvent::ThinkingChunk(chunk) => {
+        info!(
+          "Session {}: Stream thinking received: len={}, content={}",
+          self.id,
+          chunk.len(),
+          &chunk[..chunk.len().min(100)]
+        );
+        // Forward to caller without storing in session messages
+        if let Err(_) = self.event_tx.send(event) {
+          error!("Session {}: Failed to forward ThinkingChunk", self.id);
+        }
       }
       SessionEvent::Completed => {
         // Add the complete assistant message to history
@@ -283,7 +304,9 @@ impl SessionActor {
         self.is_streaming = false;
         self.stream_rx = None;
         // Forward to caller
-        let _ = self.event_tx.send(event);
+        if let Err(_) = self.event_tx.send(event) {
+          error!("Session {}: Failed to forward Completed event", self.id);
+        }
         info!("Session {}: Stream completed", self.id);
       }
       SessionEvent::Error(err) => {
@@ -292,11 +315,15 @@ impl SessionActor {
         self.stream_rx = None;
         self.current_response.clear();
         // Forward to caller
-        let _ = self.event_tx.send(event);
+        if let Err(_) = self.event_tx.send(event) {
+          error!("Session {}: Failed to forward Error event", self.id);
+        }
       }
       SessionEvent::Shutdown => {
         // Should not happen, but handle it
-        let _ = self.event_tx.send(event);
+        if let Err(_) = self.event_tx.send(event) {
+          error!("Session {}: Failed to forward Shutdown event", self.id);
+        }
       }
     }
   }
@@ -462,30 +489,162 @@ async fn handle_stream(
 ) {
   use futures::StreamExt;
 
+  // Buffer for accumulating content across chunks (for parsing think tags)
+  let mut buffer = String::new();
+  let mut in_thinking_mode = false;
+  let mut has_received_thinking = false;
+
   while let Some(result) = stream.next().await {
     match result {
       Ok(response) => {
+        log::debug!("recv raw response: {:?}", response);
+
+        log::debug!(
+          "Session: Received stream response: id={}, model={}, choices={}",
+          response.id,
+          response.model,
+          response.choices.len()
+        );
+        for (i, choice) in response.choices.iter().enumerate() {
+          log::debug!(
+            "Session: Choice[{}]: delta={:?}, finish_reason={:?}",
+            i,
+            choice.delta,
+            choice.finish_reason
+          );
+        }
         for choice in &response.choices {
           if let Some(content) = &choice.delta.content {
             if !content.is_empty() {
-              if tx
-                .send(SessionEvent::ContentChunk(content.clone()))
-                .is_err()
-              {
-                // Receiver dropped, stop streaming
-                return;
+              log::debug!(
+                "Session: Received content chunk: len={}, content={}",
+                content.len(),
+                &content[..content.len().min(100)]
+              );
+
+              // Parse content for <think> tags (Kimi thinking mode)
+              buffer.push_str(content);
+              log::debug!(
+                "Session: Buffer len={}, in_thinking_mode={}",
+                buffer.len(),
+                in_thinking_mode
+              );
+
+              // Process the buffer to extract thinking content
+              loop {
+                if in_thinking_mode {
+                  // Look for </think> closing tag
+                  if let Some(end_pos) = buffer.find("</think>") {
+                    // Extract thinking content
+                    let thinking = buffer[..end_pos].to_string();
+                    if !thinking.is_empty() {
+                      if !has_received_thinking {
+                        log::info!(
+                          "Session: First thinking content received: len={}",
+                          thinking.len()
+                        );
+                        has_received_thinking = true;
+                      }
+                      log::debug!("Session: Sending ThinkingChunk: len={}", thinking.len());
+                      if tx.send(SessionEvent::ThinkingChunk(thinking)).is_err() {
+                        return;
+                      }
+                    }
+                    // Remove processed part including closing tag
+                    buffer = buffer[end_pos + 8..].to_string();
+                    in_thinking_mode = false;
+                    log::debug!(
+                      "Session: Exited thinking mode, remaining buffer len={}",
+                      buffer.len()
+                    );
+                  } else {
+                    // Still in thinking mode, send what we have so far
+                    if !buffer.is_empty() {
+                      if !has_received_thinking {
+                        log::info!(
+                          "Session: First thinking content received (partial): len={}",
+                          buffer.len()
+                        );
+                        has_received_thinking = true;
+                      }
+                      log::debug!(
+                        "Session: Sending ThinkingChunk (partial): len={}",
+                        buffer.len()
+                      );
+                      if tx
+                        .send(SessionEvent::ThinkingChunk(buffer.clone()))
+                        .is_err()
+                      {
+                        return;
+                      }
+                      buffer.clear();
+                    }
+                    break;
+                  }
+                } else {
+                  // Look for <think> opening tag
+                  if let Some(start_pos) = buffer.find("<think>") {
+                    log::info!("Session: Found <think> tag at position {}", start_pos);
+                    // Send any content before <think> as regular content
+                    if start_pos > 0 {
+                      let before = buffer[..start_pos].to_string();
+                      if !before.is_empty() {
+                        log::debug!(
+                          "Session: Sending ContentChunk (before think): len={}",
+                          before.len()
+                        );
+                        if tx.send(SessionEvent::ContentChunk(before)).is_err() {
+                          return;
+                        }
+                      }
+                    }
+                    // Enter thinking mode
+                    buffer = buffer[start_pos + 7..].to_string();
+                    in_thinking_mode = true;
+                    log::info!("Session: Entered thinking mode");
+                  } else {
+                    // No <think> tag, send as regular content
+                    if !buffer.is_empty() {
+                      log::debug!("Session: Sending ContentChunk: len={}", buffer.len());
+                      if tx.send(SessionEvent::ContentChunk(buffer.clone())).is_err() {
+                        return;
+                      }
+                      buffer.clear();
+                    }
+                    break;
+                  }
+                }
               }
             }
           }
         }
       }
       Err(e) => {
+        log::error!("Session: Stream error: {}", e);
         let _ = tx.send(SessionEvent::Error(e.to_string()));
         return;
       }
     }
   }
 
+  // Flush any remaining content in buffer
+  if !buffer.is_empty() {
+    if in_thinking_mode {
+      log::info!(
+        "Session: Flushing final thinking content: len={}",
+        buffer.len()
+      );
+      let _ = tx.send(SessionEvent::ThinkingChunk(buffer));
+    } else {
+      log::debug!("Session: Flushing final content: len={}", buffer.len());
+      let _ = tx.send(SessionEvent::ContentChunk(buffer));
+    }
+  }
+
+  log::info!(
+    "Session: Stream completed, received_thinking={}",
+    has_received_thinking
+  );
   // Stream completed
   let _ = tx.send(SessionEvent::Completed);
 }

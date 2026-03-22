@@ -1258,6 +1258,7 @@ dependencies = [
  "log",
  "ratatui",
  "reqwest",
+ "reqwest-eventsource",
  "serde",
  "serde_json",
  "shellexpand",

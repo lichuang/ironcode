@@ -20,13 +20,42 @@ use crate::view::View;
 #[derive(Debug)]
 pub struct NoSessionError;
 
+/// A chunk of streaming content from LLM
+#[derive(Debug, Clone)]
+pub enum StreamingChunk {
+  /// Normal response content
+  Normal(String),
+  /// Thinking/reasoning content
+  Thinking(String),
+}
+
+impl StreamingChunk {
+  /// Get the content of the chunk
+  pub fn content(&self) -> &str {
+    match self {
+      StreamingChunk::Normal(s) => s,
+      StreamingChunk::Thinking(s) => s,
+    }
+  }
+
+  /// Check if this is a thinking chunk
+  pub fn is_thinking(&self) -> bool {
+    matches!(self, StreamingChunk::Thinking(_))
+  }
+}
+
 /// A message in the chat history
 #[derive(Debug, Clone)]
 pub enum ChatMessage {
   /// User message
   User { content: String },
-  /// AI assistant response
-  Assistant { content: String },
+  /// AI assistant response (with optional thinking content)
+  Assistant {
+    /// The main response content
+    content: String,
+    /// The thinking/reasoning content (if any)
+    thinking_content: Option<String>,
+  },
 }
 
 impl ChatMessage {
@@ -34,7 +63,15 @@ impl ChatMessage {
   pub fn content(&self) -> &str {
     match self {
       ChatMessage::User { content } => content,
-      ChatMessage::Assistant { content } => content,
+      ChatMessage::Assistant { content, .. } => content,
+    }
+  }
+
+  /// Get the thinking content (if any)
+  pub fn thinking_content(&self) -> Option<&str> {
+    match self {
+      ChatMessage::User { .. } => None,
+      ChatMessage::Assistant { thinking_content, .. } => thinking_content.as_deref(),
     }
   }
 
@@ -119,7 +156,7 @@ impl ChatView {
       .unwrap_or(false);
     
     // Determine initial state
-    let state = if data.streaming_response.is_some() {
+    let state = if !data.streaming_response.is_empty() {
       ChatDisplayState::Streaming
     } else if waiting_for_ai {
       ChatDisplayState::Animating
@@ -472,6 +509,22 @@ impl ChatView {
     let text = Paragraph::new(Text::from(lines));
     f.render_widget(text, area);
   }
+
+  /// Render thinking content with grey italic style
+  fn render_thinking_content(&self, f: &mut Frame, area: Rect, thinking: &str) {
+    let wrapped_lines = Self::wrap_text(thinking, area.width);
+    let lines: Vec<Line> = wrapped_lines
+      .into_iter()
+      .map(|line| {
+        Line::from(vec![Span::styled(
+          line,
+          Style::default().fg(Color::DarkGray).add_modifier(ratatui::style::Modifier::ITALIC),
+        )])
+      })
+      .collect();
+    let text = Paragraph::new(Text::from(lines));
+    f.render_widget(text, area);
+  }
 }
 
 impl View for ChatView {
@@ -535,24 +588,24 @@ impl View for ChatView {
     match self.state {
       ChatDisplayState::Animating => {
         // Animating → Streaming: LLM starts responding
-        if data.streaming_response.is_some() {
+        if !data.streaming_response.is_empty() {
           self.enter_streaming();
         }
         // Animating → WaitingInput: AI response added to history
-        if data.streaming_response.is_none() && !last_is_user {
+        if data.streaming_response.is_empty() && !last_is_user {
           self.enter_waiting_input();
         }
       }
       ChatDisplayState::Streaming => {
         // Streaming → WaitingInput: streaming response completed
-        if data.streaming_response.is_none() {
+        if data.streaming_response.is_empty() {
           self.enter_waiting_input();
         }
       }
       ChatDisplayState::WaitingInput => {
         // WaitingInput → Animating: user submits message (handled in submit_message)
         // Additional logic: check if need to enter Animating (e.g., when switching from HomeView)
-        if last_is_user && data.streaming_response.is_none() {
+        if last_is_user && data.streaming_response.is_empty() {
           self.enter_animating();
         }
       }
@@ -612,8 +665,12 @@ impl View for ChatView {
           let box_height = box_content_lines + 2; // +2 for top and bottom borders
           constraints.push(Constraint::Length(box_height as u16));
         }
-        ChatMessage::Assistant { content } => {
-          // AI message: plain text only
+        ChatMessage::Assistant { content, thinking_content } => {
+          // AI message: thinking content (if any) + main content
+          if let Some(thinking) = thinking_content {
+            let thinking_lines = Self::calculate_line_count(thinking, available_width);
+            constraints.push(Constraint::Length(thinking_lines as u16));
+          }
           let content_lines = Self::calculate_line_count(content, available_width);
           constraints.push(Constraint::Length(content_lines as u16));
         }
@@ -623,11 +680,16 @@ impl View for ChatView {
     if self.state == ChatDisplayState::Animating {
       constraints.push(Constraint::Length(1));
     }
-    
-    // Streaming response (if any) - plain text, no box
-    if let Some(ref streaming) = data.streaming_response {
-      let content_lines = Self::calculate_line_count(streaming, available_width);
-      constraints.push(Constraint::Length(content_lines as u16));
+
+    // Streaming response chunks (if any) - both thinking and normal content
+    if !data.streaming_response.is_empty() {
+      // Calculate total height for all chunks
+      let total_lines: usize = data.streaming_response.iter()
+        .map(|c| Self::calculate_line_count(c.content(), available_width))
+        .sum();
+      if total_lines > 0 {
+        constraints.push(Constraint::Length(total_lines as u16));
+      }
     }
     
     // Waiting for user input: spinner line (1 line height)
@@ -652,7 +714,7 @@ impl View for ChatView {
             + Self::calculate_line_count(content, box_inner_width)
             + 2
         }
-        ChatMessage::Assistant { content } => {
+        ChatMessage::Assistant { content, .. } => {
           Self::calculate_line_count(content, available_width)
         }
       })
@@ -661,9 +723,12 @@ impl View for ChatView {
     if self.state == ChatDisplayState::Animating {
       total_fixed_height += 1;
     }
-    // Add streaming response height if present (plain text, no box)
-    if let Some(ref streaming) = data.streaming_response {
-      total_fixed_height += Self::calculate_line_count(streaming, available_width);
+    // Add streaming response chunks height if present
+    if !data.streaming_response.is_empty() {
+      let chunks_height: usize = data.streaming_response.iter()
+        .map(|c| Self::calculate_line_count(c.content(), available_width))
+        .sum();
+      total_fixed_height += chunks_height;
     }
     // Add spinner line height if in WaitingInput state
     if self.state == ChatDisplayState::WaitingInput {
@@ -699,8 +764,14 @@ impl View for ChatView {
             chunk_idx += 1;
           }
         }
-        ChatMessage::Assistant { content } => {
-          // AI message: plain text only
+        ChatMessage::Assistant { content, thinking_content } => {
+          // AI message: thinking content (if any) + main content
+          if let Some(thinking) = thinking_content {
+            if chunk_idx < chunks.len() {
+              self.render_thinking_content(f, chunks[chunk_idx], thinking);
+              chunk_idx += 1;
+            }
+          }
           if chunk_idx < chunks.len() {
             self.render_ai_response(f, chunks[chunk_idx], content);
             chunk_idx += 1;
@@ -715,11 +786,40 @@ impl View for ChatView {
       chunk_idx += 1;
     }
     
-    // Render streaming response if present (AI response in progress) - plain text, no box
-    if let Some(ref streaming) = data.streaming_response {
-      if chunk_idx < chunks.len() {
-        self.render_ai_response(f, chunks[chunk_idx], streaming);
-        chunk_idx += 1;
+    // Render streaming response chunks if present
+    if !data.streaming_response.is_empty() {
+      // Combine consecutive chunks of the same type for rendering
+      let mut combined: Vec<(bool, String)> = Vec::new(); // (is_thinking, content)
+      
+      for chunk in data.streaming_response.iter() {
+        match chunk {
+          StreamingChunk::Normal(content) => {
+            if let Some((false, last_content)) = combined.last_mut() {
+              last_content.push_str(content);
+            } else {
+              combined.push((false, content.clone()));
+            }
+          }
+          StreamingChunk::Thinking(content) => {
+            if let Some((true, last_content)) = combined.last_mut() {
+              last_content.push_str(content);
+            } else {
+              combined.push((true, content.clone()));
+            }
+          }
+        }
+      }
+      
+      // Render combined chunks
+      for (is_thinking, content) in combined {
+        if chunk_idx < chunks.len() && !content.is_empty() {
+          if is_thinking {
+            self.render_thinking_content(f, chunks[chunk_idx], &content);
+          } else {
+            self.render_ai_response(f, chunks[chunk_idx], &content);
+          }
+          chunk_idx += 1;
+        }
       }
     }
     

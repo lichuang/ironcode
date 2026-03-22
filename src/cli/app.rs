@@ -3,7 +3,8 @@ use crate::config::Config;
 use crate::error::Result;
 use crate::llm::{ChatSession, SessionEvent, SessionHandle};
 use crate::tui::{FrameRequester, MessageBroker, UiMessage};
-use crate::view::chat::ChatMessage;
+use crate::view::chat::{ChatMessage, StreamingChunk};
+use std::sync::Arc;
 use crate::view::{ChatView, HomeView, View};
 use crossterm::event::KeyEvent;
 use log::{error, info};
@@ -22,8 +23,10 @@ pub struct AppData {
   pub(crate) pending_first_message: Option<String>,
   /// Error message to display in the UI (e.g., session initialization failed)
   pub(crate) error_message: Option<String>,
-  /// Current streaming response from LLM (for real-time display)
-  pub(crate) streaming_response: Option<String>,
+  /// Current streaming content chunks from LLM (for real-time display)
+  /// Contains both normal and thinking content. Empty when not streaming.
+  /// Uses Arc for cheap cloning when sharing between App and ChatView.
+  pub(crate) streaming_response: Arc<Vec<StreamingChunk>>,
 }
 
 impl AppData {
@@ -35,7 +38,7 @@ impl AppData {
       init_session_requested: false,
       pending_first_message: None,
       error_message: None,
-      streaming_response: None,
+      streaming_response: Arc::new(Vec::new()),
     }
   }
 }
@@ -62,8 +65,9 @@ pub struct App {
   pub(crate) config: Config,
   /// Chat session for LLM communication (initialized when first chat starts)
   chat_session: Option<ChatSession>,
-  /// Current LLM response being accumulated (for streaming display)
-  current_response: String,
+  /// Current LLM response chunks being accumulated (for streaming display)
+  /// Uses Arc for cheap cloning when sharing with AppData.
+  current_chunks: Arc<Vec<StreamingChunk>>,
 }
 
 impl App {
@@ -83,7 +87,7 @@ impl App {
       runtime,
       config,
       chat_session: None,
-      current_response: String::new(),
+      current_chunks: Arc::new(Vec::new()),
     })
   }
 
@@ -193,35 +197,60 @@ impl App {
         updated = true;
         match event {
           SessionEvent::ContentChunk(chunk) => {
-            // Accumulate content for streaming display
-            self.current_response.push_str(&chunk);
-            // Update streaming response for UI display
-            self.data.streaming_response = Some(self.current_response.clone());
+            log::debug!("App: Received ContentChunk, len={}, content={}", chunk.len(), 
+              &chunk[..chunk.len().min(100)]);
+            // Add normal content chunk - make_mut to clone only if needed
+            Arc::make_mut(&mut self.current_chunks).push(StreamingChunk::Normal(chunk));
+            // Update streaming response for UI display - cheap Arc clone
+            self.data.streaming_response = self.current_chunks.clone();
+          }
+          SessionEvent::ThinkingChunk(chunk) => {
+            log::info!("App: Received ThinkingChunk, len={}, content={}", chunk.len(),
+              &chunk[..chunk.len().min(100)]);
+            // Add thinking content chunk - make_mut to clone only if needed
+            Arc::make_mut(&mut self.current_chunks).push(StreamingChunk::Thinking(chunk));
+            // Update streaming response for UI display - cheap Arc clone
+            self.data.streaming_response = self.current_chunks.clone();
           }
           SessionEvent::Completed => {
+            // Extract normal and thinking content from chunks
+            let normal_content: String = self.current_chunks.iter()
+              .filter_map(|c| match c {
+                StreamingChunk::Normal(s) => Some(s.as_str()),
+                _ => None,
+              })
+              .collect();
+            let thinking_content: String = self.current_chunks.iter()
+              .filter_map(|c| match c {
+                StreamingChunk::Thinking(s) => Some(s.as_str()),
+                _ => None,
+              })
+              .collect();
+            log::info!("App: Stream completed, normal_len={}, thinking_len={}", 
+              normal_content.len(), 
+              thinking_content.len()
+            );
             // Stream completed - save AI response to chat history
-            if !self.current_response.is_empty() {
-              info!(
-                "LLM response completed, len={}",
-                self.current_response.len()
-              );
-              // Safely get first 100 chars, handling multi-byte UTF-8 boundaries
-              let preview: String = self.current_response.chars().take(100).collect();
-              log::debug!("AI response content (first 100 chars): {}", preview);
-              // Add AI response to chat history
+            if !normal_content.is_empty() || !thinking_content.is_empty() {
+              // Add AI response to chat history (with thinking content if any)
               self.data.chat_history.push(ChatMessage::Assistant {
-                content: self.current_response.clone(),
+                content: normal_content,
+                thinking_content: if thinking_content.is_empty() {
+                  None
+                } else {
+                  Some(thinking_content)
+                },
               });
             }
             // Clear streaming state
-            self.data.streaming_response = None;
-            self.current_response.clear();
+            self.data.streaming_response = Arc::new(Vec::new());
+            self.current_chunks = Arc::new(Vec::new());
           }
           SessionEvent::Error(err) => {
             // Log error and clear any partial response
             error!("LLM stream error: {}", err);
-            self.current_response.clear();
-            self.data.streaming_response = None;
+            self.current_chunks = Arc::new(Vec::new());
+            self.data.streaming_response = Arc::new(Vec::new());
           }
           SessionEvent::Shutdown => {
             // Session has been shutdown
