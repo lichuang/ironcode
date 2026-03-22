@@ -94,12 +94,15 @@ impl ChatMessage {
 /// 
 /// State transitions:
 /// - User submits message → Animating (show moon animation)
-/// - LLM starts responding → Streaming (show streaming content)
+/// - LLM starts responding with thinking content → Thinking (show "Thinking...")
+/// - LLM starts responding with normal content → Streaming (show streaming content)
 /// - Response completed → WaitingInput (show spinner waiting for input)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChatDisplayState {
   /// Waiting for LLM to start responding: show moon animation
   Animating,
+  /// LLM is streaming thinking/reasoning content: show "Thinking..."
+  Thinking,
   /// LLM is streaming response: show streaming content
   Streaming,
   /// Waiting for user input: show bottom spinner
@@ -155,7 +158,12 @@ impl ChatView {
     
     // Determine initial state
     let state = if !data.streaming_response.is_empty() {
-      ChatDisplayState::Streaming
+      // Check if currently streaming thinking content
+      if data.streaming_response.iter().any(|c| c.is_thinking()) {
+        ChatDisplayState::Thinking
+      } else {
+        ChatDisplayState::Streaming
+      }
     } else if waiting_for_ai {
       ChatDisplayState::Animating
     } else {
@@ -192,6 +200,16 @@ impl ChatView {
     // Reset moon animation frame
     self.moon_frame = 0;
     self.last_moon_update = Instant::now();
+  }
+
+  /// State transition: enter Thinking state
+  fn enter_thinking(&mut self) {
+    let old_state = self.state;
+    self.state = ChatDisplayState::Thinking;
+    log::debug!("State transition: {:?} → {:?}", old_state, self.state);
+    // Reset spinner animation for "Thinking..." indicator
+    self.spinner_frame = 0;
+    self.last_spinner_update = Instant::now();
   }
 
   /// State transition: enter Streaming state
@@ -500,6 +518,20 @@ impl ChatView {
     f.render_widget(widget, area);
   }
 
+  /// Render the thinking indicator ("Thinking..." with spinner)
+  fn render_thinking_indicator(&self, f: &mut Frame, area: Rect) {
+    let spinner = self.current_spinner();
+    let text = Text::from(vec![Line::from(vec![
+      Span::raw("  "),
+      Span::styled(spinner.to_string(), *THINKING),
+      Span::raw(" "),
+      Span::styled("Thinking...", *THINKING),
+    ])]);
+
+    let widget = Paragraph::new(text);
+    f.render_widget(widget, area);
+  }
+
   /// Render AI response as plain text (without box)
   fn render_ai_response(&self, f: &mut Frame, area: Rect, response: &str) {
     let wrapped_lines = Self::wrap_text(response, area.width);
@@ -585,14 +617,33 @@ impl View for ChatView {
     // State machine transition logic
     match self.state {
       ChatDisplayState::Animating => {
-        // Animating → Streaming: LLM starts responding
+        // Check if LLM started responding
         if !data.streaming_response.is_empty() {
-          self.enter_streaming();
+          // Animating → Thinking: first chunk is thinking content
+          // Animating → Streaming: first chunk is normal content
+          if data.streaming_response.iter().any(|c| c.is_thinking()) {
+            self.enter_thinking();
+          } else {
+            self.enter_streaming();
+          }
         }
         // Animating → WaitingInput: AI response added to history
-        if data.streaming_response.is_empty() && !last_is_user {
+        else if data.streaming_response.is_empty() && !last_is_user {
           self.enter_waiting_input();
         }
+      }
+      ChatDisplayState::Thinking => {
+        // Thinking → Streaming: received normal content (thinking completed)
+        // or stream ended but we have thinking content to display
+        if data.streaming_response.iter().any(|c| !c.is_thinking()) {
+          self.enter_streaming();
+        }
+        // Thinking → WaitingInput: streaming response completed and empty
+        else if data.streaming_response.is_empty() {
+          self.enter_waiting_input();
+        }
+        // Note: if stream ends with only thinking content, it will be handled
+        // when streaming_response becomes empty (moved to history)
       }
       ChatDisplayState::Streaming => {
         // Streaming → WaitingInput: streaming response completed
@@ -628,6 +679,16 @@ impl View for ChatView {
       if moon_elapsed >= MOON_INTERVAL {
         self.moon_frame = (self.moon_frame + 1) % MOON_FRAMES.len();
         self.last_moon_update = now;
+      }
+    }
+
+    // Update thinking spinner animation (only in Thinking state)
+    if self.state == ChatDisplayState::Thinking {
+      let spinner_elapsed = now.duration_since(self.last_spinner_update);
+      const THINKING_SPINNER_INTERVAL: Duration = Duration::from_millis(200);
+      if spinner_elapsed >= THINKING_SPINNER_INTERVAL {
+        self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
+        self.last_spinner_update = now;
       }
     }
 
@@ -679,8 +740,14 @@ impl View for ChatView {
       constraints.push(Constraint::Length(1));
     }
 
-    // Streaming response chunks (if any) - both thinking and normal content
-    if !data.streaming_response.is_empty() {
+    // Thinking indicator row (only shown in Thinking state)
+    if self.state == ChatDisplayState::Thinking {
+      constraints.push(Constraint::Length(1));
+    }
+
+    // Streaming response chunks (if any) - only in Streaming state
+    // In Thinking state, content is accumulated but not displayed yet
+    if self.state == ChatDisplayState::Streaming && !data.streaming_response.is_empty() {
       // Calculate total height for all chunks
       let total_lines: usize = data.streaming_response.iter()
         .map(|c| Self::calculate_line_count(c.content(), available_width))
@@ -721,8 +788,14 @@ impl View for ChatView {
     if self.state == ChatDisplayState::Animating {
       total_fixed_height += 1;
     }
-    // Add streaming response chunks height if present
-    if !data.streaming_response.is_empty() {
+    // Add thinking indicator height if in Thinking state
+    // Note: In Thinking state, we only show the indicator, not the actual content
+    if self.state == ChatDisplayState::Thinking {
+      total_fixed_height += 1;
+    }
+    // Add streaming response chunks height if present (only in Streaming state)
+    // In Thinking state, we don't show the streaming content yet
+    if self.state == ChatDisplayState::Streaming && !data.streaming_response.is_empty() {
       let chunks_height: usize = data.streaming_response.iter()
         .map(|c| Self::calculate_line_count(c.content(), available_width))
         .sum();
@@ -783,9 +856,16 @@ impl View for ChatView {
       self.render_moon_animation(f, chunks[chunk_idx]);
       chunk_idx += 1;
     }
-    
-    // Render streaming response chunks if present
-    if !data.streaming_response.is_empty() {
+
+    // Render thinking indicator if in Thinking state
+    if self.state == ChatDisplayState::Thinking && chunk_idx < chunks.len() {
+      self.render_thinking_indicator(f, chunks[chunk_idx]);
+      chunk_idx += 1;
+    }
+
+    // Render streaming response chunks if present (only in Streaming state)
+    // In Thinking state, we only show the "Thinking..." indicator without content
+    if self.state == ChatDisplayState::Streaming && !data.streaming_response.is_empty() {
       // Combine consecutive chunks of the same type for rendering
       let mut combined: Vec<(bool, String)> = Vec::new(); // (is_thinking, content)
       
