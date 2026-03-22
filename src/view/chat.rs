@@ -4,7 +4,6 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
   Frame,
   layout::{Constraint, Direction, Layout, Rect},
-  style::{Color, Style},
   symbols::border,
   text::{Line, Span, Text},
   widgets::{Block, Borders, Paragraph, Wrap},
@@ -13,7 +12,10 @@ use ratatui::{
 use crate::cli::AppData;
 use crate::llm::SessionHandle;
 use crate::tui::{FrameRequester, TARGET_FRAME_INTERVAL};
-use crate::utils::{char_display_width, string_display_width};
+use crate::utils::{
+  HIGHLIGHT, MOON_FRAMES, PRIMARY, PRIMARY_BORDER, SECONDARY, SPINNER_FRAMES, THINKING,
+  char_display_width, string_display_width,
+};
 use crate::view::View;
 
 /// Error when creating ChatView without a valid session
@@ -86,11 +88,7 @@ impl ChatMessage {
   }
 }
 
-/// Spinner animation frames (classic terminal loading)
-const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
-/// Moon phase animation frames (🌑 → 🌕 → 🌑)
-const MOON_FRAMES: &[char] = &['🌑', '🌒', '🌓', '🌔', '🌕', '🌖', '🌗', '🌘'];
 
 /// Chat display state machine
 /// 
@@ -447,9 +445,9 @@ impl ChatView {
     let text = if with_arrow {
       // User message style: prompt > input
       Text::from(vec![Line::from(vec![
-        Span::styled(&self.prompt, Style::default().fg(Color::Green)),
+        Span::styled(&self.prompt, *PRIMARY),
         Span::raw(" "),
-        Span::styled(">", Style::default().fg(Color::Yellow)),
+        Span::styled(">", *HIGHLIGHT),
         Span::raw(" "),
         Span::raw(input),
       ])])
@@ -457,9 +455,9 @@ impl ChatView {
       // Waiting for input style: prompt spinner
       let spinner = self.current_spinner();
       Text::from(vec![Line::from(vec![
-        Span::styled(&self.prompt, Style::default().fg(Color::Green)),
+        Span::styled(&self.prompt, *PRIMARY),
         Span::raw(" "),
-        Span::styled(spinner.to_string(), Style::default().fg(Color::Cyan)),
+        Span::styled(spinner.to_string(), *PRIMARY)
       ])])
     };
 
@@ -472,7 +470,7 @@ impl ChatView {
     let block = Block::default()
       .borders(Borders::ALL)
       .border_set(border::ROUNDED)
-      .border_style(Style::default().fg(Color::Cyan));
+      .border_style(*PRIMARY_BORDER);
 
     let inner_area = block.inner(area);
 
@@ -495,7 +493,7 @@ impl ChatView {
     let moon = self.current_moon();
     let text = Text::from(vec![Line::from(vec![
       Span::raw("  "),
-      Span::styled(moon.to_string(), Style::default().fg(Color::Yellow)),
+      Span::styled(moon.to_string(), *HIGHLIGHT)
     ])]);
 
     let widget = Paragraph::new(text);
@@ -511,14 +509,14 @@ impl ChatView {
   }
 
   /// Render thinking content with grey italic style
-  fn render_thinking_content(&self, f: &mut Frame, area: Rect, thinking: &str) {
-    let wrapped_lines = Self::wrap_text(thinking, area.width);
+  fn render_thinking_content(&self, f: &mut Frame, area: Rect, content: &str) {
+    let wrapped_lines = Self::wrap_text(content, area.width);
     let lines: Vec<Line> = wrapped_lines
       .into_iter()
       .map(|line| {
         Line::from(vec![Span::styled(
           line,
-          Style::default().fg(Color::DarkGray).add_modifier(ratatui::style::Modifier::ITALIC),
+          *THINKING,
         )])
       })
       .collect();

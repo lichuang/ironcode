@@ -2,13 +2,15 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
   Frame,
   layout::{Alignment, Constraint, Direction, Layout, Rect},
-  style::{Color, Modifier, Style},
   text::{Line, Span, Text},
   widgets::{Block, Borders, Clear, Paragraph},
 };
 
 use crate::cli::AppData;
-use crate::utils::prefix_display_width;
+use crate::utils::{
+  ERROR, ERROR_BORDER, HIGHLIGHT, HIGHLIGHT_BORDER, MUTED, PRIMARY, PRIMARY_BORDER, TEXT, TITLE,
+  prefix_display_width,
+};
 use crate::view::{ChatView, View};
 
 /// Home view state
@@ -104,14 +106,12 @@ impl HomeView {
       Line::from(""),
       Line::from(vec![Span::styled(
         "IronCode",
-        Style::default()
-          .fg(Color::Cyan)
-          .add_modifier(Modifier::BOLD),
+        *TITLE,
       )])
       .alignment(Alignment::Center),
       Line::from(Span::styled(
         "AI Coding Agent",
-        Style::default().fg(Color::Gray),
+        *MUTED,
       ))
       .alignment(Alignment::Center),
     ]);
@@ -119,7 +119,7 @@ impl HomeView {
     let title = Paragraph::new(title_text).block(
       Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan)),
+        .border_style(*PRIMARY_BORDER),
     );
 
     f.render_widget(title, area);
@@ -132,9 +132,9 @@ impl HomeView {
         Block::default()
           .title(" Start a chat ")
           .borders(Borders::ALL)
-          .border_style(Style::default().fg(Color::Yellow)),
+          .border_style(*HIGHLIGHT_BORDER),
       )
-      .style(Style::default().fg(Color::White));
+      .style(*TEXT);
 
     f.render_widget(input_widget, area);
   }
@@ -143,25 +143,25 @@ impl HomeView {
   fn render_status_bar(&self, f: &mut Frame, area: Rect) {
     let status_text = Text::from(Line::from(vec![
       Span::raw("Press "),
-      Span::styled("Enter", Style::default().fg(Color::Yellow)),
+      Span::styled("Enter", *HIGHLIGHT),
       Span::raw(" to chat, "),
-      Span::styled("ESC", Style::default().fg(Color::Yellow)),
+      Span::styled("ESC", *HIGHLIGHT),
       Span::raw(" to exit"),
     ]));
 
-    let status_bar = Paragraph::new(status_text).style(Style::default().fg(Color::Gray));
+    let status_bar = Paragraph::new(status_text).style(*MUTED);
 
     f.render_widget(status_bar, area);
   }
 
   /// Render error message
-  fn render_error(&self, f: &mut Frame, area: Rect, error: &str) {
+  fn render_error(&self, f: &mut Frame, area: Rect, message: &str) {
     // Truncate error if too long to fit in the box
     let max_len = area.width as usize * area.height as usize;
-    let error_text = if error.len() > max_len.saturating_sub(10) {
-      format!("{}...", &error[..max_len.saturating_sub(13)])
+    let error_text = if message.len() > max_len.saturating_sub(10) {
+      format!("{}...", &message[..max_len.saturating_sub(13)])
     } else {
-      error.to_string()
+      message.to_string()
     };
 
     let error_widget = Paragraph::new(error_text)
@@ -169,9 +169,9 @@ impl HomeView {
         Block::default()
           .title(" Error ")
           .borders(Borders::ALL)
-          .border_style(Style::default().fg(Color::Red)),
+          .border_style(*ERROR_BORDER),
       )
-      .style(Style::default().fg(Color::Red));
+      .style(*ERROR);
 
     f.render_widget(error_widget, area);
   }
