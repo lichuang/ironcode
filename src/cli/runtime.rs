@@ -1,6 +1,8 @@
 use crate::config::loader::system_prompt_path;
 use crate::error::{Result, RuntimeError};
-use crate::tools::handlers::{GlobHandler, GrepHandler, ReadFileHandler, WriteFileHandler};
+use crate::tools::handlers::{
+  GlobHandler, GrepHandler, ReadFileHandler, ReplaceFileHandler, WriteFileHandler,
+};
 use crate::tools::{ExecutableToolRegistry, ToolRegistry};
 use log::{debug, info, warn};
 use std::fs;
@@ -57,7 +59,8 @@ impl RuntimeArgs {
 
   /// Get directory listing of working directory
   fn load_work_dir_ls() -> Result<String> {
-    let work_dir = std::env::current_dir().map_err(|e| RuntimeError::GetCurrentDir { source: e })?;
+    let work_dir =
+      std::env::current_dir().map_err(|e| RuntimeError::GetCurrentDir { source: e })?;
     let mut entries = Vec::new();
 
     for entry in fs::read_dir(&work_dir).map_err(|e| RuntimeError::read_dir(&work_dir, e))? {
@@ -76,7 +79,11 @@ impl RuntimeArgs {
       } else {
         format!("-{}r--r--", mode)
       };
-      let size_str = if is_dir { String::new() } else { format!("{}", size) };
+      let size_str = if is_dir {
+        String::new()
+      } else {
+        format!("{}", size)
+      };
       entries.push(format!("{}{:>10} {}", perms, size_str, name));
     }
 
@@ -101,8 +108,6 @@ impl RuntimeArgs {
   }
 }
 
-
-
 /// Runtime holds the system prompt template, arguments for rendering, and tool registry
 #[derive(Debug, Clone)]
 pub(crate) struct Runtime {
@@ -125,13 +130,13 @@ impl Runtime {
   pub(crate) fn new(data_dir: &PathBuf) -> Result<Self> {
     let system_prompt_template = Self::load_system_prompt_template(data_dir);
     let args = RuntimeArgs::new()?;
-    
+
     // Load executable tool registry first (handlers must be registered before checking)
     let executable_tool_registry = Arc::new(Self::load_executable_tools());
-    
+
     // Load tool definitions from Markdown files
     let tool_registry = Arc::new(Self::load_tools(data_dir)?);
-    
+
     // Check that all defined tools have corresponding handlers
     Self::validate_tool_handlers(&tool_registry, &executable_tool_registry)?;
 
@@ -148,6 +153,7 @@ impl Runtime {
     let mut registry = ExecutableToolRegistry::new();
     registry.register("ReadFile", Box::new(ReadFileHandler::new()));
     registry.register("WriteFile", Box::new(WriteFileHandler::new()));
+    registry.register("ReplaceFile", Box::new(ReplaceFileHandler::new()));
     registry.register("Grep", Box::new(GrepHandler::new()));
     registry.register("Glob", Box::new(GlobHandler::new()));
     registry
@@ -182,13 +188,19 @@ impl Runtime {
     for tool in tool_registry.all() {
       // Skip tools that are marked as not having a handler
       if tool.no_handler {
-        log::debug!("Skipping handler check for tool '{}' (no_handler: true)", tool.name);
+        log::debug!(
+          "Skipping handler check for tool '{}' (no_handler: true)",
+          tool.name
+        );
         continue;
       }
       if !executable_registry.has(&tool.name) {
-        return Err(RuntimeError::MissingToolHandler {
-          tool_name: tool.name.clone(),
-        }.into());
+        return Err(
+          RuntimeError::MissingToolHandler {
+            tool_name: tool.name.clone(),
+          }
+          .into(),
+        );
       }
     }
     Ok(())
@@ -201,7 +213,7 @@ impl Runtime {
   fn load_system_prompt_template(config_dir: &PathBuf) -> String {
     let prompt_path = system_prompt_path(config_dir);
     debug!("Loading system prompt from: {:?}", prompt_path);
-    
+
     match fs::read_to_string(&prompt_path) {
       Ok(content) => {
         if content.trim().is_empty() {
@@ -225,11 +237,12 @@ impl Runtime {
       .replace("${IRONCODE_NOW}", &self.args.now)
       .replace("${IRONCODE_WORK_DIR}", &self.args.work_dir)
       .replace("${IRONCODE_WORK_DIR_LS}", &self.args.work_dir_ls)
-      .replace("${IRONCODE_ADDITIONAL_DIRS_INFO}", &self.args.additional_dirs_info)
+      .replace(
+        "${IRONCODE_ADDITIONAL_DIRS_INFO}",
+        &self.args.additional_dirs_info,
+      )
       .replace("${IRONCODE_AGENTS_MD}", &self.args.agents_md)
       .replace("${IRONCODE_SKILLS}", &self.args.skills)
       .replace("${ROLE_ADDITIONAL}", &self.args.role_additional)
   }
 }
-
-
