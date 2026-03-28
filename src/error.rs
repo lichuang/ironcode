@@ -166,6 +166,9 @@ pub enum RuntimeError {
     #[source]
     source: std::io::Error,
   },
+
+  #[error("Tool '{tool_name}' is defined in prompts but no handler is implemented")]
+  MissingToolHandler { tool_name: String },
 }
 
 // Helper methods for error creation

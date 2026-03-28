@@ -274,6 +274,14 @@ pub struct ExecutableToolRegistry {
   handlers: HashMap<String, Box<dyn ToolHandler>>,
 }
 
+impl std::fmt::Debug for ExecutableToolRegistry {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("ExecutableToolRegistry")
+      .field("handlers", &self.handlers.keys().collect::<Vec<_>>())
+      .finish()
+  }
+}
+
 impl ExecutableToolRegistry {
   /// Create a new empty registry
   pub fn new() -> Self {

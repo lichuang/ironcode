@@ -8,7 +8,6 @@ use crate::error::{ConfigError, Result};
 use crate::llm::provider::LLMProvider;
 use crate::llm::providers::KimiProvider;
 use crate::llm::types::{ChatConfig, Message, Role, ToolCall};
-use crate::tools::handlers::ReadFileHandler;
 use crate::tools::{ExecutableToolRegistry, ToolInvocation, ToolPayload};
 use async_openai::types::chat::ChatCompletionResponseStream;
 use chrono::{Datelike, Local, Timelike};
@@ -134,8 +133,8 @@ struct SessionActor {
   stream_rx: Option<mpsc::UnboundedReceiver<SessionEvent>>,
   /// Tool call buffer for accumulating tool calls during streaming
   pending_tool_calls: Vec<ToolCall>,
-  /// Executable tool registry for handling tool calls
-  tool_registry: ExecutableToolRegistry,
+  /// Executable tool registry for handling tool calls (shared)
+  tool_registry: Arc<ExecutableToolRegistry>,
   /// Working directory for tool execution
   cwd: std::path::PathBuf,
 }
@@ -147,11 +146,8 @@ impl SessionActor {
     messages: Vec<Message>,
     event_tx: mpsc::UnboundedSender<SessionEvent>,
     cmd_rx: mpsc::UnboundedReceiver<SessionCommand>,
+    tool_registry: Arc<ExecutableToolRegistry>,
   ) -> Self {
-    // Initialize tool registry with handlers
-    let mut tool_registry = ExecutableToolRegistry::new();
-    tool_registry.register("ReadFile", Box::new(ReadFileHandler::new()));
-
     Self {
       id,
       provider,
@@ -591,10 +587,14 @@ impl ChatSession {
   /// Start a new chat session with a system prompt
   ///
   /// Returns a handle to control the session and a receiver for events
-  pub fn start(provider: Box<dyn LLMProvider>, system_prompt: impl Into<String>) -> Self {
+  pub fn start(
+    provider: Box<dyn LLMProvider>,
+    system_prompt: impl Into<String>,
+    tool_registry: Arc<ExecutableToolRegistry>,
+  ) -> Self {
     let id = generate_session_id();
     let messages = vec![Message::system(system_prompt)];
-    Self::start_with_messages(id, provider, messages)
+    Self::start_with_messages(id, provider, messages, tool_registry)
   }
 
   /// Start a new chat session from configuration and runtime system prompt
@@ -602,14 +602,16 @@ impl ChatSession {
   /// # Arguments
   /// * `config` - The application configuration
   /// * `system_prompt` - The system prompt to use
-  /// * `tool_registry` - Shared tool registry for function calling
+  /// * `tool_registry` - Shared tool registry for function calling (for LLM)
+  /// * `executable_tool_registry` - Shared executable tool registry (for handling tool calls)
   pub fn create(
     config: &Config,
     system_prompt: impl Into<String>,
     tool_registry: Arc<crate::tools::ToolRegistry>,
+    executable_tool_registry: Arc<ExecutableToolRegistry>,
   ) -> Result<Self> {
     let provider = Self::create_provider(config, tool_registry)?;
-    let session = Self::start(provider, system_prompt);
+    let session = Self::start(provider, system_prompt, executable_tool_registry);
     info!("ChatSession {} created from config", session.handle.id);
     Ok(session)
   }
@@ -683,9 +685,12 @@ impl ChatSession {
   }
 
   /// Start a new chat session without a system prompt
-  pub fn start_without_system_prompt(provider: Box<dyn LLMProvider>) -> Self {
+  pub fn start_without_system_prompt(
+    provider: Box<dyn LLMProvider>,
+    tool_registry: Arc<ExecutableToolRegistry>,
+  ) -> Self {
     let id = generate_session_id();
-    Self::start_with_messages(id, provider, Vec::new())
+    Self::start_with_messages(id, provider, Vec::new(), tool_registry)
   }
 
   /// Internal: start session with given messages
@@ -693,6 +698,7 @@ impl ChatSession {
     id: String,
     provider: Box<dyn LLMProvider>,
     messages: Vec<Message>,
+    tool_registry: Arc<ExecutableToolRegistry>,
   ) -> Self {
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
     let (event_tx, event_rx) = mpsc::unbounded_channel();
@@ -702,7 +708,7 @@ impl ChatSession {
       cmd_tx,
     };
 
-    let actor = SessionActor::new(id, provider, messages, event_tx, cmd_rx);
+    let actor = SessionActor::new(id, provider, messages, event_tx, cmd_rx, tool_registry);
     tokio::spawn(actor.run());
 
     Self { handle, event_rx }

@@ -333,6 +333,7 @@ impl App {
       &self.config,
       system_prompt,
       self.runtime.tool_registry.clone(),
+      self.runtime.executable_tool_registry.clone(),
     )?);
 
     // Send pending first message if exists

@@ -1,6 +1,7 @@
 use crate::config::loader::system_prompt_path;
 use crate::error::{Result, RuntimeError};
-use crate::tools::ToolRegistry;
+use crate::tools::handlers::ReadFileHandler;
+use crate::tools::{ExecutableToolRegistry, ToolRegistry};
 use log::{debug, info, warn};
 use std::fs;
 use std::path::PathBuf;
@@ -111,6 +112,8 @@ pub(crate) struct Runtime {
   pub system_prompt_template: String,
   /// Tool registry containing all loaded tools (shared with providers)
   pub tool_registry: Arc<ToolRegistry>,
+  /// Executable tool registry for handling tool calls (shared across sessions)
+  pub executable_tool_registry: Arc<ExecutableToolRegistry>,
 }
 
 impl Runtime {
@@ -122,31 +125,64 @@ impl Runtime {
   pub(crate) fn new(data_dir: &PathBuf) -> Result<Self> {
     let system_prompt_template = Self::load_system_prompt_template(data_dir);
     let args = RuntimeArgs::new()?;
-    let tool_registry = Arc::new(Self::load_tools(data_dir));
+    
+    // Load executable tool registry first (handlers must be registered before checking)
+    let executable_tool_registry = Arc::new(Self::load_executable_tools());
+    
+    // Load tool definitions from Markdown files
+    let tool_registry = Arc::new(Self::load_tools(data_dir)?);
+    
+    // Check that all defined tools have corresponding handlers
+    Self::validate_tool_handlers(&tool_registry, &executable_tool_registry)?;
 
     Ok(Self {
       args,
       system_prompt_template,
       tool_registry,
+      executable_tool_registry,
     })
+  }
+
+  /// Load and initialize the executable tool registry with all handlers
+  fn load_executable_tools() -> ExecutableToolRegistry {
+    let mut registry = ExecutableToolRegistry::new();
+    registry.register("ReadFile", Box::new(ReadFileHandler::new()));
+    registry
   }
 
   /// Load tools from the data directory
   /// Tools are loaded from {data_dir}/prompts/tools/
-  fn load_tools(data_dir: &PathBuf) -> ToolRegistry {
+  fn load_tools(data_dir: &PathBuf) -> Result<ToolRegistry> {
     let tools_dir = data_dir.join("prompts").join("tools");
     debug!("Loading tools from: {:?}", tools_dir);
 
     match ToolRegistry::load_from_dir(&tools_dir) {
       Ok(registry) => {
         info!("Loaded {} tools from {:?}", registry.len(), tools_dir);
-        registry
+        Ok(registry)
       }
       Err(e) => {
         warn!("Failed to load tools from {:?}: {}", tools_dir, e);
-        ToolRegistry::new()
+        // If directory doesn't exist or fails to load, return empty registry
+        // This is not a fatal error - tools are optional
+        Ok(ToolRegistry::new())
       }
     }
+  }
+
+  /// Validate that all tools defined in registry have corresponding handlers
+  fn validate_tool_handlers(
+    tool_registry: &ToolRegistry,
+    executable_registry: &ExecutableToolRegistry,
+  ) -> Result<()> {
+    for tool in tool_registry.all() {
+      if !executable_registry.has(&tool.name) {
+        return Err(RuntimeError::MissingToolHandler {
+          tool_name: tool.name.clone(),
+        }.into());
+      }
+    }
+    Ok(())
   }
 
   /// Load the system prompt template from config directory
