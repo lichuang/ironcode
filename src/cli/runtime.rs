@@ -1,6 +1,6 @@
 use crate::config::loader::system_prompt_path;
 use crate::error::{Result, RuntimeError};
-use crate::tools::handlers::ReadFileHandler;
+use crate::tools::handlers::{ReadFileHandler, WriteFileHandler};
 use crate::tools::{ExecutableToolRegistry, ToolRegistry};
 use log::{debug, info, warn};
 use std::fs;
@@ -147,6 +147,7 @@ impl Runtime {
   fn load_executable_tools() -> ExecutableToolRegistry {
     let mut registry = ExecutableToolRegistry::new();
     registry.register("ReadFile", Box::new(ReadFileHandler::new()));
+    registry.register("WriteFile", Box::new(WriteFileHandler::new()));
     registry
   }
 
@@ -171,11 +172,17 @@ impl Runtime {
   }
 
   /// Validate that all tools defined in registry have corresponding handlers
+  /// Tools marked with `no_handler: true` are skipped from validation
   fn validate_tool_handlers(
     tool_registry: &ToolRegistry,
     executable_registry: &ExecutableToolRegistry,
   ) -> Result<()> {
     for tool in tool_registry.all() {
+      // Skip tools that are marked as not having a handler
+      if tool.no_handler {
+        log::debug!("Skipping handler check for tool '{}' (no_handler: true)", tool.name);
+        continue;
+      }
       if !executable_registry.has(&tool.name) {
         return Err(RuntimeError::MissingToolHandler {
           tool_name: tool.name.clone(),

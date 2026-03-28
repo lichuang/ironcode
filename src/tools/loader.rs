@@ -78,10 +78,16 @@ fn parse_tool_from_markdown(content: &str, path: &Path) -> Result<Tool> {
 
   let description = frontmatter.get("description").cloned().unwrap_or_default();
 
+  // Parse no_handler flag from frontmatter
+  let no_handler = frontmatter
+    .get("no_handler")
+    .map(|v| v == "true" || v == "yes" || v == "1")
+    .unwrap_or(false);
+
   // Parse parameters from body (JSON block after ## Parameters)
   let parameters = parse_parameters(body).unwrap_or_else(|| default_parameters_schema());
 
-  Ok(Tool::new(name, description, parameters))
+  Ok(Tool::new_with_no_handler(name, description, parameters, no_handler))
 }
 
 /// Parse YAML frontmatter from Markdown content
@@ -234,5 +240,33 @@ description: Use this tool to think
     assert_eq!(tool.name, "Think");
     assert_eq!(tool.description, "Use this tool to think");
     assert_eq!(tool.parameters["type"], "object");
+    assert!(!tool.no_handler);
+  }
+
+  #[test]
+  fn test_parse_tool_with_no_handler() {
+    let markdown = r#"---
+name: Think
+description: A thinking tool
+no_handler: true
+---
+
+## Parameters
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "thought": {
+      "type": "string"
+    }
+  }
+}
+```
+"#;
+
+    let tool = parse_tool_from_markdown(markdown, Path::new("test.md")).unwrap();
+    assert_eq!(tool.name, "Think");
+    assert!(tool.no_handler, "no_handler should be true");
   }
 }

@@ -44,6 +44,9 @@ pub struct Tool {
   pub description: String,
   /// JSON Schema for parameters
   pub parameters: serde_json::Value,
+  /// Whether this tool has no handler (declarative tool only)
+  #[serde(default)]
+  pub no_handler: bool,
 }
 
 impl Tool {
@@ -57,6 +60,22 @@ impl Tool {
       name: name.into(),
       description: description.into(),
       parameters,
+      no_handler: false,
+    }
+  }
+
+  /// Create a new tool with no_handler flag
+  pub fn new_with_no_handler(
+    name: impl Into<String>,
+    description: impl Into<String>,
+    parameters: serde_json::Value,
+    no_handler: bool,
+  ) -> Self {
+    Self {
+      name: name.into(),
+      description: description.into(),
+      parameters,
+      no_handler,
     }
   }
 
