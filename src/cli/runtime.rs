@@ -1,6 +1,6 @@
 use crate::config::loader::system_prompt_path;
 use crate::error::{Result, RuntimeError};
-use crate::tools::handlers::{ReadFileHandler, WriteFileHandler};
+use crate::tools::handlers::{GlobHandler, GrepHandler, ReadFileHandler, WriteFileHandler};
 use crate::tools::{ExecutableToolRegistry, ToolRegistry};
 use log::{debug, info, warn};
 use std::fs;
@@ -148,6 +148,8 @@ impl Runtime {
     let mut registry = ExecutableToolRegistry::new();
     registry.register("ReadFile", Box::new(ReadFileHandler::new()));
     registry.register("WriteFile", Box::new(WriteFileHandler::new()));
+    registry.register("Grep", Box::new(GrepHandler::new()));
+    registry.register("Glob", Box::new(GlobHandler::new()));
     registry
   }
 
