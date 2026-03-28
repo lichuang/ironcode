@@ -5,6 +5,10 @@ pub struct Message {
   pub role: Role,
   /// The content of the message
   pub content: String,
+  /// Tool calls requested by the assistant (only for assistant messages)
+  pub tool_calls: Option<Vec<ToolCall>>,
+  /// The ID of the tool call this message is responding to (only for tool messages)
+  pub tool_call_id: Option<String>,
 }
 
 impl Message {
@@ -13,6 +17,8 @@ impl Message {
     Self {
       role,
       content: content.into(),
+      tool_calls: None,
+      tool_call_id: None,
     }
   }
 
@@ -30,6 +36,79 @@ impl Message {
   pub fn assistant(content: impl Into<String>) -> Self {
     Self::new(Role::Assistant, content)
   }
+
+  /// Create an assistant message with tool calls
+  pub fn assistant_with_tools(content: impl Into<String>, tool_calls: Vec<ToolCall>) -> Self {
+    Self {
+      role: Role::Assistant,
+      content: content.into(),
+      tool_calls: Some(tool_calls),
+      tool_call_id: None,
+    }
+  }
+
+  /// Create a tool result message
+  pub fn tool(content: impl Into<String>, tool_call_id: impl Into<String>) -> Self {
+    Self {
+      role: Role::Tool,
+      content: content.into(),
+      tool_calls: None,
+      tool_call_id: Some(tool_call_id.into()),
+    }
+  }
+}
+
+/// A tool call requested by the assistant
+#[derive(Debug, Clone)]
+pub struct ToolCall {
+  /// The ID of the tool call
+  pub id: String,
+  /// The name of the tool to call
+  pub name: String,
+  /// The arguments for the tool call (JSON string)
+  pub arguments: String,
+}
+
+impl ToolCall {
+  /// Create a new tool call
+  pub fn new(id: impl Into<String>, name: impl Into<String>, arguments: impl Into<String>) -> Self {
+    Self {
+      id: id.into(),
+      name: name.into(),
+      arguments: arguments.into(),
+    }
+  }
+}
+
+/// The result of a tool execution
+#[derive(Debug, Clone)]
+pub struct ToolResult {
+  /// The ID of the tool call this result is for
+  pub tool_call_id: String,
+  /// The output from the tool
+  pub output: String,
+  /// Whether this is an error result
+  pub is_error: bool,
+}
+
+impl ToolResult {
+  /// Create a successful tool result
+  pub fn success(tool_call_id: impl Into<String>, output: impl Into<String>) -> Self {
+    Self {
+      tool_call_id: tool_call_id.into(),
+      output: output.into(),
+      is_error: false,
+    }
+  }
+
+  /// Create an error tool result
+  pub fn error(tool_call_id: impl Into<String>, message: impl Into<String>) -> Self {
+    Self {
+      tool_call_id: tool_call_id.into(),
+      output: message.into(),
+      is_error: true,
+    }
+  }
 }
 
 /// The role of a message author
@@ -41,6 +120,8 @@ pub enum Role {
   User,
   /// Assistant message
   Assistant,
+  /// Tool result message
+  Tool,
 }
 
 use async_openai::types::chat::Role as OpenAIRole;
@@ -51,6 +132,7 @@ impl From<Role> for OpenAIRole {
       Role::System => OpenAIRole::System,
       Role::User => OpenAIRole::User,
       Role::Assistant => OpenAIRole::Assistant,
+      Role::Tool => OpenAIRole::Tool,
     }
   }
 }

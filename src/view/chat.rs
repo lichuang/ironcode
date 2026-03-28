@@ -12,8 +12,9 @@ use ratatui::{
 use crate::cli::AppData;
 use crate::llm::SessionHandle;
 use crate::tui::{FrameRequester, TARGET_FRAME_INTERVAL};
+use crate::utils::colors::{BLUE, GREEN, HIGHLIGHT as HIGHLIGHT_COLOR, TEXT as TEXT_COLOR};
 use crate::utils::{
-  HIGHLIGHT, MOON_FRAMES, PRIMARY, PRIMARY_BORDER, SECONDARY, SPINNER_FRAMES, THINKING,
+  HIGHLIGHT, MOON_FRAMES, PRIMARY, PRIMARY_BORDER, SECONDARY, SPINNER_FRAMES, TEXT, THINKING,
   char_display_width, string_display_width,
 };
 use crate::view::View;
@@ -22,6 +23,17 @@ use crate::view::View;
 #[derive(Debug)]
 pub struct NoSessionError;
 
+/// Status of a tool call
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolCallStatus {
+  /// Tool call is being executed
+  Running,
+  /// Tool call completed successfully
+  Completed,
+  /// Tool call failed
+  Failed,
+}
+
 /// A chunk of streaming content from LLM
 #[derive(Debug, Clone)]
 pub enum StreamingChunk {
@@ -29,6 +41,15 @@ pub enum StreamingChunk {
   Normal(String),
   /// Thinking/reasoning content
   Thinking(String),
+  /// Tool call indicator
+  ToolCall {
+    /// Tool name
+    name: String,
+    /// Tool arguments (JSON)
+    arguments: String,
+    /// Current status
+    status: ToolCallStatus,
+  },
 }
 
 impl StreamingChunk {
@@ -37,12 +58,18 @@ impl StreamingChunk {
     match self {
       StreamingChunk::Normal(s) => s,
       StreamingChunk::Thinking(s) => s,
+      StreamingChunk::ToolCall { .. } => "",
     }
   }
 
   /// Check if this is a thinking chunk
   pub fn is_thinking(&self) -> bool {
     matches!(self, StreamingChunk::Thinking(_))
+  }
+
+  /// Check if this is a tool call chunk
+  pub fn is_tool_call(&self) -> bool {
+    matches!(self, StreamingChunk::ToolCall { .. })
   }
 }
 
@@ -58,6 +85,13 @@ pub enum ChatMessage {
     /// The thinking/reasoning content (if any)
     thinking_content: Option<String>,
   },
+  /// Tool call result
+  ToolCall {
+    /// Tool name
+    name: String,
+    /// Tool arguments (JSON)
+    arguments: String,
+  },
 }
 
 impl ChatMessage {
@@ -66,6 +100,7 @@ impl ChatMessage {
     match self {
       ChatMessage::User { content } => content,
       ChatMessage::Assistant { content, .. } => content,
+      ChatMessage::ToolCall { .. } => "",
     }
   }
 
@@ -73,7 +108,10 @@ impl ChatMessage {
   pub fn thinking_content(&self) -> Option<&str> {
     match self {
       ChatMessage::User { .. } => None,
-      ChatMessage::Assistant { thinking_content, .. } => thinking_content.as_deref(),
+      ChatMessage::Assistant {
+        thinking_content, ..
+      } => thinking_content.as_deref(),
+      ChatMessage::ToolCall { .. } => None,
     }
   }
 
@@ -86,12 +124,15 @@ impl ChatMessage {
   pub fn is_assistant(&self) -> bool {
     matches!(self, ChatMessage::Assistant { .. })
   }
+
+  /// Check if this is a tool call message
+  pub fn is_tool_call(&self) -> bool {
+    matches!(self, ChatMessage::ToolCall { .. })
+  }
 }
 
-
-
 /// Chat display state machine
-/// 
+///
 /// State transitions:
 /// - User submits message → Animating (show moon animation)
 /// - LLM starts responding with thinking content → Thinking (show "Thinking...")
@@ -137,25 +178,25 @@ pub struct ChatView {
 
 impl ChatView {
   /// Create a new chat view
-  /// 
+  ///
   /// Initialize state machine based on AppData state:
   /// - Has streaming response → Streaming state
   /// - Has user messages but waiting for AI response → Animating state
   /// - Otherwise → WaitingInput state
-  /// 
+  ///
   /// # Arguments
   /// * `data` - Application data for determining initial state
   /// * `session_handle` - Handle to the chat session (must be valid)
   pub fn new(data: &AppData, session_handle: SessionHandle) -> Self {
     let prompt = Self::build_prompt();
-    
+
     // Check if waiting for AI response (last message is from user)
     let waiting_for_ai = data
       .chat_history
       .last()
       .map(|msg| msg.is_user())
       .unwrap_or(false);
-    
+
     // Determine initial state
     let state = if !data.streaming_response.is_empty() {
       // Check if currently streaming thinking content
@@ -169,9 +210,9 @@ impl ChatView {
     } else {
       ChatDisplayState::WaitingInput
     };
-    
+
     log::debug!("ChatView created with initial state: {:?}", state);
-    
+
     Self {
       input: String::new(),
       cursor_position: 0,
@@ -313,20 +354,25 @@ impl ChatView {
   }
 
   /// Submit the current input as a message
-  /// 
+  ///
   /// State transition: WaitingInput → Animating
   /// Sends message directly to LLM via SessionHandle
   pub fn submit_message(&mut self, data: &mut AppData) {
     if !self.input.is_empty() {
       let message = std::mem::take(&mut self.input);
       // Add user message to chat history
-      data.chat_history.push(ChatMessage::User { content: message.clone() });
+      data.chat_history.push(ChatMessage::User {
+        content: message.clone(),
+      });
       self.cursor_position = 0;
-      
+
       // Send message directly to LLM via SessionHandle
-      log::debug!("Sending message to LLM: {}", &message[..message.len().min(50)]);
+      log::debug!(
+        "Sending message to LLM: {}",
+        &message[..message.len().min(50)]
+      );
       self.session_handle.send_message(message);
-      
+
       // Enter Animating state (show moon animation)
       log::debug!("State will transition: WaitingInput → Animating");
       self.enter_animating();
@@ -455,7 +501,7 @@ impl ChatView {
   }
 
   /// Render an input line (prompt + arrow/indicator + input) with wrapping
-  /// 
+  ///
   /// # Arguments
   /// * `with_arrow` - If true, show ">" before input (user message style)
   ///                  If false, show spinner (waiting for input style)
@@ -475,7 +521,7 @@ impl ChatView {
       Text::from(vec![Line::from(vec![
         Span::styled(&self.prompt, *PRIMARY),
         Span::raw(" "),
-        Span::styled(spinner.to_string(), *PRIMARY)
+        Span::styled(spinner.to_string(), *PRIMARY),
       ])])
     };
 
@@ -511,7 +557,7 @@ impl ChatView {
     let moon = self.current_moon();
     let text = Text::from(vec![Line::from(vec![
       Span::raw("  "),
-      Span::styled(moon.to_string(), *HIGHLIGHT)
+      Span::styled(moon.to_string(), *HIGHLIGHT),
     ])]);
 
     let widget = Paragraph::new(text);
@@ -545,12 +591,7 @@ impl ChatView {
     let wrapped_lines = Self::wrap_text(content, area.width);
     let lines: Vec<Line> = wrapped_lines
       .into_iter()
-      .map(|line| {
-        Line::from(vec![Span::styled(
-          line,
-          *THINKING,
-        )])
-      })
+      .map(|line| Line::from(vec![Span::styled(line, *THINKING)]))
       .collect();
     let text = Paragraph::new(Text::from(lines));
     f.render_widget(text, area);
@@ -697,13 +738,14 @@ impl View for ChatView {
   }
 
   fn draw(&mut self, f: &mut Frame, data: &AppData) {
-    
     let area = f.area();
     let available_width = area.width;
 
     // Calculate input height (dynamic based on content, including prompt width)
     // No height limit - content will wrap naturally based on available width
-    let input_height = self.calculate_input_line_count(&self.input, available_width).max(1);
+    let input_height = self
+      .calculate_input_line_count(&self.input, available_width)
+      .max(1);
 
     // Calculate layout:
     // For each message: prompt line + box
@@ -724,7 +766,10 @@ impl View for ChatView {
           let box_height = box_content_lines + 2; // +2 for top and bottom borders
           constraints.push(Constraint::Length(box_height as u16));
         }
-        ChatMessage::Assistant { content, thinking_content } => {
+        ChatMessage::Assistant {
+          content,
+          thinking_content,
+        } => {
           // AI message: thinking content (if any) + main content
           if let Some(thinking) = thinking_content {
             let thinking_lines = Self::calculate_line_count(thinking, available_width);
@@ -732,6 +777,12 @@ impl View for ChatView {
           }
           let content_lines = Self::calculate_line_count(content, available_width);
           constraints.push(Constraint::Length(content_lines as u16));
+        }
+        ChatMessage::ToolCall { name, arguments } => {
+          // Tool call: single line showing "Used Toolname(Params)"
+          let tool_text = format!("• Used {}({})", name, arguments);
+          let lines = Self::calculate_line_count(&tool_text, available_width);
+          constraints.push(Constraint::Length(lines.max(1) as u16));
         }
       }
     }
@@ -749,14 +800,16 @@ impl View for ChatView {
     // In Thinking state, content is accumulated but not displayed yet
     if self.state == ChatDisplayState::Streaming && !data.streaming_response.is_empty() {
       // Calculate total height for all chunks
-      let total_lines: usize = data.streaming_response.iter()
+      let total_lines: usize = data
+        .streaming_response
+        .iter()
         .map(|c| Self::calculate_line_count(c.content(), available_width))
         .sum();
       if total_lines > 0 {
         constraints.push(Constraint::Length(total_lines as u16));
       }
     }
-    
+
     // Waiting for user input: spinner line (1 line height)
     // Only shown in WaitingInput state
     if self.state == ChatDisplayState::WaitingInput {
@@ -782,6 +835,10 @@ impl View for ChatView {
         ChatMessage::Assistant { content, .. } => {
           Self::calculate_line_count(content, available_width)
         }
+        ChatMessage::ToolCall { name, arguments } => {
+          let tool_text = format!("• Used {}({})", name, arguments);
+          Self::calculate_line_count(&tool_text, available_width)
+        }
       })
       .sum::<usize>();
     // Add moon animation height if in Animating state
@@ -796,7 +853,9 @@ impl View for ChatView {
     // Add streaming response chunks height if present (only in Streaming state)
     // In Thinking state, we don't show the streaming content yet
     if self.state == ChatDisplayState::Streaming && !data.streaming_response.is_empty() {
-      let chunks_height: usize = data.streaming_response.iter()
+      let chunks_height: usize = data
+        .streaming_response
+        .iter()
         .map(|c| Self::calculate_line_count(c.content(), available_width))
         .sum();
       total_fixed_height += chunks_height;
@@ -835,7 +894,10 @@ impl View for ChatView {
             chunk_idx += 1;
           }
         }
-        ChatMessage::Assistant { content, thinking_content } => {
+        ChatMessage::Assistant {
+          content,
+          thinking_content,
+        } => {
           // AI message: thinking content (if any) + main content
           if let Some(thinking) = thinking_content {
             if chunk_idx < chunks.len() {
@@ -848,9 +910,30 @@ impl View for ChatView {
             chunk_idx += 1;
           }
         }
+        ChatMessage::ToolCall { name, arguments } => {
+          // Tool call message: render as "• Used ToolName(Params)" with colors:
+          // • - green, Used - white, ToolName - blue, Params - yellow
+          if chunk_idx < chunks.len() {
+            use ratatui::style::{Modifier, Style};
+            let text = Text::from(vec![Line::from(vec![
+              Span::styled(
+                "• ",
+                Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+              ),
+              Span::styled("Used ", Style::default().fg(TEXT_COLOR)),
+              Span::styled(name, Style::default().fg(BLUE).add_modifier(Modifier::BOLD)),
+              Span::styled("(", Style::default().fg(TEXT_COLOR)),
+              Span::styled(arguments, Style::default().fg(HIGHLIGHT_COLOR)),
+              Span::styled(")", Style::default().fg(TEXT_COLOR)),
+            ])]);
+            let widget = Paragraph::new(text);
+            f.render_widget(widget, chunks[chunk_idx]);
+            chunk_idx += 1;
+          }
+        }
       }
     }
-    
+
     // Render moon animation if in Animating state
     if self.state == ChatDisplayState::Animating && chunk_idx < chunks.len() {
       self.render_moon_animation(f, chunks[chunk_idx]);
@@ -867,8 +950,10 @@ impl View for ChatView {
     // In Thinking state, we only show the "Thinking..." indicator without content
     if self.state == ChatDisplayState::Streaming && !data.streaming_response.is_empty() {
       // Combine consecutive chunks of the same type for rendering
-      let mut combined: Vec<(bool, String)> = Vec::new(); // (is_thinking, content)
-      
+      // (is_thinking, content) - is_thinking=true for thinking, false for normal
+      // For tool calls, we render them separately
+      let mut combined: Vec<(bool, String)> = Vec::new();
+
       for chunk in data.streaming_response.iter() {
         match chunk {
           StreamingChunk::Normal(content) => {
@@ -885,10 +970,14 @@ impl View for ChatView {
               combined.push((true, content.clone()));
             }
           }
+          StreamingChunk::ToolCall { .. } => {
+            // Tool calls are now added to chat_history when completed,
+            // so we don't render them here to avoid duplication
+          }
         }
       }
-      
-      // Render combined chunks
+
+      // Render combined content chunks
       for (is_thinking, content) in combined {
         if chunk_idx < chunks.len() && !content.is_empty() {
           if is_thinking {
@@ -900,7 +989,7 @@ impl View for ChatView {
         }
       }
     }
-    
+
     // Waiting for user input: prompt + spinner (no input box yet)
     // Only shown in WaitingInput state
     if self.state == ChatDisplayState::WaitingInput && chunk_idx < chunks.len() {
@@ -910,7 +999,10 @@ impl View for ChatView {
     }
 
     // Render current input line (only shown in WaitingInput state)
-    if self.state == ChatDisplayState::WaitingInput && chunk_idx < chunks.len() && !self.input.is_empty() {
+    if self.state == ChatDisplayState::WaitingInput
+      && chunk_idx < chunks.len()
+      && !self.input.is_empty()
+    {
       self.render_input_line(f, chunks[chunk_idx], &self.input, true);
 
       // Set cursor position

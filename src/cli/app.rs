@@ -215,6 +215,38 @@ impl App {
             // Update streaming response for UI display - cheap Arc clone
             self.data.streaming_response = self.current_chunks.clone();
           }
+          SessionEvent::ToolCallReceived { id, name, arguments } => {
+            log::info!("App: Tool call received: id={}, name={}, args={}", id, name, arguments);
+            // Add tool call indicator to streaming response
+            Arc::make_mut(&mut self.current_chunks).push(StreamingChunk::ToolCall {
+              name: name.clone(),
+              arguments,
+              status: crate::view::chat::ToolCallStatus::Running,
+            });
+            self.data.streaming_response = self.current_chunks.clone();
+          }
+          SessionEvent::ToolCallCompleted { name, output } => {
+            log::info!("App: Tool call completed: name={}, output_len={}", name, output.len());
+            // Update the last tool call chunk to completed status
+            let chunks = Arc::make_mut(&mut self.current_chunks);
+            let mut tool_args = None;
+            if let Some(last) = chunks.last_mut() {
+              if let StreamingChunk::ToolCall { name: n, arguments, status, .. } = last {
+                if n == &name {
+                  *status = crate::view::chat::ToolCallStatus::Completed;
+                  tool_args = Some(arguments.clone());
+                }
+              }
+            }
+            // Add completed tool call to chat history so it persists
+            if let Some(args) = tool_args {
+              self.data.chat_history.push(ChatMessage::ToolCall {
+                name: name.clone(),
+                arguments: args,
+              });
+            }
+            self.data.streaming_response = self.current_chunks.clone();
+          }
           SessionEvent::Completed => {
             // Extract normal and thinking content from chunks
             let normal_content: String = self.current_chunks.iter()

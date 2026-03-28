@@ -22,3 +22,9 @@ pub const SUBTLE: Color = Color::DarkGray;
 
 /// Default text color
 pub const TEXT: Color = Color::White;
+
+/// Blue color - used for tool names in tool call indicators
+pub const BLUE: Color = Color::Blue;
+
+/// Green color - used for success indicators (bullet points, etc.)
+pub const GREEN: Color = Color::Green;

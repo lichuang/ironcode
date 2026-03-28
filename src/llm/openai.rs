@@ -135,6 +135,14 @@ impl OpenAIClient {
           .build()
           .map(Into::into)
       }
+      Role::Tool => {
+        // Tool messages require tool_call_id
+        // For now, we create a system message as a placeholder
+        ChatCompletionRequestSystemMessageArgs::default()
+          .content(msg.content)
+          .build()
+          .map(Into::into)
+      }
     }
   }
 

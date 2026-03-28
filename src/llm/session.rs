@@ -7,8 +7,9 @@ use crate::config::Config;
 use crate::error::{ConfigError, Result};
 use crate::llm::provider::LLMProvider;
 use crate::llm::providers::KimiProvider;
-use crate::llm::types::{ChatConfig, Message, Role};
-use crate::tools::ToolRegistry;
+use crate::llm::types::{ChatConfig, Message, Role, ToolCall};
+use crate::tools::handlers::ReadFileHandler;
+use crate::tools::{ExecutableToolRegistry, ToolInvocation, ToolPayload};
 use async_openai::types::chat::ChatCompletionResponseStream;
 use chrono::{Datelike, Local, Timelike};
 use log::{debug, error, info};
@@ -62,6 +63,14 @@ pub enum SessionEvent {
   ContentChunk(String),
   /// A chunk of thinking/reasoning content received from the stream
   ThinkingChunk(String),
+  /// A tool call was received from the model
+  ToolCallReceived {
+    id: String,
+    name: String,
+    arguments: String,
+  },
+  /// A tool execution completed
+  ToolCallCompleted { name: String, output: String },
   /// Stream completed successfully
   Completed,
   /// Error occurred during streaming
@@ -117,10 +126,18 @@ struct SessionActor {
   cmd_rx: mpsc::UnboundedReceiver<SessionCommand>,
   /// Current response being accumulated
   current_response: String,
+  /// Current thinking content being accumulated
+  current_thinking: String,
   /// Whether a streaming request is in progress
   is_streaming: bool,
   /// Event receiver for the current stream (if any)
   stream_rx: Option<mpsc::UnboundedReceiver<SessionEvent>>,
+  /// Tool call buffer for accumulating tool calls during streaming
+  pending_tool_calls: Vec<ToolCall>,
+  /// Executable tool registry for handling tool calls
+  tool_registry: ExecutableToolRegistry,
+  /// Working directory for tool execution
+  cwd: std::path::PathBuf,
 }
 
 impl SessionActor {
@@ -131,6 +148,10 @@ impl SessionActor {
     event_tx: mpsc::UnboundedSender<SessionEvent>,
     cmd_rx: mpsc::UnboundedReceiver<SessionCommand>,
   ) -> Self {
+    // Initialize tool registry with handlers
+    let mut tool_registry = ExecutableToolRegistry::new();
+    tool_registry.register("ReadFile", Box::new(ReadFileHandler::new()));
+
     Self {
       id,
       provider,
@@ -138,8 +159,12 @@ impl SessionActor {
       event_tx,
       cmd_rx,
       current_response: String::new(),
+      current_thinking: String::new(),
       is_streaming: false,
       stream_rx: None,
+      pending_tool_calls: Vec::new(),
+      tool_registry,
+      cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
     }
   }
 
@@ -207,21 +232,31 @@ impl SessionActor {
         // Add user message to history
         self.messages.push(Message::user(&content));
         self.current_response.clear();
+        self.current_thinking.clear();
+        self.pending_tool_calls.clear();
+
+        // Log current message history for debugging
+        info!("Session {}: Current message history:", self.id);
+        for (i, msg) in self.messages.iter().enumerate() {
+          let content_preview: String = msg.content.chars().take(100).collect();
+          let tool_calls_info = if let Some(ref tc) = msg.tool_calls {
+            format!(" [tool_calls: {}]", tc.len())
+          } else {
+            String::new()
+          };
+          let tool_call_id_info = if let Some(ref id) = msg.tool_call_id {
+            format!(" [tool_call_id: {}]", id)
+          } else {
+            String::new()
+          };
+          info!(
+            "  [{}] {:?}: {}{}{}",
+            i, msg.role, content_preview, tool_calls_info, tool_call_id_info
+          );
+        }
 
         // Start streaming
-        match self.provider.chat_stream(self.messages.clone()).await {
-          Ok(stream) => {
-            let (tx, rx) = mpsc::unbounded_channel();
-            self.stream_rx = Some(rx);
-            self.is_streaming = true;
-            tokio::spawn(handle_stream(stream, tx));
-            info!("Session {}: Started streaming for message", self.id);
-          }
-          Err(e) => {
-            error!("Session {}: Failed to start streaming: {}", self.id, e);
-            let _ = self.event_tx.send(SessionEvent::Error(e.to_string()));
-          }
-        }
+        self.start_chat_stream().await;
         true
       }
 
@@ -231,6 +266,7 @@ impl SessionActor {
           self.stream_rx = None;
           self.is_streaming = false;
           self.current_response.clear();
+          self.current_thinking.clear();
         }
         true
       }
@@ -252,6 +288,8 @@ impl SessionActor {
         }
 
         self.current_response.clear();
+        self.current_thinking.clear();
+        self.pending_tool_calls.clear();
         if self.is_streaming {
           self.stream_rx = None;
           self.is_streaming = false;
@@ -263,6 +301,23 @@ impl SessionActor {
         info!("Session {}: Shutdown requested", self.id);
         let _ = self.event_tx.send(SessionEvent::Shutdown);
         false
+      }
+    }
+  }
+
+  /// Start a chat stream with the current messages
+  async fn start_chat_stream(&mut self) {
+    match self.provider.chat_stream(self.messages.clone()).await {
+      Ok(stream) => {
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.stream_rx = Some(rx);
+        self.is_streaming = true;
+        tokio::spawn(handle_stream(stream, tx));
+        info!("Session {}: Started streaming for message", self.id);
+      }
+      Err(e) => {
+        error!("Session {}: Failed to start streaming: {}", self.id, e);
+        let _ = self.event_tx.send(SessionEvent::Error(e.to_string()));
       }
     }
   }
@@ -290,19 +345,89 @@ impl SessionActor {
           chunk.len(),
           &chunk[..chunk.len().min(100)]
         );
+        self.current_thinking.push_str(chunk);
         // Forward to caller without storing in session messages
         if let Err(_) = self.event_tx.send(event) {
           error!("Session {}: Failed to forward ThinkingChunk", self.id);
         }
       }
-      SessionEvent::Completed => {
-        // Add the complete assistant message to history
-        let response = std::mem::take(&mut self.current_response);
-        if !response.is_empty() {
-          self.messages.push(Message::assistant(response));
+      SessionEvent::ToolCallReceived {
+        id,
+        name,
+        arguments,
+      } => {
+        info!(
+          "Session {}: Tool call received: id={}, name={}, args={}",
+          self.id, id, name, arguments
+        );
+
+        // Add to pending tool calls
+        self
+          .pending_tool_calls
+          .push(ToolCall::new(id, name, arguments));
+
+        // Forward to caller
+        if let Err(_) = self.event_tx.send(event.clone()) {
+          error!("Session {}: Failed to forward ToolCallReceived", self.id);
         }
+      }
+      SessionEvent::ToolCallCompleted { name, output } => {
+        info!(
+          "Session {}: Tool call completed: name={}, output_len={}",
+          self.id,
+          name,
+          output.len()
+        );
+        // Forward to caller
+        if let Err(_) = self.event_tx.send(event.clone()) {
+          error!("Session {}: Failed to forward ToolCallCompleted", self.id);
+        }
+      }
+      SessionEvent::Completed => {
+        // Add the complete assistant message to history (with tool calls if any)
+        let response = std::mem::take(&mut self.current_response);
+        let thinking = std::mem::take(&mut self.current_thinking);
+        let tool_calls = std::mem::take(&mut self.pending_tool_calls);
+
+        let has_content = !response.is_empty() || !thinking.is_empty();
+        let has_tool_calls = !tool_calls.is_empty();
+
+        if has_content || has_tool_calls {
+          // Build message content (include thinking if present)
+          let content = if !thinking.is_empty() {
+            format!("<think>{}</think>{}", thinking, response)
+          } else {
+            response
+          };
+
+          // Create assistant message with or without tool calls
+          let assistant_msg = if has_tool_calls {
+            Message::assistant_with_tools(content, tool_calls)
+          } else {
+            Message::assistant(content)
+          };
+
+          self.messages.push(assistant_msg);
+          info!(
+            "Session {}: Added assistant message, content_len={}, tool_calls={}",
+            self.id,
+            self.messages.last().unwrap().content.len(),
+            has_tool_calls
+          );
+        }
+
         self.is_streaming = false;
         self.stream_rx = None;
+
+        // Check if we have tool calls to execute
+        if let Some(msg) = self.messages.last() {
+          if msg.tool_calls.is_some() && !msg.tool_calls.as_ref().unwrap().is_empty() {
+            info!("Session {}: Executing tool calls", self.id);
+            self.execute_tool_calls().await;
+            return; // Don't send Completed yet, we'll continue after tool execution
+          }
+        }
+
         // Forward to caller
         if let Err(_) = self.event_tx.send(event) {
           error!("Session {}: Failed to forward Completed event", self.id);
@@ -314,6 +439,8 @@ impl SessionActor {
         self.is_streaming = false;
         self.stream_rx = None;
         self.current_response.clear();
+        self.current_thinking.clear();
+        self.pending_tool_calls.clear();
         // Forward to caller
         if let Err(_) = self.event_tx.send(event) {
           error!("Session {}: Failed to forward Error event", self.id);
@@ -326,6 +453,125 @@ impl SessionActor {
         }
       }
     }
+  }
+
+  /// Execute pending tool calls and continue the conversation
+  async fn execute_tool_calls(&mut self) {
+    // Get the last assistant message with tool calls
+    let tool_calls = match self.messages.last() {
+      Some(msg) => msg.tool_calls.clone().unwrap_or_default(),
+      None => {
+        error!("Session {}: No assistant message with tool calls", self.id);
+        let _ = self.event_tx.send(SessionEvent::Completed);
+        return;
+      }
+    };
+
+    info!(
+      "Session {}: Executing {} tool calls",
+      self.id,
+      tool_calls.len()
+    );
+
+    // Execute each tool call
+    for tool_call in &tool_calls {
+      // Notify UI about tool call
+      let _ = self.event_tx.send(SessionEvent::ToolCallReceived {
+        id: tool_call.id.clone(),
+        name: tool_call.name.clone(),
+        arguments: tool_call.arguments.clone(),
+      });
+
+      // Create invocation
+      let invocation = ToolInvocation::new(
+        &tool_call.name,
+        &tool_call.id,
+        ToolPayload::Function {
+          arguments: tool_call.arguments.clone(),
+        },
+        &self.cwd,
+      );
+
+      // Execute tool
+      match self.tool_registry.dispatch(invocation).await {
+        Ok(output) => {
+          let output_str = output.into_response();
+
+          // Notify UI about completion
+          let _ = self.event_tx.send(SessionEvent::ToolCallCompleted {
+            name: tool_call.name.clone(),
+            output: output_str.clone(),
+          });
+
+          // Add tool result to messages
+          let tool_msg = Message::tool(&output_str, &tool_call.id);
+          info!(
+            "Session {}: Adding tool result message: tool_call_id={}, output_preview={}...",
+            self.id,
+            tool_call.id,
+            output_str.chars().take(100).collect::<String>()
+          );
+          self.messages.push(tool_msg);
+          info!(
+            "Session {}: Tool {} executed successfully, output_len={}",
+            self.id,
+            tool_call.name,
+            output_str.len()
+          );
+        }
+        Err(e) => {
+          let error_msg = format!("Error: {}", e);
+
+          // Notify UI about completion (with error)
+          let _ = self.event_tx.send(SessionEvent::ToolCallCompleted {
+            name: tool_call.name.clone(),
+            output: error_msg.clone(),
+          });
+
+          // Add error result to messages
+          let tool_msg = Message::tool(&error_msg, &tool_call.id);
+          info!(
+            "Session {}: Adding tool error message: tool_call_id={}, error={}",
+            self.id, tool_call.id, error_msg
+          );
+          self.messages.push(tool_msg);
+          error!("Session {}: Tool {} failed: {}", self.id, tool_call.name, e);
+        }
+      }
+    }
+
+    // Continue the conversation with the tool results
+    info!(
+      "Session {}: Continuing conversation after tool execution",
+      self.id
+    );
+
+    // Log updated message history
+    info!(
+      "Session {}: Updated message history for next request:",
+      self.id
+    );
+    for (i, msg) in self.messages.iter().enumerate() {
+      let content_preview: String = msg.content.chars().take(100).collect();
+      let tool_calls_info = if let Some(ref tc) = msg.tool_calls {
+        format!(" [tool_calls: {}]", tc.len())
+      } else {
+        String::new()
+      };
+      let tool_call_id_info = if let Some(ref id) = msg.tool_call_id {
+        format!(" [tool_call_id: {}]", id)
+      } else {
+        String::new()
+      };
+      info!(
+        "  [{}] {:?}: {}{}{}",
+        i, msg.role, content_preview, tool_calls_info, tool_call_id_info
+      );
+    }
+
+    self.current_response.clear();
+    self.current_thinking.clear();
+    self.start_chat_stream().await;
   }
 }
 
@@ -360,7 +606,7 @@ impl ChatSession {
   pub fn create(
     config: &Config,
     system_prompt: impl Into<String>,
-    tool_registry: Arc<ToolRegistry>,
+    tool_registry: Arc<crate::tools::ToolRegistry>,
   ) -> Result<Self> {
     let provider = Self::create_provider(config, tool_registry)?;
     let session = Self::start(provider, system_prompt);
@@ -375,7 +621,7 @@ impl ChatSession {
   /// * `tool_registry` - Shared tool registry for function calling
   fn create_provider(
     config: &Config,
-    tool_registry: Arc<ToolRegistry>,
+    tool_registry: Arc<crate::tools::ToolRegistry>,
   ) -> Result<Box<dyn LLMProvider>> {
     // Get default model configuration
     let model_config = config
@@ -494,6 +740,10 @@ async fn handle_stream(
   let mut in_thinking_mode = false;
   let mut has_received_thinking = false;
 
+  // Buffer for accumulating tool calls
+  let mut tool_call_buffer: Vec<async_openai::types::chat::ChatCompletionMessageToolCallChunk> =
+    Vec::new();
+
   while let Some(result) = stream.next().await {
     match result {
       Ok(response) => {
@@ -514,6 +764,72 @@ async fn handle_stream(
           );
         }
         for choice in &response.choices {
+          // Handle tool calls
+          if let Some(ref tool_calls) = choice.delta.tool_calls {
+            for tool_call in tool_calls {
+              log::info!(
+                "Session: Received tool call chunk: index={:?}, id={:?}",
+                tool_call.index,
+                tool_call.id
+              );
+
+              // Get the index for this tool call (u32, not Option<u32>)
+              let idx = tool_call.index as usize;
+
+              // Ensure buffer has enough slots
+              while tool_call_buffer.len() <= idx {
+                tool_call_buffer.push(
+                  async_openai::types::chat::ChatCompletionMessageToolCallChunk {
+                    index: tool_call_buffer.len() as u32,
+                    id: None,
+                    r#type: None,
+                    function: None,
+                  },
+                );
+              }
+
+              // Update the tool call at this index
+              let existing = &mut tool_call_buffer[idx];
+
+              // Update ID if provided
+              if let Some(ref id) = tool_call.id {
+                existing.id = Some(id.clone());
+              }
+
+              // Update type if provided
+              if let Some(ref call_type) = tool_call.r#type {
+                existing.r#type = Some(call_type.clone());
+              }
+
+              // Update function if provided
+              if let Some(ref function) = tool_call.function {
+                if existing.function.is_none() {
+                  existing.function = Some(async_openai::types::chat::FunctionCallStream {
+                    name: None,
+                    arguments: None,
+                  });
+                }
+
+                if let Some(ref existing_func) = existing.function {
+                  let mut updated_func = existing_func.clone();
+
+                  if let Some(ref name) = function.name {
+                    updated_func.name = Some(name.clone());
+                  }
+                  if let Some(ref args) = function.arguments {
+                    if let Some(ref existing_args) = updated_func.arguments {
+                      updated_func.arguments = Some(format!("{}{}", existing_args, args));
+                    } else {
+                      updated_func.arguments = Some(args.clone());
+                    }
+                  }
+
+                  existing.function = Some(updated_func);
+                }
+              }
+            }
+          }
+
           if let Some(content) = &choice.delta.content {
             if !content.is_empty() {
               log::debug!(
@@ -641,6 +957,28 @@ async fn handle_stream(
     }
   }
 
+  // Send any accumulated tool calls
+  for tool_call in tool_call_buffer {
+    if let (Some(id), Some(function)) = (tool_call.id, tool_call.function) {
+      if let (Some(name), Some(arguments)) = (function.name, function.arguments) {
+        if !id.is_empty() && !name.is_empty() {
+          log::info!(
+            "Session: Sending accumulated tool call: id={}, name={}, args={}",
+            id,
+            name,
+            arguments
+          );
+          // Store the tool call info for later use
+          let _ = tx.send(SessionEvent::ToolCallReceived {
+            id: id.clone(),
+            name: name.clone(),
+            arguments: arguments.clone(),
+          });
+        }
+      }
+    }
+  }
+
   log::info!(
     "Session: Stream completed, received_thinking={}",
     has_received_thinking
@@ -652,7 +990,6 @@ async fn handle_stream(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::llm::openai::OpenAIClient;
 
   #[test]
   fn test_session_id_format() {

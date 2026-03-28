@@ -5,8 +5,8 @@ use std::sync::LazyLock;
 use ratatui::style::{Modifier, Style};
 
 use crate::utils::colors::{
-  ERROR as ErrorColor, HIGHLIGHT as HighlightColor, MUTED as MutedColor,
-  PRIMARY as PrimaryColor, SUBTLE as SubtleColor, TEXT as TextColor,
+  BLUE as BlueColor, ERROR as ErrorColor, GREEN as GreenColor, HIGHLIGHT as HighlightColor,
+  MUTED as MutedColor, PRIMARY as PrimaryColor, SUBTLE as SubtleColor, TEXT as TextColor,
 };
 
 /// Primary text style - for active elements and highlights
@@ -41,3 +41,9 @@ pub static HIGHLIGHT_BORDER: LazyLock<Style> = LazyLock::new(|| Style::default()
 
 /// Error border style
 pub static ERROR_BORDER: LazyLock<Style> = LazyLock::new(|| Style::default().fg(ErrorColor));
+
+/// Blue text style - for tool names
+pub static BLUE: LazyLock<Style> = LazyLock::new(|| Style::default().fg(BlueColor));
+
+/// Green text style - for success indicators
+pub static GREEN: LazyLock<Style> = LazyLock::new(|| Style::default().fg(GreenColor));
