@@ -4,6 +4,12 @@ use crate::tools::handlers::{
   GlobHandler, GrepHandler, ReadFileHandler, ReplaceFileHandler, WriteFileHandler,
 };
 use crate::tools::{ExecutableToolRegistry, ToolRegistry};
+
+// Import platform-specific shell handlers
+#[cfg(target_os = "windows")]
+use crate::tools::handlers::PowerShellHandler;
+#[cfg(not(target_os = "windows"))]
+use crate::tools::handlers::BashHandler;
 use log::{debug, info, warn};
 use std::fs;
 use std::path::PathBuf;
@@ -156,6 +162,13 @@ impl Runtime {
     registry.register("ReplaceFile", Box::new(ReplaceFileHandler::new()));
     registry.register("Grep", Box::new(GrepHandler::new()));
     registry.register("Glob", Box::new(GlobHandler::new()));
+    
+    // Register platform-specific shell handler
+    #[cfg(target_os = "windows")]
+    registry.register("PowerShell", Box::new(PowerShellHandler::new()));
+    #[cfg(not(target_os = "windows"))]
+    registry.register("Bash", Box::new(BashHandler::new()));
+    
     registry
   }
 
@@ -192,6 +205,17 @@ impl Runtime {
           "Skipping handler check for tool '{}' (no_handler: true)",
           tool.name
         );
+        continue;
+      }
+      // Skip platform-specific shell tools based on OS
+      #[cfg(target_os = "windows")]
+      if tool.name == "Bash" {
+        log::debug!("Skipping handler check for 'Bash' tool on Windows system");
+        continue;
+      }
+      #[cfg(not(target_os = "windows"))]
+      if tool.name == "PowerShell" {
+        log::debug!("Skipping handler check for 'PowerShell' tool on non-Windows system");
         continue;
       }
       if !executable_registry.has(&tool.name) {

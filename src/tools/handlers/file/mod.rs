@@ -5,12 +5,12 @@
 
 pub mod glob;
 pub mod grep;
-pub mod read_file;
-pub mod replace;
-pub mod write_file;
+pub mod read;
+pub mod replace_string;
+pub mod write;
 
 pub use glob::GlobHandler;
 pub use grep::GrepHandler;
-pub use read_file::ReadFileHandler;
-pub use replace::ReplaceFileHandler;
-pub use write_file::WriteFileHandler;
+pub use read::ReadFileHandler;
+pub use replace_string::ReplaceFileHandler;
+pub use write::WriteFileHandler;
