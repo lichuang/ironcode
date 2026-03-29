@@ -1,7 +1,8 @@
 use crate::config::loader::system_prompt_path;
 use crate::error::{Result, RuntimeError};
 use crate::tools::handlers::{
-  GlobHandler, GrepHandler, ReadFileHandler, ReplaceFileHandler, WriteFileHandler,
+  AskUserQuestionHandler, GlobHandler, GrepHandler, ReadFileHandler, ReplaceFileHandler,
+  WriteFileHandler,
 };
 use crate::tools::{ExecutableToolRegistry, ToolRegistry};
 
@@ -162,6 +163,7 @@ impl Runtime {
     registry.register("ReplaceFile", Box::new(ReplaceFileHandler::new()));
     registry.register("Grep", Box::new(GrepHandler::new()));
     registry.register("Glob", Box::new(GlobHandler::new()));
+    registry.register("AskUserQuestion", Box::new(AskUserQuestionHandler::new()));
     
     // Register platform-specific shell handler
     #[cfg(target_os = "windows")]
