@@ -7,10 +7,12 @@ pub mod ask_user;
 pub mod file;
 pub mod shell;
 pub mod todo;
+pub mod web;
 
 pub use ask_user::AskUserQuestionHandler;
 pub use file::{GlobHandler, GrepHandler, ReadFileHandler, ReplaceFileHandler, WriteFileHandler};
 pub use todo::SetTodoListHandler;
+pub use web::{FetchURLHandler, SearchWebHandler};
 
 // Export shell handlers based on platform
 #[cfg(target_os = "windows")]

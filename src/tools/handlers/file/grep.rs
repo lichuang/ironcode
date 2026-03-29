@@ -286,7 +286,7 @@ mod tests {
       "Grep",
       "test-call-id",
       crate::tools::ToolPayload::Function {
-        arguments: r#"{"pattern": "ReadFile", "output_mode": "content", "line_number": true, "path": "src/tools/handlers/read_file.rs"}"#.to_string(),
+        arguments: r#"{"pattern": "ReadFile", "output_mode": "content", "line_number": true, "path": "src/tools/handlers/file/read.rs"}"#.to_string(),
       },
       &cwd,
     );
