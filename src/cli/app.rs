@@ -128,7 +128,7 @@ impl App {
           .expect("chat_session must exist after successful initialization")
           .handle
           .clone();
-        let chat_view = ChatView::new(&self.data, session_handle);
+        let chat_view = ChatView::new(&self.data, session_handle, &self.config);
         self.view = Box::new(chat_view);
       } else {
         // Normal view switch - clear error message

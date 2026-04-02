@@ -10,11 +10,13 @@ use ratatui::{
 };
 
 use crate::cli::AppData;
+use crate::config::Config;
+use crate::history::InputHistoryManager;
 use crate::llm::SessionHandle;
 use crate::tui::{FrameRequester, TARGET_FRAME_INTERVAL};
 use crate::utils::colors::{BLUE, GREEN, HIGHLIGHT as HIGHLIGHT_COLOR, TEXT as TEXT_COLOR};
 use crate::utils::{
-  HIGHLIGHT, MOON_FRAMES, PRIMARY, PRIMARY_BORDER, SECONDARY, SPINNER_FRAMES, TEXT, THINKING,
+  HIGHLIGHT, MOON_FRAMES, PRIMARY, PRIMARY_BORDER, SPINNER_FRAMES, TEXT, THINKING,
   char_display_width, string_display_width,
 };
 use crate::view::View;
@@ -174,6 +176,8 @@ pub struct ChatView {
   state: ChatDisplayState,
   /// Session handle for sending messages directly to LLM
   session_handle: SessionHandle,
+  /// Input history manager
+  history: InputHistoryManager,
 }
 
 impl ChatView {
@@ -187,7 +191,8 @@ impl ChatView {
   /// # Arguments
   /// * `data` - Application data for determining initial state
   /// * `session_handle` - Handle to the chat session (must be valid)
-  pub fn new(data: &AppData, session_handle: SessionHandle) -> Self {
+  /// * `config` - Application configuration for history persistence
+  pub fn new(data: &AppData, session_handle: SessionHandle, config: &Config) -> Self {
     let prompt = Self::build_prompt();
 
     // Check if waiting for AI response (last message is from user)
@@ -225,6 +230,7 @@ impl ChatView {
       moon_frame: 0,
       state,
       session_handle,
+      history: InputHistoryManager::with_config(config),
     }
   }
 
@@ -353,12 +359,46 @@ impl ChatView {
     self.cursor_position = self.input.chars().count();
   }
 
+  /// Navigate to previous (older) history entry
+  fn navigate_up(&mut self) {
+    if self.history.should_navigate(&self.input) {
+      if let Some(entry) = self.history.navigate_up(&self.input) {
+        self.input = entry.text.clone();
+        self.cursor_position = self.input.chars().count();
+      }
+    }
+  }
+
+  /// Navigate to next (newer) history entry
+  fn navigate_down(&mut self) {
+    // Check if we were browsing before navigation
+    let was_browsing = self.history.is_browsing();
+    
+    if let Some(entry) = self.history.navigate_down() {
+      self.input = entry.text.clone();
+      self.cursor_position = self.input.chars().count();
+    } else if was_browsing {
+      // navigate_down returned None and we were browsing - this means we exited browsing mode
+      // Restore original input
+      self.input = self.history.original_input().to_string();
+      self.cursor_position = self.input.chars().count();
+    }
+  }
+
+  /// Save current input to history
+  fn save_to_history(&mut self) {
+    self.history.record_entry(&self.input);
+  }
+
   /// Submit the current input as a message
   ///
   /// State transition: WaitingInput → Animating
   /// Sends message directly to LLM via SessionHandle
   pub fn submit_message(&mut self, data: &mut AppData) {
     if !self.input.is_empty() {
+      // Save input to history before submitting
+      self.save_to_history();
+      
       let message = std::mem::take(&mut self.input);
       // Add user message to chat history
       data.chat_history.push(ChatMessage::User {
@@ -620,6 +660,12 @@ impl View for ChatView {
         } else {
           self.submit_message(data);
         }
+      }
+      KeyCode::Up => {
+        self.navigate_up();
+      }
+      KeyCode::Down => {
+        self.navigate_down();
       }
       KeyCode::Backspace => {
         self.backspace();
