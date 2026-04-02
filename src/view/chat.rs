@@ -642,12 +642,8 @@ impl View for ChatView {
   fn handle_key(&mut self, data: &mut AppData, key: KeyEvent) -> Option<Box<dyn View>> {
     match key.code {
       KeyCode::Esc => {
-        // Return to home view
-        if let Some(ref config) = data.config {
-          return Some(Box::new(crate::view::HomeView::new(config)));
-        } else {
-          return Some(Box::new(crate::view::HomeView::default()));
-        }
+        // Exit the application
+        data.should_exit = true;
       }
       KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
         data.should_exit = true;

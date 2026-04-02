@@ -128,11 +128,6 @@ async fn run_app(
 
   // Process events from the stream
   while let Some(event) = event_stream.next().await {
-    // First, drain any pending UI messages from background tasks
-    while let Some(msg) = app.try_recv_message() {
-      app.handle_message(msg);
-    }
-
     // Process LLM stream events
     app.update_chat_session();
 

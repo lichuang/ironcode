@@ -5,10 +5,8 @@ use crate::cli::AppData;
 use crate::tui::FrameRequester;
 
 pub mod chat;
-pub mod home;
 
 pub use chat::{ChatMessage, ChatView, StreamingChunk};
-pub use home::HomeView;
 
 /// Trait for all views in the application
 pub trait View {
