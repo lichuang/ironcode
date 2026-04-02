@@ -5,6 +5,7 @@
 
 /// Messages that can be sent to the UI thread from background tasks.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum UiMessage {
   /// Append a new chat message
   AppendChat { content: String },

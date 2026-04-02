@@ -17,9 +17,11 @@ use crate::config::{Config, HistoryConfig};
 const HISTORY_FILENAME: &str = "history.jsonl";
 
 /// Default maximum file size (1MB).
+#[allow(dead_code)]
 const DEFAULT_MAX_SIZE: usize = 1024 * 1024;
 
 /// Default maximum number of entries.
+#[allow(dead_code)]
 const DEFAULT_MAX_ENTRIES: usize = 1000;
 
 /// Maximum retries for acquiring file lock.
@@ -181,22 +183,21 @@ impl InputHistoryManager {
     self.cursor.is_some()
   }
 
-  /// Get the current cursor position if browsing.
+  #[allow(dead_code)]
   pub fn cursor(&self) -> Option<usize> {
     self.cursor
   }
 
-  /// Get the original input (before navigation started).
   pub fn original_input(&self) -> &str {
     &self.original_input
   }
 
-  /// Exit browsing mode.
+  #[allow(dead_code)]
   pub fn exit_browsing(&mut self) {
     self.cursor = None;
   }
 
-  /// Get all entries.
+  #[allow(dead_code)]
   pub fn entries(&self) -> &[HistoryEntry] {
     &self.entries
   }
@@ -212,10 +213,10 @@ impl InputHistoryManager {
     }
 
     // Check for duplicate of most recent entry
-    if let Some(last) = self.entries.last() {
-      if last.text == text {
-        return;
-      }
+    if let Some(last) = self.entries.last()
+      && last.text == text
+    {
+      return;
     }
 
     // Add to in-memory entries
@@ -231,18 +232,18 @@ impl InputHistoryManager {
     self.original_input.clear();
   }
 
-  /// Reset navigation state (e.g., when user presses Escape).
+  #[allow(dead_code)]
   pub fn reset_navigation(&mut self) {
     self.cursor = None;
     self.original_input.clear();
   }
 
-  /// Get the number of entries.
+  #[allow(dead_code)]
   pub fn len(&self) -> usize {
     self.entries.len()
   }
 
-  /// Check if history is empty.
+  #[allow(dead_code)]
   pub fn is_empty(&self) -> bool {
     self.entries.is_empty()
   }
@@ -349,6 +350,7 @@ impl InputHistoryStorage {
     // Open file for read/write (append mode doesn't work well with locking)
     let mut file = std::fs::OpenOptions::new()
       .create(true)
+      .truncate(false)
       .read(true)
       .write(true)
       .open(&self.path)?;
@@ -370,10 +372,10 @@ impl InputHistoryStorage {
           ));
         }
         Err(e) => {
-          return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("Failed to acquire exclusive lock on history file: {}", e),
-          ));
+          return Err(std::io::Error::other(format!(
+            "Failed to acquire exclusive lock on history file: {}",
+            e
+          )));
         }
       }
     }
@@ -412,6 +414,7 @@ impl InputHistoryStorage {
     Ok(content.lines().filter(|l| !l.trim().is_empty()).count())
   }
 
+  #[allow(dead_code)]
   /// Count entries in the file without loading them all.
   /// Uses a shared lock to ensure consistent read.
   fn count_entries(&self) -> std::io::Result<usize> {
@@ -445,6 +448,7 @@ impl InputHistoryStorage {
     Ok(content.lines().filter(|l| !l.trim().is_empty()).count())
   }
 
+  #[allow(dead_code)]
   /// Trim the history file to size/entry limits.
   ///
   /// Opens the file, acquires an exclusive lock, and trims if necessary.
@@ -477,10 +481,10 @@ impl InputHistoryStorage {
           ));
         }
         Err(e) => {
-          return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("Failed to acquire exclusive lock for trim: {}", e),
-          ));
+          return Err(std::io::Error::other(format!(
+            "Failed to acquire exclusive lock for trim: {}",
+            e
+          )));
         }
       }
     }
@@ -499,15 +503,8 @@ impl InputHistoryStorage {
 
     let entries: Vec<HistoryEntry> = content
       .lines()
-      .filter_map(|line| {
-        if line.trim().is_empty() {
-          return None;
-        }
-        match serde_json::from_str::<HistoryEntry>(line) {
-          Ok(entry) => Some(entry),
-          Err(_) => None,
-        }
-      })
+      .filter(|line| !line.trim().is_empty())
+      .filter_map(|line| serde_json::from_str::<HistoryEntry>(line).ok())
       .collect();
 
     if entries.is_empty() {
@@ -551,7 +548,7 @@ impl InputHistoryStorage {
     // Rewrite file
     let new_content = kept_entries
       .iter()
-      .map(|e| serde_json::to_string(e))
+      .map(serde_json::to_string)
       .collect::<Result<Vec<_>, _>>()?
       .join("\n");
 
@@ -577,6 +574,7 @@ impl InputHistoryStorage {
     Ok(())
   }
 
+  #[allow(dead_code)]
   /// Clear all history.
   pub fn clear(&self) -> std::io::Result<()> {
     if self.path.exists() {
@@ -585,12 +583,14 @@ impl InputHistoryStorage {
     Ok(())
   }
 
+  #[allow(dead_code)]
   /// Get the history file path.
   pub fn path(&self) -> &PathBuf {
     &self.path
   }
 }
 
+#[allow(dead_code)]
 /// Convenience function to append an entry to history.
 pub fn save_input(text: impl Into<String>, config: &Config) -> std::io::Result<()> {
   let storage = InputHistoryStorage::new(config);
@@ -741,10 +741,7 @@ mod tests {
   #[test]
   fn test_navigate_after_exit() {
     // Test the scenario: two entries, navigate down to exit, then navigate up again
-    let entries = vec![
-      HistoryEntry::new("first"),
-      HistoryEntry::new("second"),
-    ];
+    let entries = vec![HistoryEntry::new("first"), HistoryEntry::new("second")];
     let mut nav = InputHistoryManager::with_entries(entries);
 
     // Navigate up to second
@@ -775,10 +772,7 @@ mod tests {
   #[test]
   fn test_navigate_with_modified_input_after_exit() {
     // Test: user modifies input after exiting, then tries to navigate
-    let entries = vec![
-      HistoryEntry::new("first"),
-      HistoryEntry::new("second"),
-    ];
+    let entries = vec![HistoryEntry::new("first"), HistoryEntry::new("second")];
     let mut nav = InputHistoryManager::with_entries(entries);
 
     // Navigate up

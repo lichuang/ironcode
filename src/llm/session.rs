@@ -44,6 +44,7 @@ fn generate_session_id() -> String {
 
 /// Commands sent to the session actor
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum SessionCommand {
   /// Send a user message
   SendMessage { content: String },
@@ -87,6 +88,7 @@ pub struct SessionHandle {
   cmd_tx: mpsc::UnboundedSender<SessionCommand>,
 }
 
+#[allow(dead_code)]
 impl SessionHandle {
   /// Send a user message to the session
   pub fn send_message(&self, content: impl Into<String>) {
@@ -330,7 +332,7 @@ impl SessionActor {
         );
         self.current_response.push_str(chunk);
         // Forward to caller
-        if let Err(_) = self.event_tx.send(event) {
+        if self.event_tx.send(event).is_err() {
           error!("Session {}: Failed to forward ContentChunk", self.id);
         }
       }
@@ -343,7 +345,7 @@ impl SessionActor {
         );
         self.current_thinking.push_str(chunk);
         // Forward to caller without storing in session messages
-        if let Err(_) = self.event_tx.send(event) {
+        if self.event_tx.send(event).is_err() {
           error!("Session {}: Failed to forward ThinkingChunk", self.id);
         }
       }
@@ -363,7 +365,7 @@ impl SessionActor {
           .push(ToolCall::new(id, name, arguments));
 
         // Forward to caller
-        if let Err(_) = self.event_tx.send(event.clone()) {
+        if self.event_tx.send(event.clone()).is_err() {
           error!("Session {}: Failed to forward ToolCallReceived", self.id);
         }
       }
@@ -375,7 +377,7 @@ impl SessionActor {
           output.len()
         );
         // Forward to caller
-        if let Err(_) = self.event_tx.send(event.clone()) {
+        if self.event_tx.send(event.clone()).is_err() {
           error!("Session {}: Failed to forward ToolCallCompleted", self.id);
         }
       }
@@ -416,16 +418,17 @@ impl SessionActor {
         self.stream_rx = None;
 
         // Check if we have tool calls to execute
-        if let Some(msg) = self.messages.last() {
-          if msg.tool_calls.is_some() && !msg.tool_calls.as_ref().unwrap().is_empty() {
-            info!("Session {}: Executing tool calls", self.id);
-            self.execute_tool_calls().await;
-            return; // Don't send Completed yet, we'll continue after tool execution
-          }
+        if let Some(msg) = self.messages.last()
+          && msg.tool_calls.is_some()
+          && !msg.tool_calls.as_ref().unwrap().is_empty()
+        {
+          info!("Session {}: Executing tool calls", self.id);
+          self.execute_tool_calls().await;
+          return; // Don't send Completed yet, we'll continue after tool execution
         }
 
         // Forward to caller
-        if let Err(_) = self.event_tx.send(event) {
+        if self.event_tx.send(event).is_err() {
           error!("Session {}: Failed to forward Completed event", self.id);
         }
         info!("Session {}: Stream completed", self.id);
@@ -438,13 +441,13 @@ impl SessionActor {
         self.current_thinking.clear();
         self.pending_tool_calls.clear();
         // Forward to caller
-        if let Err(_) = self.event_tx.send(event) {
+        if self.event_tx.send(event).is_err() {
           error!("Session {}: Failed to forward Error event", self.id);
         }
       }
       SessionEvent::Shutdown => {
         // Should not happen, but handle it
-        if let Err(_) = self.event_tx.send(event) {
+        if self.event_tx.send(event).is_err() {
           error!("Session {}: Failed to forward Shutdown event", self.id);
         }
       }
@@ -628,7 +631,7 @@ impl ChatSession {
     // Get default model configuration
     let model_config = config
       .default_model_config()
-      .ok_or_else(|| ConfigError::MissingDefaultModel)?;
+      .ok_or(ConfigError::MissingDefaultModel)?;
 
     // Get provider configuration
     let provider =
@@ -684,6 +687,7 @@ impl ChatSession {
     Ok(provider)
   }
 
+  #[allow(dead_code)]
   /// Start a new chat session without a system prompt
   pub fn start_without_system_prompt(
     provider: Box<dyn LLMProvider>,
@@ -723,11 +727,13 @@ impl ChatSession {
     self.event_rx.try_recv().ok()
   }
 
+  #[allow(dead_code)]
   /// Check if there's an event ready without consuming it
   pub fn has_event(&self) -> bool {
     !self.event_rx.is_empty()
   }
 
+  #[allow(dead_code)]
   /// Shutdown the session
   pub fn shutdown(&self) {
     self.handle.shutdown();
@@ -836,105 +842,105 @@ async fn handle_stream(
             }
           }
 
-          if let Some(content) = &choice.delta.content {
-            if !content.is_empty() {
-              log::debug!(
-                "Session: Received content chunk: len={}, content={}",
-                content.len(),
-                &content[..content.len().min(100)]
-              );
+          if let Some(content) = &choice.delta.content
+            && !content.is_empty()
+          {
+            log::debug!(
+              "Session: Received content chunk: len={}, content={}",
+              content.len(),
+              &content[..content.len().min(100)]
+            );
 
-              // Parse content for <think> tags (Kimi thinking mode)
-              buffer.push_str(content);
-              log::debug!(
-                "Session: Buffer len={}, in_thinking_mode={}",
-                buffer.len(),
-                in_thinking_mode
-              );
+            // Parse content for <think> tags (Kimi thinking mode)
+            buffer.push_str(content);
+            log::debug!(
+              "Session: Buffer len={}, in_thinking_mode={}",
+              buffer.len(),
+              in_thinking_mode
+            );
 
-              // Process the buffer to extract thinking content
-              loop {
-                if in_thinking_mode {
-                  // Look for </think> closing tag
-                  if let Some(end_pos) = buffer.find("</think>") {
-                    // Extract thinking content
-                    let thinking = buffer[..end_pos].to_string();
-                    if !thinking.is_empty() {
-                      if !has_received_thinking {
-                        log::info!(
-                          "Session: First thinking content received: len={}",
-                          thinking.len()
-                        );
-                        has_received_thinking = true;
-                      }
-                      log::debug!("Session: Sending ThinkingChunk: len={}", thinking.len());
-                      if tx.send(SessionEvent::ThinkingChunk(thinking)).is_err() {
-                        return;
-                      }
+            // Process the buffer to extract thinking content
+            loop {
+              if in_thinking_mode {
+                // Look for </think> closing tag
+                if let Some(end_pos) = buffer.find("</think>") {
+                  // Extract thinking content
+                  let thinking = buffer[..end_pos].to_string();
+                  if !thinking.is_empty() {
+                    if !has_received_thinking {
+                      log::info!(
+                        "Session: First thinking content received: len={}",
+                        thinking.len()
+                      );
+                      has_received_thinking = true;
                     }
-                    // Remove processed part including closing tag
-                    buffer = buffer[end_pos + 8..].to_string();
-                    in_thinking_mode = false;
-                    log::debug!(
-                      "Session: Exited thinking mode, remaining buffer len={}",
-                      buffer.len()
-                    );
-                  } else {
-                    // Still in thinking mode, send what we have so far
-                    if !buffer.is_empty() {
-                      if !has_received_thinking {
-                        log::info!(
-                          "Session: First thinking content received (partial): len={}",
-                          buffer.len()
-                        );
-                        has_received_thinking = true;
-                      }
-                      log::debug!(
-                        "Session: Sending ThinkingChunk (partial): len={}",
+                    log::debug!("Session: Sending ThinkingChunk: len={}", thinking.len());
+                    if tx.send(SessionEvent::ThinkingChunk(thinking)).is_err() {
+                      return;
+                    }
+                  }
+                  // Remove processed part including closing tag
+                  buffer = buffer[end_pos + 8..].to_string();
+                  in_thinking_mode = false;
+                  log::debug!(
+                    "Session: Exited thinking mode, remaining buffer len={}",
+                    buffer.len()
+                  );
+                } else {
+                  // Still in thinking mode, send what we have so far
+                  if !buffer.is_empty() {
+                    if !has_received_thinking {
+                      log::info!(
+                        "Session: First thinking content received (partial): len={}",
                         buffer.len()
                       );
-                      if tx
-                        .send(SessionEvent::ThinkingChunk(buffer.clone()))
-                        .is_err()
-                      {
+                      has_received_thinking = true;
+                    }
+                    log::debug!(
+                      "Session: Sending ThinkingChunk (partial): len={}",
+                      buffer.len()
+                    );
+                    if tx
+                      .send(SessionEvent::ThinkingChunk(buffer.clone()))
+                      .is_err()
+                    {
+                      return;
+                    }
+                    buffer.clear();
+                  }
+                  break;
+                }
+              } else {
+                // Look for <think> opening tag
+                if let Some(start_pos) = buffer.find("<think>") {
+                  log::info!("Session: Found <think> tag at position {}", start_pos);
+                  // Send any content before <think> as regular content
+                  if start_pos > 0 {
+                    let before = buffer[..start_pos].to_string();
+                    if !before.is_empty() {
+                      log::debug!(
+                        "Session: Sending ContentChunk (before think): len={}",
+                        before.len()
+                      );
+                      if tx.send(SessionEvent::ContentChunk(before)).is_err() {
                         return;
                       }
-                      buffer.clear();
                     }
-                    break;
                   }
+                  // Enter thinking mode
+                  buffer = buffer[start_pos + 7..].to_string();
+                  in_thinking_mode = true;
+                  log::info!("Session: Entered thinking mode");
                 } else {
-                  // Look for <think> opening tag
-                  if let Some(start_pos) = buffer.find("<think>") {
-                    log::info!("Session: Found <think> tag at position {}", start_pos);
-                    // Send any content before <think> as regular content
-                    if start_pos > 0 {
-                      let before = buffer[..start_pos].to_string();
-                      if !before.is_empty() {
-                        log::debug!(
-                          "Session: Sending ContentChunk (before think): len={}",
-                          before.len()
-                        );
-                        if tx.send(SessionEvent::ContentChunk(before)).is_err() {
-                          return;
-                        }
-                      }
+                  // No <think> tag, send as regular content
+                  if !buffer.is_empty() {
+                    log::debug!("Session: Sending ContentChunk: len={}", buffer.len());
+                    if tx.send(SessionEvent::ContentChunk(buffer.clone())).is_err() {
+                      return;
                     }
-                    // Enter thinking mode
-                    buffer = buffer[start_pos + 7..].to_string();
-                    in_thinking_mode = true;
-                    log::info!("Session: Entered thinking mode");
-                  } else {
-                    // No <think> tag, send as regular content
-                    if !buffer.is_empty() {
-                      log::debug!("Session: Sending ContentChunk: len={}", buffer.len());
-                      if tx.send(SessionEvent::ContentChunk(buffer.clone())).is_err() {
-                        return;
-                      }
-                      buffer.clear();
-                    }
-                    break;
+                    buffer.clear();
                   }
+                  break;
                 }
               }
             }
@@ -965,23 +971,23 @@ async fn handle_stream(
 
   // Send any accumulated tool calls
   for tool_call in tool_call_buffer {
-    if let (Some(id), Some(function)) = (tool_call.id, tool_call.function) {
-      if let (Some(name), Some(arguments)) = (function.name, function.arguments) {
-        if !id.is_empty() && !name.is_empty() {
-          log::info!(
-            "Session: Sending accumulated tool call: id={}, name={}, args={}",
-            id,
-            name,
-            arguments
-          );
-          // Store the tool call info for later use
-          let _ = tx.send(SessionEvent::ToolCallReceived {
-            id: id.clone(),
-            name: name.clone(),
-            arguments: arguments.clone(),
-          });
-        }
-      }
+    if let (Some(id), Some(function)) = (tool_call.id, tool_call.function)
+      && let (Some(name), Some(arguments)) = (function.name, function.arguments)
+      && !id.is_empty()
+      && !name.is_empty()
+    {
+      log::info!(
+        "Session: Sending accumulated tool call: id={}, name={}, args={}",
+        id,
+        name,
+        arguments
+      );
+      // Store the tool call info for later use
+      let _ = tx.send(SessionEvent::ToolCallReceived {
+        id: id.clone(),
+        name: name.clone(),
+        arguments: arguments.clone(),
+      });
     }
   }
 

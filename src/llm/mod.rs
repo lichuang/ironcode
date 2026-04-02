@@ -9,8 +9,8 @@ pub mod providers;
 pub mod session;
 pub mod types;
 
-pub use openai::OpenAIClient;
-pub use provider::LLMProvider;
-pub use providers::KimiProvider;
-pub use session::{ChatSession, SessionCommand, SessionEvent, SessionHandle};
-pub use types::*;
+// pub use openai::OpenAIClient;  // Currently unused
+// pub use provider::LLMProvider;  // Currently unused
+// pub use providers::KimiProvider;  // Currently unused
+pub use session::{ChatSession, SessionEvent, SessionHandle};
+// pub use types::*;  // Currently unused - import specific types when needed

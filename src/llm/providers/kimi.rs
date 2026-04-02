@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use async_openai::error::OpenAIError;
 use async_openai::types::chat::{
-  ChatCompletionResponseStream, ChatCompletionMessageToolCall,
-  CreateChatCompletionStreamResponse, FinishReason, Role as OpenAIRole, FunctionCall,
+  ChatCompletionResponseStream, CreateChatCompletionStreamResponse, FinishReason,
+  Role as OpenAIRole,
 };
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -313,14 +313,17 @@ impl KimiProvider {
 
     // Convert tool_calls if present
     let tool_calls = msg.tool_calls.as_ref().map(|calls| {
-      calls.iter().map(|call| RequestToolCall {
-        id: call.id.clone(),
-        call_type: "function".to_string(),
-        function: RequestToolFunction {
-          name: call.name.clone(),
-          arguments: call.arguments.clone(),
-        },
-      }).collect()
+      calls
+        .iter()
+        .map(|call| RequestToolCall {
+          id: call.id.clone(),
+          call_type: "function".to_string(),
+          function: RequestToolFunction {
+            name: call.name.clone(),
+            arguments: call.arguments.clone(),
+          },
+        })
+        .collect()
     });
 
     // Build content based on message type and role
@@ -330,15 +333,22 @@ impl KimiProvider {
     let (content, reasoning_content) = match msg.role {
       Role::Tool => {
         // Tool messages must use array format for content
-        let text = if msg.content.is_empty() { "(Empty result)".to_string() } else { msg.content.clone() };
+        let text = if msg.content.is_empty() {
+          "(Empty result)".to_string()
+        } else {
+          msg.content.clone()
+        };
         let content_array = vec![ContentItem {
           item_type: "text".to_string(),
           text,
         }];
-        (Some(serde_json::to_value(content_array).unwrap_or(serde_json::Value::Null)), None)
+        (
+          Some(serde_json::to_value(content_array).unwrap_or(serde_json::Value::Null)),
+          None,
+        )
       }
       Role::Assistant if msg.tool_calls.is_some() => {
-        // Assistant messages with tool_calls: 
+        // Assistant messages with tool_calls:
         // - content is null (not empty string, not array)
         // - reasoning_content is extracted from <think> tags if present
         let reasoning = Self::extract_reasoning(&msg.content);
@@ -346,7 +356,11 @@ impl KimiProvider {
       }
       _ => {
         // Other messages: content is string (or null if empty)
-        let content = if msg.content.is_empty() { None } else { Some(serde_json::Value::String(msg.content.clone())) };
+        let content = if msg.content.is_empty() {
+          None
+        } else {
+          Some(serde_json::Value::String(msg.content.clone()))
+        };
         (content, None)
       }
     };
@@ -362,12 +376,12 @@ impl KimiProvider {
 
   /// Extract reasoning content from message (content between <think> tags)
   fn extract_reasoning(content: &str) -> Option<String> {
-    if let Some(start) = content.find("<think>") {
-      if let Some(end) = content.find("</think>") {
-        let reasoning = content[start + 7..end].trim().to_string();
-        if !reasoning.is_empty() {
-          return Some(reasoning);
-        }
+    if let Some(start) = content.find("<think>")
+      && let Some(end) = content.find("</think>")
+    {
+      let reasoning = content[start + 7..end].trim().to_string();
+      if !reasoning.is_empty() {
+        return Some(reasoning);
       }
     }
     None
@@ -465,20 +479,29 @@ impl LLMProvider for KimiProvider {
             // Parse using Kimi's custom format that includes reasoning_content
             match serde_json::from_str::<KimiStreamResponse>(&message.data) {
               Ok(kimi_response) => {
-                log::debug!("KimiProvider: Parsed Kimi response: id={}, model={}, choices={}", 
-                  kimi_response.id, kimi_response.model, kimi_response.choices.len());
+                log::debug!(
+                  "KimiProvider: Parsed Kimi response: id={}, model={}, choices={}",
+                  kimi_response.id,
+                  kimi_response.model,
+                  kimi_response.choices.len()
+                );
                 for (i, choice) in kimi_response.choices.iter().enumerate() {
-                  log::debug!("KimiProvider: Choice[{}]: content={:?}, reasoning_content={:?}, tool_calls={:?}",
-                    i, choice.delta.content, choice.delta.reasoning_content, choice.delta.tool_calls);
+                  log::debug!(
+                    "KimiProvider: Choice[{}]: content={:?}, reasoning_content={:?}, tool_calls={:?}",
+                    i,
+                    choice.delta.content,
+                    choice.delta.reasoning_content,
+                    choice.delta.tool_calls
+                  );
                 }
                 // Convert Kimi response to standard OpenAI format
                 let converted = convert_kimi_response(kimi_response);
-                
+
                 // Log the converted response
                 if let Ok(response_json) = serde_json::to_string_pretty(&converted) {
                   log::info!("KimiProvider: Converted response:\n{}", response_json);
                 }
-                
+
                 return Some((Ok(converted), es));
               }
               Err(e) => {
@@ -529,7 +552,7 @@ fn generate_device_id(hostname: &str) -> String {
 /// Convert Kimi stream response to standard OpenAI format
 /// This embeds reasoning_content as special markers within content for downstream processing
 fn convert_kimi_response(kimi: KimiStreamResponse) -> CreateChatCompletionStreamResponse {
-  use async_openai::types::chat::{ChatChoiceStream, ChatCompletionStreamResponseDelta, ChatCompletionMessageToolCalls};
+  use async_openai::types::chat::{ChatChoiceStream, ChatCompletionStreamResponseDelta};
 
   let choices = kimi
     .choices
@@ -540,7 +563,10 @@ fn convert_kimi_response(kimi: KimiStreamResponse) -> CreateChatCompletionStream
         (Some(ref reasoning), Some(ref content)) if !reasoning.is_empty() => {
           // Both reasoning and content present
           let combined = format!("<think>{}</think>{}", reasoning, content);
-          log::debug!("KimiProvider: Combined reasoning + content: len={}", combined.len());
+          log::debug!(
+            "KimiProvider: Combined reasoning + content: len={}",
+            combined.len()
+          );
           Some(combined)
         }
         (Some(ref reasoning), _) if !reasoning.is_empty() => {
@@ -551,26 +577,37 @@ fn convert_kimi_response(kimi: KimiStreamResponse) -> CreateChatCompletionStream
         }
         (_, content) => {
           if content.is_some() {
-            log::debug!("KimiProvider: Only content: len={}", content.as_ref().map(|s| s.len()).unwrap_or(0));
+            log::debug!(
+              "KimiProvider: Only content: len={}",
+              content.as_ref().map(|s| s.len()).unwrap_or(0)
+            );
           }
           content
         }
       };
 
       // Convert tool calls - use ChatCompletionMessageToolCallChunk for streaming
-      let tool_calls: Option<Vec<async_openai::types::chat::ChatCompletionMessageToolCallChunk>> = choice.delta.tool_calls.map(|calls| {
-        calls.into_iter().map(|call| {
-          async_openai::types::chat::ChatCompletionMessageToolCallChunk {
-            index: call.index.unwrap_or(0),
-            id: call.id,
-            r#type: call.call_type.map(|t| async_openai::types::chat::FunctionType::Function),
-            function: call.function.map(|f| async_openai::types::chat::FunctionCallStream {
-              name: f.name,
-              arguments: f.arguments,
-            }),
-          }
-        }).collect()
-      });
+      let tool_calls: Option<Vec<async_openai::types::chat::ChatCompletionMessageToolCallChunk>> =
+        choice.delta.tool_calls.map(|calls| {
+          calls
+            .into_iter()
+            .map(
+              |call| async_openai::types::chat::ChatCompletionMessageToolCallChunk {
+                index: call.index.unwrap_or(0),
+                id: call.id,
+                r#type: call
+                  .call_type
+                  .map(|_t| async_openai::types::chat::FunctionType::Function),
+                function: call
+                  .function
+                  .map(|f| async_openai::types::chat::FunctionCallStream {
+                    name: f.name,
+                    arguments: f.arguments,
+                  }),
+              },
+            )
+            .collect()
+        });
 
       ChatChoiceStream {
         index: choice.index,
@@ -598,6 +635,8 @@ fn convert_kimi_response(kimi: KimiStreamResponse) -> CreateChatCompletionStream
     #[allow(unused)]
     usage: None,
     #[allow(unused)]
+    // system_fingerprint is deprecated, but we keep it for compatibility
+    #[allow(deprecated)]
     system_fingerprint: None,
     #[allow(unused)]
     service_tier: None,

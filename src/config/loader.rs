@@ -2,7 +2,7 @@
 
 use super::{Config, LoggingConfig};
 use crate::error::{ConfigError, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Default configuration directory name (in home directory)
 const DEFAULT_DIR: &str = ".ironcode";
@@ -41,16 +41,19 @@ pub fn data_dir(config: &Config) -> PathBuf {
     })
 }
 
+#[allow(dead_code)]
 /// Get the prompts directory path
 pub fn prompts_dir(config: &Config) -> PathBuf {
   data_dir(config).join(PROMPTS_DIR)
 }
 
+#[allow(dead_code)]
 /// Get the logs directory path
 pub fn logs_dir(config: &Config) -> PathBuf {
   data_dir(config).join("logs")
 }
 
+#[allow(dead_code)]
 /// Load configuration from standard location
 ///
 /// Configuration is loaded from `~/.ironcode/config.toml`.
@@ -62,7 +65,7 @@ pub fn load_config() -> Result<Config> {
 /// Load configuration from a specific directory
 ///
 /// Reads config.toml from the specified directory.
-pub fn load_config_from_dir(config_dir: &PathBuf) -> Result<Config> {
+pub fn load_config_from_dir(config_dir: &Path) -> Result<Config> {
   let config_path = config_dir.join(CONFIG_FILE);
   load_config_from(&config_path)
 }
@@ -92,6 +95,7 @@ pub fn load_from_file(path: &PathBuf) -> Result<Config> {
   Ok(config)
 }
 
+#[allow(dead_code)]
 /// Get the user configuration file path (~/.ironcode/config.toml)
 fn user_config_path() -> Option<PathBuf> {
   default_data_dir().map(|dir| dir.join(CONFIG_FILE))
@@ -100,7 +104,7 @@ fn user_config_path() -> Option<PathBuf> {
 /// Get the system prompt file path in the config directory
 ///
 /// Returns: config_dir/prompts/system.md
-pub fn system_prompt_path(config_dir: &PathBuf) -> PathBuf {
+pub fn system_prompt_path(config_dir: &Path) -> PathBuf {
   config_dir.join(PROMPTS_DIR).join(SYSTEM_PROMPT_FILE)
 }
 
@@ -154,6 +158,7 @@ fn validate_config(config: &Config) -> Result<()> {
   Ok(())
 }
 
+#[allow(dead_code)]
 /// Ensure data directory exists
 pub fn ensure_data_dir(config: &Config) -> Result<PathBuf> {
   let data_dir_path = data_dir(config);
@@ -166,6 +171,7 @@ pub fn ensure_data_dir(config: &Config) -> Result<PathBuf> {
   Ok(data_dir_path)
 }
 
+#[allow(dead_code)]
 /// Create a default configuration file if it doesn't exist
 ///
 /// Creates the config file in the default location (~/.ironcode/)

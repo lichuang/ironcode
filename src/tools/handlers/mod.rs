@@ -15,7 +15,7 @@ pub use todo::SetTodoListHandler;
 pub use web::{FetchURLHandler, SearchWebHandler};
 
 // Export shell handlers based on platform
-#[cfg(target_os = "windows")]
-pub use shell::PowerShellHandler;
 #[cfg(not(target_os = "windows"))]
 pub use shell::BashHandler;
+#[cfg(target_os = "windows")]
+pub use shell::PowerShellHandler;

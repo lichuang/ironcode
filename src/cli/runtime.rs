@@ -7,13 +7,13 @@ use crate::tools::handlers::{
 use crate::tools::{ExecutableToolRegistry, ToolRegistry};
 
 // Import platform-specific shell handlers
-#[cfg(target_os = "windows")]
-use crate::tools::handlers::PowerShellHandler;
 #[cfg(not(target_os = "windows"))]
 use crate::tools::handlers::BashHandler;
+#[cfg(target_os = "windows")]
+use crate::tools::handlers::PowerShellHandler;
 use log::{debug, info, warn};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// Runtime environment arguments for template substitution
@@ -101,10 +101,7 @@ impl RuntimeArgs {
   /// Load AGENTS.md content if exists
   fn load_agents_md() -> String {
     let agents_path = PathBuf::from("AGENTS.md");
-    match fs::read_to_string(&agents_path) {
-      Ok(content) => content,
-      Err(_) => String::new(),
-    }
+    fs::read_to_string(&agents_path).unwrap_or_default()
   }
 
   /// Load available skills (placeholder for now)
@@ -134,7 +131,7 @@ impl Runtime {
   /// Loads system prompt from data_dir/prompts/system.md
   /// Loads tools from data_dir/prompts/tools/
   /// Returns empty string if prompt file doesn't exist
-  pub(crate) fn new(data_dir: &PathBuf) -> Result<Self> {
+  pub(crate) fn new(data_dir: &Path) -> Result<Self> {
     let system_prompt_template = Self::load_system_prompt_template(data_dir);
     let args = RuntimeArgs::new()?;
 
@@ -167,19 +164,19 @@ impl Runtime {
     registry.register("SetTodoList", Box::new(SetTodoListHandler::new()));
     registry.register("FetchURL", Box::new(FetchURLHandler::new()));
     registry.register("SearchWeb", Box::new(SearchWebHandler::new()));
-    
+
     // Register platform-specific shell handler
     #[cfg(target_os = "windows")]
     registry.register("PowerShell", Box::new(PowerShellHandler::new()));
     #[cfg(not(target_os = "windows"))]
     registry.register("Bash", Box::new(BashHandler::new()));
-    
+
     registry
   }
 
   /// Load tools from the data directory
   /// Tools are loaded from {data_dir}/prompts/tools/
-  fn load_tools(data_dir: &PathBuf) -> Result<ToolRegistry> {
+  fn load_tools(data_dir: &Path) -> Result<ToolRegistry> {
     let tools_dir = data_dir.join("prompts").join("tools");
     debug!("Loading tools from: {:?}", tools_dir);
 
@@ -239,7 +236,7 @@ impl Runtime {
   ///
   /// Reads from config_dir/prompts/system.md
   /// Returns empty string if file doesn't exist
-  fn load_system_prompt_template(config_dir: &PathBuf) -> String {
+  fn load_system_prompt_template(config_dir: &Path) -> String {
     let prompt_path = system_prompt_path(config_dir);
     debug!("Loading system prompt from: {:?}", prompt_path);
 

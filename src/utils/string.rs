@@ -63,6 +63,7 @@ pub fn string_display_width(s: &str) -> usize {
 /// assert_eq!(prefix_display_width("中文abc", 2), 4); // "中文" = 2+2
 /// assert_eq!(prefix_display_width("中文abc", 5), 7); // "中文abc" = 2+2+1+1+1
 /// ```
+#[allow(dead_code)]
 pub fn prefix_display_width(s: &str, n: usize) -> usize {
   s.chars().take(n).map(char_display_width).sum()
 }

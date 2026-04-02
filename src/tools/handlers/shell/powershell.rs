@@ -10,7 +10,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::time::{self, Duration};
 
-use crate::tools::{parse_arguments, ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput};
+use crate::tools::{ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, parse_arguments};
 
 /// Handler for the PowerShell tool
 pub struct PowerShellHandler;
@@ -64,7 +64,9 @@ impl ToolHandler for PowerShellHandler {
 
     // Validate command is not empty
     if args.command.trim().is_empty() {
-      return Err(ToolError::RespondToModel("Command cannot be empty.".to_string()));
+      return Err(ToolError::RespondToModel(
+        "Command cannot be empty.".to_string(),
+      ));
     }
 
     // Validate timeout

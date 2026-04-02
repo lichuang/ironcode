@@ -12,11 +12,13 @@ use super::message::UiMessage;
 /// Clone the `Sender` to pass to background tasks, and use `try_recv`
 /// in the main event loop to process messages.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct MessageBroker {
   tx: mpsc::UnboundedSender<UiMessage>,
   rx: mpsc::UnboundedReceiver<UiMessage>,
 }
 
+#[allow(dead_code)]
 impl MessageBroker {
   /// Create a new message broker with an unbounded channel.
   pub fn new() -> Self {
@@ -24,6 +26,7 @@ impl MessageBroker {
     Self { tx, rx }
   }
 
+  #[allow(dead_code)]
   /// Get a clone of the sender handle.
   ///
   /// This can be passed to background tasks to send messages to the UI.
@@ -31,6 +34,7 @@ impl MessageBroker {
     self.tx.clone()
   }
 
+  #[allow(dead_code)]
   /// Try to receive a message without blocking.
   ///
   /// Returns `Some(message)` if a message is available, `None` otherwise.

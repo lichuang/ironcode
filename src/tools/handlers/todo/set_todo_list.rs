@@ -5,7 +5,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::tools::{parse_arguments, ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput};
+use crate::tools::{ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, parse_arguments};
 
 /// Handler for the SetTodoList tool
 pub struct SetTodoListHandler;
@@ -141,7 +141,7 @@ mod tests {
             {"title": "Task 3", "status": "pending"}
           ]
         }"#
-        .to_string(),
+          .to_string(),
       },
       &temp_dir,
     );
@@ -170,7 +170,7 @@ mod tests {
             {"title": "", "status": "pending"}
           ]
         }"#
-        .to_string(),
+          .to_string(),
       },
       &temp_dir,
     );
@@ -195,7 +195,7 @@ mod tests {
             {"title": "Task 1", "status": "invalid"}
           ]
         }"#
-        .to_string(),
+          .to_string(),
       },
       &temp_dir,
     );

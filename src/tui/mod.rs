@@ -23,8 +23,8 @@ mod message_broker;
 pub use event_stream::TuiEventBroker;
 pub use event_stream::TuiEventStream;
 pub use frame_requester::FrameRequester;
-pub use message::UiMessage;
-pub use message_broker::MessageBroker;
+// pub use message::UiMessage;  // Currently unused
+// pub use message_broker::MessageBroker;  // Currently unused
 
 /// Target frame interval for UI redraw scheduling (120 FPS max).
 pub const TARGET_FRAME_INTERVAL: std::time::Duration = frame_rate_limiter::MIN_FRAME_INTERVAL;
@@ -95,7 +95,10 @@ impl Tui {
   where
     F: FnOnce(&mut ratatui::Frame),
   {
-    self.terminal.draw(f).map_err(|e| TuiError::DrawFrame { source: e })?;
+    self
+      .terminal
+      .draw(f)
+      .map_err(|e| TuiError::DrawFrame { source: e })?;
     Ok(())
   }
 }

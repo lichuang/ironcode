@@ -5,7 +5,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::tools::{parse_arguments, ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput};
+use crate::tools::{ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, parse_arguments};
 
 /// Handler for the AskUserQuestion tool
 pub struct AskUserQuestionHandler;
@@ -16,6 +16,7 @@ struct QuestionOption {
   /// Concise display text (1-5 words)
   label: String,
   /// Brief explanation of trade-offs or implications
+  #[allow(dead_code)]
   #[serde(default)]
   description: String,
 }
@@ -26,11 +27,13 @@ struct Question {
   /// The question text
   question: String,
   /// Short category tag (max 12 chars)
+  #[allow(dead_code)]
   #[serde(default)]
   header: String,
   /// Available options (2-4 items)
   options: Vec<QuestionOption>,
   /// Whether multiple options can be selected
+  #[allow(dead_code)]
   #[serde(default)]
   multi_select: bool,
 }
@@ -225,7 +228,8 @@ mod tests {
               "options": [{"label": "Option 1"}, {"label": "Option 2"}]
             }
           ]
-        }"#.to_string(),
+        }"#
+          .to_string(),
       },
       &temp_dir,
     );
@@ -252,7 +256,8 @@ mod tests {
               "options": [{"label": "Option 1"}, {"label": "Option 2"}]
             }
           ]
-        }"#.to_string(),
+        }"#
+          .to_string(),
       },
       &temp_dir,
     );
@@ -279,7 +284,8 @@ mod tests {
               "options": [{"label": "Only option"}]
             }
           ]
-        }"#.to_string(),
+        }"#
+          .to_string(),
       },
       &temp_dir,
     );
@@ -307,7 +313,8 @@ mod tests {
             {"question": "Q4?", "options": [{"label": "A"}, {"label": "B"}]},
             {"question": "Q5?", "options": [{"label": "A"}, {"label": "B"}]}
           ]
-        }"#.to_string(),
+        }"#
+          .to_string(),
       },
       &temp_dir,
     );

@@ -11,11 +11,9 @@ use async_trait::async_trait;
 #[async_trait]
 pub trait LLMProvider: Send + Sync {
   /// Send a chat completion request with streaming response
-  async fn chat_stream(
-    &self,
-    messages: Vec<Message>,
-  ) -> Result<ChatCompletionResponseStream>;
+  async fn chat_stream(&self, messages: Vec<Message>) -> Result<ChatCompletionResponseStream>;
 
+  #[allow(dead_code)]
   /// Get the provider name
   fn name(&self) -> &str;
 }

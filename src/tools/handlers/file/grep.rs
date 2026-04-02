@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use tokio::process::Command;
 
-use crate::tools::{parse_arguments, ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput};
+use crate::tools::{ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, parse_arguments};
 
 /// Handler for the Grep tool
 pub struct GrepHandler;
@@ -158,9 +158,10 @@ impl ToolHandler for GrepHandler {
     }
 
     // Execute search
-    let output = cmd.output().await.map_err(|e| {
-      ToolError::Fatal(format!("Failed to execute ripgrep: {}", e))
-    })?;
+    let output = cmd
+      .output()
+      .await
+      .map_err(|e| ToolError::Fatal(format!("Failed to execute ripgrep: {}", e)))?;
 
     if !output.status.success() {
       // Check if it's a "no matches found" case (exit code 1)
@@ -303,14 +304,16 @@ mod tests {
     let handler = GrepHandler::new();
     let cwd = PathBuf::from(".");
     // Use a pattern that is very unlikely to exist in the codebase
-    let pattern = format!("NO_MATCH_{}_PATTERN_{}", std::process::id(), std::time::SystemTime::now().elapsed().unwrap().as_secs());
+    let pattern = format!(
+      "NO_MATCH_{}_PATTERN_{}",
+      std::process::id(),
+      std::time::SystemTime::now().elapsed().unwrap().as_secs()
+    );
     let args = format!(r#"{{"pattern": "{}", "path": "src"}}"#, pattern);
     let invocation = ToolInvocation::new(
       "Grep",
       "test-call-id",
-      crate::tools::ToolPayload::Function {
-        arguments: args,
-      },
+      crate::tools::ToolPayload::Function { arguments: args },
       &cwd,
     );
 
@@ -318,7 +321,11 @@ mod tests {
     assert!(result.is_ok(), "Handler returned error: {:?}", result);
 
     let output = result.unwrap().into_response();
-    assert!(output.contains("No matches found"), "Expected 'No matches found' in output, got: {:?}", output);
+    assert!(
+      output.contains("No matches found"),
+      "Expected 'No matches found' in output, got: {:?}",
+      output
+    );
   }
 
   #[tokio::test]
@@ -329,7 +336,9 @@ mod tests {
       "Grep",
       "test-call-id",
       crate::tools::ToolPayload::Function {
-        arguments: r#"{"pattern": "ReadFile", "glob": "*.rs", "output_mode": "files_with_matches"}"#.to_string(),
+        arguments:
+          r#"{"pattern": "ReadFile", "glob": "*.rs", "output_mode": "files_with_matches"}"#
+            .to_string(),
       },
       &cwd,
     );
@@ -346,7 +355,9 @@ mod tests {
       "Grep",
       "test-call-id",
       crate::tools::ToolPayload::Function {
-        arguments: r#"{"pattern": "use", "path": "src/tools", "output_mode": "content", "head_limit": 3}"#.to_string(),
+        arguments:
+          r#"{"pattern": "use", "path": "src/tools", "output_mode": "content", "head_limit": 3}"#
+            .to_string(),
       },
       &cwd,
     );

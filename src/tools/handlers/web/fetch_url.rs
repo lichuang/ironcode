@@ -7,7 +7,7 @@ use std::io::Cursor;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::tools::{parse_arguments, ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput};
+use crate::tools::{ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, parse_arguments};
 
 /// Handler for the FetchURL tool
 pub struct FetchURLHandler;

@@ -10,7 +10,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::time::{self, Duration};
 
-use crate::tools::{parse_arguments, ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput};
+use crate::tools::{ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, parse_arguments};
 
 /// Handler for the Bash tool
 pub struct BashHandler;
@@ -64,7 +64,9 @@ impl ToolHandler for BashHandler {
 
     // Validate command is not empty
     if args.command.trim().is_empty() {
-      return Err(ToolError::RespondToModel("Command cannot be empty.".to_string()));
+      return Err(ToolError::RespondToModel(
+        "Command cannot be empty.".to_string(),
+      ));
     }
 
     // Validate timeout
@@ -93,7 +95,7 @@ impl ToolHandler for BashHandler {
           let message = if combined_output.is_empty() {
             format!("Command failed with exit code: {}", exit_code)
           } else {
-            format!("{}", combined_output)
+            combined_output.to_string()
           };
           Ok(ToolOutput::success(format!(
             "{}

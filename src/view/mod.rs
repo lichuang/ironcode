@@ -6,7 +6,7 @@ use crate::tui::FrameRequester;
 
 pub mod chat;
 
-pub use chat::{ChatMessage, ChatView, StreamingChunk};
+pub use chat::ChatView;
 
 /// Trait for all views in the application
 pub trait View {

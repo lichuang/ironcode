@@ -14,7 +14,7 @@ const DEFAULT_HISTORY_MAX_ENTRIES: usize = 1000;
 
 pub mod loader;
 
-pub use loader::{data_dir, load_config_from_dir, system_prompt_path};
+// pub use loader::{data_dir, load_config_from_dir};  // Currently unused
 
 /// Root configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize)]

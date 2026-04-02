@@ -12,12 +12,14 @@ use async_openai::{
 };
 
 /// OpenAI API client wrapper
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct OpenAIClient {
   client: Client<OpenAIConfig>,
   config: ChatConfig,
 }
 
+#[allow(dead_code)]
 impl OpenAIClient {
   /// Create a new OpenAI client with the API key from environment
   pub fn new(config: ChatConfig) -> Result<Self> {
@@ -27,9 +29,7 @@ impl OpenAIClient {
 
   /// Create a new client with a custom API key
   pub fn with_api_key(api_key: impl Into<String>, config: ChatConfig) -> Self {
-    let client = Client::with_config(
-      OpenAIConfig::new().with_api_key(api_key),
-    );
+    let client = Client::with_config(OpenAIConfig::new().with_api_key(api_key));
     Self { client, config }
   }
 
@@ -51,7 +51,7 @@ impl OpenAIClient {
   ///
   /// # Arguments
   /// * `messages` - A list of messages, typically starting with a system message
-  ///                followed by alternating user and assistant messages
+  ///   followed by alternating user and assistant messages
   ///
   /// # Example
   /// ```rust
@@ -61,13 +61,10 @@ impl OpenAIClient {
   /// ];
   /// let stream = client.chat_stream(messages).await?;
   /// ```
-  pub async fn chat_stream(
-    &self,
-    messages: Vec<Message>,
-  ) -> Result<ChatCompletionResponseStream> {
+  pub async fn chat_stream(&self, messages: Vec<Message>) -> Result<ChatCompletionResponseStream> {
     let request_messages: Vec<ChatCompletionRequestMessage> = messages
       .into_iter()
-      .map(|msg| Self::convert_message(msg))
+      .map(Self::convert_message)
       .collect::<std::result::Result<Vec<_>, _>>()?;
 
     let mut request = CreateChatCompletionRequestArgs::default();
@@ -84,7 +81,9 @@ impl OpenAIClient {
       request.temperature(temperature);
     }
 
-    let request = request.build().map_err(|e| LlmError::BuildRequest { source: e })?;
+    let request = request
+      .build()
+      .map_err(|e| LlmError::BuildRequest { source: e })?;
 
     let stream = self.client.chat().create_stream(request).await?;
 
@@ -103,10 +102,7 @@ impl OpenAIClient {
     system_prompt: impl Into<String>,
     user_message: impl Into<String>,
   ) -> Result<ChatCompletionResponseStream> {
-    let messages = vec![
-      Message::system(system_prompt),
-      Message::user(user_message),
-    ];
+    let messages = vec![Message::system(system_prompt), Message::user(user_message)];
     self.chat_stream(messages).await
   }
 
@@ -115,18 +111,14 @@ impl OpenAIClient {
     msg: Message,
   ) -> std::result::Result<ChatCompletionRequestMessage, OpenAIError> {
     match msg.role {
-      Role::System => {
-        ChatCompletionRequestSystemMessageArgs::default()
-          .content(msg.content)
-          .build()
-          .map(Into::into)
-      }
-      Role::User => {
-        ChatCompletionRequestUserMessageArgs::default()
-          .content(msg.content)
-          .build()
-          .map(Into::into)
-      }
+      Role::System => ChatCompletionRequestSystemMessageArgs::default()
+        .content(msg.content)
+        .build()
+        .map(Into::into),
+      Role::User => ChatCompletionRequestUserMessageArgs::default()
+        .content(msg.content)
+        .build()
+        .map(Into::into),
       Role::Assistant => {
         // For assistant messages, we use system message args with assistant role
         // This is a workaround as async-openai doesn't have a direct builder for assistant messages

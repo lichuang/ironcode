@@ -74,7 +74,9 @@ pub enum ConfigError {
     source: std::io::Error,
   },
 
-  #[error("Missing required field: default_model. Please specify a default model in your configuration.")]
+  #[error(
+    "Missing required field: default_model. Please specify a default model in your configuration."
+  )]
   MissingDefaultModel,
 
   #[error("Default model '{model}' not found in [models] section.")]

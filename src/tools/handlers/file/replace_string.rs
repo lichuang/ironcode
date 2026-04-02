@@ -135,13 +135,11 @@ impl ToolHandler for ReplaceFileHandler {
         let occurrences = modified_content.matches(&edit.old).count();
         modified_content = modified_content.replace(&edit.old, &edit.new);
         occurrences
+      } else if modified_content.contains(&edit.old) {
+        modified_content = modified_content.replacen(&edit.old, &edit.new, 1);
+        1
       } else {
-        if modified_content.contains(&edit.old) {
-          modified_content = modified_content.replacen(&edit.old, &edit.new, 1);
-          1
-        } else {
-          0
-        }
+        0
       };
       total_replacements += count;
     }

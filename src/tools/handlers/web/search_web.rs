@@ -5,7 +5,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::tools::{parse_arguments, ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput};
+use crate::tools::{ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, parse_arguments};
 
 /// Handler for the SearchWeb tool
 pub struct SearchWebHandler;
@@ -94,7 +94,10 @@ impl ToolHandler for SearchWebHandler {
       }
 
       // Parse result format: ("1. text", "URL: url")
-      let text = result.0.strip_prefix(&format!("{}. ", i + 1)).unwrap_or(&result.0);
+      let text = result
+        .0
+        .strip_prefix(&format!("{}. ", i + 1))
+        .unwrap_or(&result.0);
       let url = result.1.strip_prefix("URL: ").unwrap_or(&result.1);
 
       lines.push(format!("Title: {}", text.trim()));
@@ -149,7 +152,10 @@ async fn fetch_page_content(url: &str) -> Result<String, String> {
     .unwrap_or("")
     .to_lowercase();
 
-  let body_bytes = response.bytes().await.map_err(|e| format!("Read error: {}", e))?;
+  let body_bytes = response
+    .bytes()
+    .await
+    .map_err(|e| format!("Read error: {}", e))?;
 
   if content_type.starts_with("text/plain") || content_type.starts_with("text/markdown") {
     return Ok(String::from_utf8_lossy(&body_bytes).to_string());

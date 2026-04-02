@@ -81,6 +81,7 @@ impl ToolCall {
 }
 
 /// The result of a tool execution
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ToolResult {
   /// The ID of the tool call this result is for
@@ -91,6 +92,7 @@ pub struct ToolResult {
   pub is_error: bool,
 }
 
+#[allow(dead_code)]
 impl ToolResult {
   /// Create a successful tool result
   pub fn success(tool_call_id: impl Into<String>, output: impl Into<String>) -> Self {
@@ -101,6 +103,7 @@ impl ToolResult {
     }
   }
 
+  #[allow(dead_code)]
   /// Create an error tool result
   pub fn error(tool_call_id: impl Into<String>, message: impl Into<String>) -> Self {
     Self {

@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use tokio::fs;
 
-use crate::tools::{parse_arguments, ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput};
+use crate::tools::{ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, parse_arguments};
 
 /// Handler for the WriteFile tool
 pub struct WriteFileHandler;
@@ -102,7 +102,12 @@ impl ToolHandler for WriteFileHandler {
       "overwrite" => fs::write(&resolved_path, &args.content).await,
       "append" => {
         use tokio::io::AsyncWriteExt;
-        match fs::OpenOptions::new().append(true).create(true).open(&resolved_path).await {
+        match fs::OpenOptions::new()
+          .append(true)
+          .create(true)
+          .open(&resolved_path)
+          .await
+        {
           Ok(mut file) => file.write_all(args.content.as_bytes()).await,
           Err(e) => Err(e),
         }

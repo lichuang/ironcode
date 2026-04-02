@@ -16,13 +16,14 @@ use crate::llm::SessionHandle;
 use crate::tui::{FrameRequester, TARGET_FRAME_INTERVAL};
 use crate::utils::colors::{BLUE, GREEN, HIGHLIGHT as HIGHLIGHT_COLOR, TEXT as TEXT_COLOR};
 use crate::utils::{
-  HIGHLIGHT, MOON_FRAMES, PRIMARY, PRIMARY_BORDER, SPINNER_FRAMES, TEXT, THINKING,
-  char_display_width, string_display_width,
+  HIGHLIGHT, MOON_FRAMES, PRIMARY, PRIMARY_BORDER, SPINNER_FRAMES, THINKING, char_display_width,
+  string_display_width,
 };
 use crate::view::View;
 
 /// Error when creating ChatView without a valid session
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct NoSessionError;
 
 /// Status of a tool call
@@ -32,6 +33,7 @@ pub enum ToolCallStatus {
   Running,
   /// Tool call completed successfully
   Completed,
+  #[allow(dead_code)]
   /// Tool call failed
   Failed,
 }
@@ -54,6 +56,7 @@ pub enum StreamingChunk {
   },
 }
 
+#[allow(dead_code)]
 impl StreamingChunk {
   /// Get the content of the chunk
   pub fn content(&self) -> &str {
@@ -69,6 +72,7 @@ impl StreamingChunk {
     matches!(self, StreamingChunk::Thinking(_))
   }
 
+  #[allow(dead_code)]
   /// Check if this is a tool call chunk
   pub fn is_tool_call(&self) -> bool {
     matches!(self, StreamingChunk::ToolCall { .. })
@@ -96,6 +100,7 @@ pub enum ChatMessage {
   },
 }
 
+#[allow(dead_code)]
 impl ChatMessage {
   /// Get the content of the message
   pub fn content(&self) -> &str {
@@ -106,6 +111,7 @@ impl ChatMessage {
     }
   }
 
+  #[allow(dead_code)]
   /// Get the thinking content (if any)
   pub fn thinking_content(&self) -> Option<&str> {
     match self {
@@ -122,11 +128,13 @@ impl ChatMessage {
     matches!(self, ChatMessage::User { .. })
   }
 
+  #[allow(dead_code)]
   /// Check if this is an assistant message
   pub fn is_assistant(&self) -> bool {
     matches!(self, ChatMessage::Assistant { .. })
   }
 
+  #[allow(dead_code)]
   /// Check if this is a tool call message
   pub fn is_tool_call(&self) -> bool {
     matches!(self, ChatMessage::ToolCall { .. })
@@ -234,6 +242,7 @@ impl ChatView {
     }
   }
 
+  #[allow(dead_code)]
   /// Get current state
   pub fn state(&self) -> ChatDisplayState {
     self.state
@@ -361,11 +370,11 @@ impl ChatView {
 
   /// Navigate to previous (older) history entry
   fn navigate_up(&mut self) {
-    if self.history.should_navigate(&self.input) {
-      if let Some(entry) = self.history.navigate_up(&self.input) {
-        self.input = entry.text.clone();
-        self.cursor_position = self.input.chars().count();
-      }
+    if self.history.should_navigate(&self.input)
+      && let Some(entry) = self.history.navigate_up(&self.input)
+    {
+      self.input = entry.text.clone();
+      self.cursor_position = self.input.chars().count();
     }
   }
 
@@ -373,7 +382,7 @@ impl ChatView {
   fn navigate_down(&mut self) {
     // Check if we were browsing before navigation
     let was_browsing = self.history.is_browsing();
-    
+
     if let Some(entry) = self.history.navigate_down() {
       self.input = entry.text.clone();
       self.cursor_position = self.input.chars().count();
@@ -398,7 +407,7 @@ impl ChatView {
     if !self.input.is_empty() {
       // Save input to history before submitting
       self.save_to_history();
-      
+
       let message = std::mem::take(&mut self.input);
       // Add user message to chat history
       data.chat_history.push(ChatMessage::User {
@@ -544,7 +553,7 @@ impl ChatView {
   ///
   /// # Arguments
   /// * `with_arrow` - If true, show ">" before input (user message style)
-  ///                  If false, show spinner (waiting for input style)
+  ///   If false, show spinner (waiting for input style)
   fn render_input_line(&self, f: &mut Frame, area: Rect, input: &str, with_arrow: bool) {
     let text = if with_arrow {
       // User message style: prompt > input
@@ -945,11 +954,11 @@ impl View for ChatView {
           thinking_content,
         } => {
           // AI message: thinking content (if any) + main content
-          if let Some(thinking) = thinking_content {
-            if chunk_idx < chunks.len() {
-              self.render_thinking_content(f, chunks[chunk_idx], thinking);
-              chunk_idx += 1;
-            }
+          if let Some(thinking) = thinking_content
+            && chunk_idx < chunks.len()
+          {
+            self.render_thinking_content(f, chunks[chunk_idx], thinking);
+            chunk_idx += 1;
           }
           if chunk_idx < chunks.len() {
             self.render_ai_response(f, chunks[chunk_idx], content);

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 
 use crossterm::event::KeyEvent;
@@ -54,8 +54,10 @@ pub struct App {
   /// Frame requester for animation scheduling
   frame_requester: Option<FrameRequester>,
   /// Runtime data loaded at startup
+  #[allow(dead_code)]
   pub(crate) runtime: Runtime,
   /// Application configuration
+  #[allow(dead_code)]
   pub(crate) config: Config,
   /// Chat session for LLM communication (initialized when first chat starts)
   chat_session: Option<ChatSession>,
@@ -70,7 +72,7 @@ impl App {
   /// # Arguments
   /// * `config` - The loaded configuration
   /// * `data_dir` - The data directory for loading system prompt (data_dir/prompts/system.md)
-  pub fn new(config: Config, data_dir: &PathBuf) -> Result<Self> {
+  pub fn new(config: Config, data_dir: &Path) -> Result<Self> {
     let runtime = Runtime::new(data_dir)?;
     let mut data = AppData::new();
     data.config = Some(config.clone());
@@ -149,23 +151,38 @@ impl App {
         updated = true;
         match event {
           SessionEvent::ContentChunk(chunk) => {
-            log::debug!("App: Received ContentChunk, len={}, content={}", chunk.len(), 
-              &chunk[..chunk.len().min(100)]);
+            log::debug!(
+              "App: Received ContentChunk, len={}, content={}",
+              chunk.len(),
+              &chunk[..chunk.len().min(100)]
+            );
             // Add normal content chunk - make_mut to clone only if needed
             Arc::make_mut(&mut self.current_chunks).push(StreamingChunk::Normal(chunk));
             // Update streaming response for UI display - cheap Arc clone
             self.data.streaming_response = self.current_chunks.clone();
           }
           SessionEvent::ThinkingChunk(chunk) => {
-            log::info!("App: Received ThinkingChunk, len={}, content={}", chunk.len(),
-              &chunk[..chunk.len().min(100)]);
+            log::info!(
+              "App: Received ThinkingChunk, len={}, content={}",
+              chunk.len(),
+              &chunk[..chunk.len().min(100)]
+            );
             // Add thinking content chunk - make_mut to clone only if needed
             Arc::make_mut(&mut self.current_chunks).push(StreamingChunk::Thinking(chunk));
             // Update streaming response for UI display - cheap Arc clone
             self.data.streaming_response = self.current_chunks.clone();
           }
-          SessionEvent::ToolCallReceived { id, name, arguments } => {
-            log::info!("App: Tool call received: id={}, name={}, args={}", id, name, arguments);
+          SessionEvent::ToolCallReceived {
+            id,
+            name,
+            arguments,
+          } => {
+            log::info!(
+              "App: Tool call received: id={}, name={}, args={}",
+              id,
+              name,
+              arguments
+            );
             // Add tool call indicator to streaming response
             Arc::make_mut(&mut self.current_chunks).push(StreamingChunk::ToolCall {
               name: name.clone(),
@@ -175,17 +192,24 @@ impl App {
             self.data.streaming_response = self.current_chunks.clone();
           }
           SessionEvent::ToolCallCompleted { name, output } => {
-            log::info!("App: Tool call completed: name={}, output_len={}", name, output.len());
+            log::info!(
+              "App: Tool call completed: name={}, output_len={}",
+              name,
+              output.len()
+            );
             // Update the last tool call chunk to completed status
             let chunks = Arc::make_mut(&mut self.current_chunks);
             let mut tool_args = None;
-            if let Some(last) = chunks.last_mut() {
-              if let StreamingChunk::ToolCall { name: n, arguments, status, .. } = last {
-                if n == &name {
-                  *status = crate::view::chat::ToolCallStatus::Completed;
-                  tool_args = Some(arguments.clone());
-                }
-              }
+            if let Some(StreamingChunk::ToolCall {
+              name: n,
+              arguments,
+              status,
+              ..
+            }) = chunks.last_mut()
+              && n == &name
+            {
+              *status = crate::view::chat::ToolCallStatus::Completed;
+              tool_args = Some(arguments.clone());
             }
             // Add completed tool call to chat history so it persists
             if let Some(args) = tool_args {
@@ -198,20 +222,25 @@ impl App {
           }
           SessionEvent::Completed => {
             // Extract normal and thinking content from chunks
-            let normal_content: String = self.current_chunks.iter()
+            let normal_content: String = self
+              .current_chunks
+              .iter()
               .filter_map(|c| match c {
                 StreamingChunk::Normal(s) => Some(s.as_str()),
                 _ => None,
               })
               .collect();
-            let thinking_content: String = self.current_chunks.iter()
+            let thinking_content: String = self
+              .current_chunks
+              .iter()
               .filter_map(|c| match c {
                 StreamingChunk::Thinking(s) => Some(s.as_str()),
                 _ => None,
               })
               .collect();
-            log::info!("App: Stream completed, normal_len={}, thinking_len={}", 
-              normal_content.len(), 
+            log::info!(
+              "App: Stream completed, normal_len={}, thinking_len={}",
+              normal_content.len(),
               thinking_content.len()
             );
             // Stream completed - save AI response to chat history
@@ -244,10 +273,8 @@ impl App {
       }
 
       // Trigger redraw if there were updates
-      if updated {
-        if let Some(ref fr) = self.frame_requester {
-          fr.schedule_frame();
-        }
+      if updated && let Some(ref fr) = self.frame_requester {
+        fr.schedule_frame();
       }
     }
 

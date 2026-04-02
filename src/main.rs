@@ -45,12 +45,12 @@ fn init_logging(config: &Config) {
   let log_file = logs_dir.join("ironcode.log");
 
   // Create logs directory if it doesn't exist
-  if !logs_dir.exists() {
-    if let Err(e) = std::fs::create_dir_all(&logs_dir) {
-      builder.init();
-      warn!("Failed to create logs directory {:?}: {}", logs_dir, e);
-      return;
-    }
+  if !logs_dir.exists()
+    && let Err(e) = std::fs::create_dir_all(&logs_dir)
+  {
+    builder.init();
+    warn!("Failed to create logs directory {:?}: {}", logs_dir, e);
+    return;
   }
 
   // Open log file and write to it
@@ -118,11 +118,7 @@ async fn main() -> Result<()> {
 }
 
 /// Run the main application loop
-async fn run_app(
-  tui: &mut Tui,
-  app: &mut App,
-  event_stream: &mut TuiEventStream,
-) -> Result<()> {
+async fn run_app(tui: &mut Tui, app: &mut App, event_stream: &mut TuiEventStream) -> Result<()> {
   // Initial draw
   tui.draw(|f| app.draw(f))?;
 

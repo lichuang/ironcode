@@ -13,7 +13,7 @@ pub struct Args {
   ///
   /// If not specified, defaults to ~/.ironcode/
   /// The directory should contain config.toml and optionally prompts/system.md
-  /// 
+  ///
   /// Note: This specifies where to find the config file. The actual data directory
   /// (for logs, prompts, etc.) can be configured via the `dir` option in config.toml.
   #[arg(short = 'c', long, value_name = "DIR")]
@@ -33,6 +33,7 @@ impl Args {
     })
   }
 
+  #[allow(dead_code)]
   /// Get the configuration file path (config.toml in the config directory)
   pub fn config_path(&self) -> PathBuf {
     self.config_dir().join("config.toml")

@@ -49,6 +49,7 @@ pub struct Tool {
   pub no_handler: bool,
 }
 
+#[allow(dead_code)]
 impl Tool {
   /// Create a new tool
   pub fn new(
@@ -79,6 +80,7 @@ impl Tool {
     }
   }
 
+  #[allow(dead_code)]
   /// Convert to OpenAI ChatCompletionTools format
   pub fn to_openai_tool(&self) -> ChatCompletionTools {
     ChatCompletionTools::Function(ChatCompletionTool {
@@ -111,6 +113,7 @@ impl ToolRegistry {
     self.tools.insert(tool.name.clone(), tool);
   }
 
+  #[allow(dead_code)]
   /// Get a tool by name
   pub fn get(&self, name: &str) -> Option<&Tool> {
     self.tools.get(name)
@@ -131,6 +134,7 @@ impl ToolRegistry {
     self.tools.is_empty()
   }
 
+  #[allow(dead_code)]
   /// Convert all tools to OpenAI format
   pub fn to_openai_tools(&self) -> Vec<ChatCompletionTools> {
     self.tools.values().map(|t| t.to_openai_tool()).collect()
@@ -141,6 +145,7 @@ impl ToolRegistry {
     loader::load_tools_from_dir(dir)
   }
 
+  #[allow(dead_code)]
   /// Load tools from the default directory (`prompts/tools/`)
   pub fn load_default() -> Result<Self> {
     let tools_dir = PathBuf::from("prompts/tools");
@@ -171,6 +176,7 @@ pub enum ToolError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolKind {
   Function,
+  #[allow(dead_code)]
   Mcp,
 }
 
@@ -179,6 +185,7 @@ pub enum ToolKind {
 pub enum ToolPayload {
   /// Standard function call with JSON arguments
   Function { arguments: String },
+  #[allow(dead_code)]
   /// MCP tool call
   Mcp {
     server: String,
@@ -187,6 +194,7 @@ pub enum ToolPayload {
   },
 }
 
+#[allow(dead_code)]
 impl ToolPayload {
   /// Get the arguments as a string for logging
   pub fn log_payload(&self) -> String {
@@ -202,6 +210,7 @@ impl ToolPayload {
 pub enum ToolOutput {
   /// Successful function output
   Function { output: String },
+  #[allow(dead_code)]
   /// Error output
   Error { message: String },
 }
@@ -214,6 +223,7 @@ impl ToolOutput {
     }
   }
 
+  #[allow(dead_code)]
   /// Create an error output
   pub fn error(message: impl Into<String>) -> Self {
     ToolOutput::Error {
@@ -229,6 +239,7 @@ impl ToolOutput {
     }
   }
 
+  #[allow(dead_code)]
   /// Check if this is a success output
   pub fn is_success(&self) -> bool {
     matches!(self, ToolOutput::Function { .. })
@@ -240,6 +251,7 @@ impl ToolOutput {
 pub struct ToolInvocation {
   /// Tool name
   pub tool_name: String,
+  #[allow(dead_code)]
   /// Call ID from the model
   pub call_id: String,
   /// Tool payload (arguments)
@@ -271,6 +283,7 @@ pub trait ToolHandler: Send + Sync {
   /// Returns the kind of tool this handler handles
   fn kind(&self) -> ToolKind;
 
+  #[allow(dead_code)]
   /// Returns true if the tool might mutate the environment
   async fn is_mutating(&self, _invocation: &ToolInvocation) -> bool {
     false
@@ -317,6 +330,7 @@ impl ExecutableToolRegistry {
     }
   }
 
+  #[allow(dead_code)]
   /// Get a handler by name
   pub fn get(&self, name: &str) -> Option<&dyn ToolHandler> {
     self.handlers.get(name).map(|b| b.as_ref())

@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result};
 use walkdir::WalkDir;
@@ -85,9 +85,14 @@ fn parse_tool_from_markdown(content: &str, path: &Path) -> Result<Tool> {
     .unwrap_or(false);
 
   // Parse parameters from body (JSON block after ## Parameters)
-  let parameters = parse_parameters(body).unwrap_or_else(|| default_parameters_schema());
+  let parameters = parse_parameters(body).unwrap_or_else(default_parameters_schema);
 
-  Ok(Tool::new_with_no_handler(name, description, parameters, no_handler))
+  Ok(Tool::new_with_no_handler(
+    name,
+    description,
+    parameters,
+    no_handler,
+  ))
 }
 
 /// Parse YAML frontmatter from Markdown content
