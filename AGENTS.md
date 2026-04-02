@@ -1,5 +1,33 @@
 # AGENTS.md
 
+## Code Quality Requirements
+
+### Formatting
+
+All code must pass `cargo fmt`:
+
+```bash
+cargo fmt --all
+```
+
+Check formatting without modifying files:
+```bash
+cargo fmt --all -- --check
+```
+
+### Linting
+
+All code must pass clippy with strict warnings:
+
+```bash
+cargo clippy --all-features -- -D warnings
+```
+
+This includes:
+- No unused imports
+- No dead code (unless explicitly marked with `#[allow(dead_code)]`)
+- No clippy warnings of any kind
+
 ## Code Style Guidelines
 
 ### 1. Type Import Rules
@@ -80,6 +108,126 @@ The following situations allow using full paths:
 fn convert(a: crate::tools::Tool, b: async_openai::types::chat::Tool) {
     // ...
 }
+```
+
+### 5. Path Types
+
+Use `&Path` instead of `&PathBuf` for function parameters:
+
+```rust
+// ❌ Wrong
+pub fn load_config(path: &PathBuf) -> Config { }
+
+// ✅ Correct
+use std::path::Path;
+pub fn load_config(path: &Path) -> Config { }
+```
+
+### 6. Let Chains
+
+Prefer let-chains over nested `if let`:
+
+```rust
+// ❌ Wrong
+if let Some(value) = option {
+    if condition {
+        // ...
+    }
+}
+
+// ✅ Correct
+if let Some(value) = option && condition {
+    // ...
+}
+```
+
+### 7. Error Handling
+
+Use `is_err()` instead of pattern matching:
+
+```rust
+// ❌ Wrong
+if let Err(_) = result {
+    // ...
+}
+
+// ✅ Correct
+if result.is_err() {
+    // ...
+}
+```
+
+### 8. Dead Code
+
+Mark intentionally unused code with `#[allow(dead_code)]`:
+
+```rust
+#[allow(dead_code)]
+pub fn unused_but_keep_for_api() { }
+
+#[allow(dead_code)]
+pub struct ReservedForFutureUse { }
+```
+
+### 9. IO Errors
+
+Use `std::io::Error::other()` for custom IO errors:
+
+```rust
+// ❌ Wrong
+return Err(std::io::Error::new(
+    std::io::ErrorKind::Other,
+    format!("Failed: {}", e),
+));
+
+// ✅ Correct
+return Err(std::io::Error::other(format!("Failed: {}", e)));
+```
+
+### 10. Redundant Closures
+
+Use function references instead of closures:
+
+```rust
+// ❌ Wrong
+items.iter().map(|e| serde_json::to_string(e))
+
+// ✅ Correct
+items.iter().map(serde_json::to_string)
+```
+
+### 11. File Open Options
+
+Explicitly specify truncate behavior:
+
+```rust
+// ❌ Wrong
+let file = OpenOptions::new()
+    .create(true)
+    .write(true)
+    .open(&path)?;
+
+// ✅ Correct
+let file = OpenOptions::new()
+    .create(true)
+    .truncate(false)
+    .write(true)
+    .open(&path)?;
+```
+
+### 12. Unwrap Or Default
+
+Use `unwrap_or_default()` instead of match:
+
+```rust
+// ❌ Wrong
+match fs::read_to_string(&path) {
+    Ok(content) => content,
+    Err(_) => String::new(),
+}
+
+// ✅ Correct
+fs::read_to_string(&path).unwrap_or_default()
 ```
 
 ## Tool Implementation Guidelines
