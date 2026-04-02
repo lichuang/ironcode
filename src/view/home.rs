@@ -195,13 +195,26 @@ impl HomeView {
 
   /// Navigate to next (newer) history entry
   fn navigate_down(&mut self) {
+    // Check if we were browsing before navigation
+    let was_browsing = self.history.is_browsing();
+    
     if let Some(entry) = self.history.navigate_down() {
       self.input = entry.text.clone();
       self.cursor_position = self.input.chars().count();
-    } else if self.history.is_browsing() {
-      // Past newest - restore original input
+    } else if was_browsing {
+      // navigate_down returned None and we were browsing - this means we exited browsing mode
+      // Restore original input
       self.input = self.history.original_input().to_string();
       self.cursor_position = self.input.chars().count();
+    }
+  }
+
+  /// Exit history browsing mode, restore original input
+  fn exit_history_browsing(&mut self) {
+    if self.history.is_browsing() {
+      self.input = self.history.original_input().to_string();
+      self.cursor_position = self.input.chars().count();
+      self.history.exit_browsing();
     }
   }
 
