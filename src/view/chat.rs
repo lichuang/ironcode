@@ -603,7 +603,11 @@ impl View for ChatView {
     match key.code {
       KeyCode::Esc => {
         // Return to home view
-        return Some(Box::new(crate::view::HomeView::new()));
+        if let Some(ref config) = data.config {
+          return Some(Box::new(crate::view::HomeView::new(config)));
+        } else {
+          return Some(Box::new(crate::view::HomeView::default()));
+        }
       }
       KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
         data.should_exit = true;

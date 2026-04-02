@@ -30,6 +30,8 @@ pub struct AppData {
   /// Contains both normal and thinking content. Empty when not streaming.
   /// Uses Arc for cheap cloning when sharing between App and ChatView.
   pub(crate) streaming_response: Arc<Vec<StreamingChunk>>,
+  /// Application configuration (shared with views)
+  pub(crate) config: Option<Config>,
 }
 
 impl AppData {
@@ -42,6 +44,7 @@ impl AppData {
       pending_first_message: None,
       error_message: None,
       streaming_response: Arc::new(Vec::new()),
+      config: None,
     }
   }
 }
@@ -81,10 +84,12 @@ impl App {
   /// * `data_dir` - The data directory for loading system prompt (data_dir/prompts/system.md)
   pub fn new(config: Config, data_dir: &PathBuf) -> Result<Self> {
     let runtime = Runtime::new(data_dir)?;
+    let mut data = AppData::new();
+    data.config = Some(config.clone());
 
     Ok(Self {
-      data: AppData::new(),
-      view: Box::new(HomeView::new()),
+      data,
+      view: Box::new(HomeView::new(&config)),
       frame_requester: None,
       message_broker: MessageBroker::new(),
       runtime,

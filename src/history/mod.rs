@@ -50,13 +50,12 @@ impl HistoryEntry {
     }
 }
 
-/// Navigation state machine for browsing input history.
+/// Input history manager.
 ///
-/// This struct manages the in-memory state for Up/Down navigation through
-/// history entries. It does not handle persistence directly - use `InputHistory`
-/// for file operations.
-#[derive(Debug, Clone)]
-pub struct InputHistoryNav {
+/// Manages the in-memory state for Up/Down navigation through
+/// history entries and handles persistence automatically.
+#[derive(Debug)]
+pub struct InputHistoryManager {
     /// All history entries loaded from file plus pending entries from this session.
     entries: Vec<HistoryEntry>,
     /// Current navigation position.
@@ -65,38 +64,48 @@ pub struct InputHistoryNav {
     cursor: Option<usize>,
     /// Original input before starting navigation (restored when navigating past newest).
     original_input: String,
+    /// Persistent storage handler.
+    storage: InputHistoryStorage,
 }
 
-impl Default for InputHistoryNav {
+impl Default for InputHistoryManager {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl InputHistoryNav {
-    /// Create a new empty navigation state.
+impl InputHistoryManager {
+    /// Create a new empty navigation state without persistence.
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
             cursor: None,
             original_input: String::new(),
+            storage: InputHistoryStorage::with_path(PathBuf::new(), HistoryConfig::default()),
+        }
+    }
+
+    /// Create with config for persistence.
+    pub fn with_config(config: &Config) -> Self {
+        let storage = InputHistoryStorage::new(config);
+        let entries = storage.load_entries();
+        Self {
+            entries,
+            cursor: None,
+            original_input: String::new(),
+            storage,
         }
     }
 
     /// Create with pre-loaded entries (from file).
+    #[cfg(test)]
     pub fn with_entries(entries: Vec<HistoryEntry>) -> Self {
         Self {
             entries,
             cursor: None,
             original_input: String::new(),
+            storage: InputHistoryStorage::with_path(PathBuf::new(), HistoryConfig::default()),
         }
-    }
-
-    /// Load history from file and create navigation state.
-    pub fn load(config: &Config) -> Self {
-        let history = InputHistory::new(config);
-        let entries = history.load_entries();
-        Self::with_entries(entries)
     }
 
     /// Returns true if Up/Down should navigate history for the given current input.
@@ -182,10 +191,10 @@ impl InputHistoryNav {
         &self.entries
     }
 
-    /// Record a new entry to the in-memory history.
+    /// Record a new entry to the history (both memory and persistent storage).
     ///
-    /// This does NOT persist to file - call `InputHistory::append_entry` for that.
     /// Deduplicates against the most recent entry.
+    /// Persists to file automatically if the history was initialized with a config.
     pub fn record_entry(&mut self, text: impl Into<String>) {
         let text = text.into();
         if text.is_empty() {
@@ -199,7 +208,14 @@ impl InputHistoryNav {
             }
         }
 
-        self.entries.push(HistoryEntry::new(text));
+        // Add to in-memory entries
+        self.entries.push(HistoryEntry::new(&text));
+        
+        // Persist to file (ignore errors, just log them)
+        if let Err(e) = self.storage.append_entry(&text) {
+            log::warn!("Failed to persist input to history file: {}", e);
+        }
+        
         // Reset navigation when new entry added
         self.cursor = None;
         self.original_input.clear();
@@ -222,17 +238,17 @@ impl InputHistoryNav {
     }
 }
 
-/// Persistent history manager.
+/// Persistent history storage.
 ///
 /// Handles file I/O operations for loading and saving history entries.
 #[derive(Debug, Clone)]
-pub struct InputHistory {
+pub struct InputHistoryStorage {
     path: PathBuf,
     config: HistoryConfig,
 }
 
-impl InputHistory {
-    /// Create a new history manager from config.
+impl InputHistoryStorage {
+    /// Create a new history storage from config.
     pub fn new(config: &Config) -> Self {
         let path = data_dir(config).join(HISTORY_FILENAME);
         Self {
@@ -241,8 +257,7 @@ impl InputHistory {
         }
     }
 
-    /// Create a new history manager with explicit path (for testing).
-    #[cfg(test)]
+    /// Create a new history storage with explicit path.
     pub fn with_path(path: PathBuf, config: HistoryConfig) -> Self {
         Self { path, config }
     }
@@ -556,8 +571,8 @@ impl InputHistory {
 
 /// Convenience function to append an entry to history.
 pub fn save_input(text: impl Into<String>, config: &Config) -> std::io::Result<()> {
-    let history = InputHistory::new(config);
-    history.append_entry(text)
+    let storage = InputHistoryStorage::new(config);
+    storage.append_entry(text)
 }
 
 #[cfg(test)]
@@ -581,6 +596,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_manager_new() {
+        let manager = InputHistoryManager::new();
+        assert!(manager.is_empty());
+        assert!(!manager.is_browsing());
+    }
+
+    #[test]
+    fn test_manager_record_and_navigate() {
+        let mut manager = InputHistoryManager::with_entries(vec![
+            HistoryEntry::new("first"),
+            HistoryEntry::new("second"),
+        ]);
+
+        // Navigate up
+        assert!(manager.should_navigate(""));
+        let entry = manager.navigate_up("").unwrap();
+        assert_eq!(entry.text, "second");
+
+        // Record new entry resets navigation
+        manager.record_entry("third");
+        assert!(!manager.is_browsing());
+        assert_eq!(manager.len(), 3);
+    }
+
     fn create_test_config(dir: &TempDir) -> Config {
         create_test_config_with_history(dir, DEFAULT_MAX_SIZE, DEFAULT_MAX_ENTRIES)
     }
@@ -594,7 +634,7 @@ mod tests {
 
     #[test]
     fn test_nav_empty() {
-        let mut nav = InputHistoryNav::new();
+        let mut nav = InputHistoryManager::new();
         assert!(nav.is_empty());
         assert!(!nav.is_browsing());
         assert_eq!(nav.navigate_up(""), None);
@@ -608,7 +648,7 @@ mod tests {
             HistoryEntry::new("second"),
             HistoryEntry::new("third"),
         ];
-        let mut nav = InputHistoryNav::with_entries(entries);
+        let mut nav = InputHistoryManager::with_entries(entries);
 
         // Navigate up from empty input
         assert!(nav.should_navigate(""));
@@ -635,7 +675,7 @@ mod tests {
             HistoryEntry::new("hello"),
             HistoryEntry::new("world"),
         ];
-        let mut nav = InputHistoryNav::with_entries(entries);
+        let mut nav = InputHistoryManager::with_entries(entries);
 
         // Empty input allows navigation
         assert!(nav.should_navigate(""));
@@ -652,7 +692,7 @@ mod tests {
     #[test]
     fn test_nav_original_input() {
         let entries = vec![HistoryEntry::new("history")];
-        let mut nav = InputHistoryNav::with_entries(entries);
+        let mut nav = InputHistoryManager::with_entries(entries);
 
         // Navigate up with existing input
         nav.navigate_up("original");
@@ -665,7 +705,7 @@ mod tests {
 
     #[test]
     fn test_record_entry_dedup() {
-        let mut nav = InputHistoryNav::new();
+        let mut nav = InputHistoryManager::new();
         
         nav.record_entry("hello");
         assert_eq!(nav.len(), 1);
@@ -681,28 +721,28 @@ mod tests {
 
     #[test]
     fn test_record_empty() {
-        let mut nav = InputHistoryNav::new();
+        let mut nav = InputHistoryManager::new();
         nav.record_entry("");
         assert!(nav.is_empty());
     }
 
     #[test]
-    fn test_history_load_save() {
+    fn test_storage_load_save() {
         let temp_dir = TempDir::new().unwrap();
         let config = create_test_config(&temp_dir);
-        let history = InputHistory::new(&config);
+        let storage = InputHistoryStorage::new(&config);
 
         // Initially empty
-        let entries = history.load_entries();
+        let entries = storage.load_entries();
         assert!(entries.is_empty());
 
         // Append entries
-        history.append_entry("first").unwrap();
-        history.append_entry("second").unwrap();
-        history.append_entry("third").unwrap();
+        storage.append_entry("first").unwrap();
+        storage.append_entry("second").unwrap();
+        storage.append_entry("third").unwrap();
 
         // Load and verify
-        let entries = history.load_entries();
+        let entries = storage.load_entries();
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].text, "first");
         assert_eq!(entries[1].text, "second");
@@ -710,38 +750,38 @@ mod tests {
     }
 
     #[test]
-    fn test_history_trim_by_entries() {
+    fn test_storage_trim_by_entries() {
         let temp_dir = TempDir::new().unwrap();
         // Create config with max_entries=2 and max_size=0 (unlimited)
         let config = create_test_config_with_history(&temp_dir, 0, 2);
-        let history = InputHistory::new(&config);
+        let storage = InputHistoryStorage::new(&config);
 
         // Add 5 entries
         for i in 0..5 {
-            history.append_entry(format!("entry{}", i)).unwrap();
+            storage.append_entry(format!("entry{}", i)).unwrap();
         }
 
         // Should only keep last 2
-        let entries = history.load_entries();
+        let entries = storage.load_entries();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].text, "entry3");
         assert_eq!(entries[1].text, "entry4");
     }
 
     #[test]
-    fn test_history_trim_by_size() {
+    fn test_storage_trim_by_size() {
         let temp_dir = TempDir::new().unwrap();
         // Create config with max_size=100 bytes and max_entries=0 (unlimited)
         let config = create_test_config_with_history(&temp_dir, 100, 0);
-        let history = InputHistory::new(&config);
+        let storage = InputHistoryStorage::new(&config);
 
         // Add entries that will exceed size limit
-        history.append_entry("short").unwrap();
-        history.append_entry("this is a much longer entry that will take up space").unwrap();
-        history.append_entry("another entry").unwrap();
+        storage.append_entry("short").unwrap();
+        storage.append_entry("this is a much longer entry that will take up space").unwrap();
+        storage.append_entry("another entry").unwrap();
 
         // File should be trimmed to fit within size limit (allow some tolerance for JSON overhead)
-        let metadata = std::fs::metadata(history.path()).unwrap();
+        let metadata = std::fs::metadata(storage.path()).unwrap();
         // The limit is approximate since we keep whole entries
         assert!(metadata.len() as usize <= config.history.max_size.saturating_add(100),
             "File size {} should be approximately within limit {}", 
@@ -749,16 +789,16 @@ mod tests {
     }
 
     #[test]
-    fn test_history_clear() {
+    fn test_storage_clear() {
         let temp_dir = TempDir::new().unwrap();
         let config = create_test_config(&temp_dir);
-        let history = InputHistory::new(&config);
+        let storage = InputHistoryStorage::new(&config);
 
-        history.append_entry("test").unwrap();
-        assert!(history.path().exists());
+        storage.append_entry("test").unwrap();
+        assert!(storage.path().exists());
 
-        history.clear().unwrap();
-        assert!(!history.path().exists());
+        storage.clear().unwrap();
+        assert!(!storage.path().exists());
     }
 
     #[test]
@@ -769,8 +809,8 @@ mod tests {
         save_input("hello", &config).unwrap();
         save_input("world", &config).unwrap();
 
-        let history = InputHistory::new(&config);
-        let entries = history.load_entries();
+        let storage = InputHistoryStorage::new(&config);
+        let entries = storage.load_entries();
         assert_eq!(entries.len(), 2);
     }
 }

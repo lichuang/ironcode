@@ -7,6 +7,8 @@ use ratatui::{
 };
 
 use crate::cli::AppData;
+use crate::config::Config;
+use crate::history::InputHistoryManager;
 use crate::utils::{
   ERROR, ERROR_BORDER, HIGHLIGHT, HIGHLIGHT_BORDER, MUTED, PRIMARY, PRIMARY_BORDER, TEXT, TITLE,
   prefix_display_width,
@@ -19,14 +21,17 @@ pub struct HomeView {
   pub input: String,
   /// Cursor position in the input (character index, not byte index)
   pub cursor_position: usize,
+  /// Input history manager
+  history: InputHistoryManager,
 }
 
 impl HomeView {
-  /// Create a new home view
-  pub fn new() -> Self {
+  /// Create a new home view with history loaded from config
+  pub fn new(config: &Config) -> Self {
     Self {
       input: String::new(),
       cursor_position: 0,
+      history: InputHistoryManager::with_config(config),
     }
   }
 
@@ -177,6 +182,35 @@ impl HomeView {
   }
 }
 
+impl HomeView {
+  /// Navigate to previous (older) history entry
+  fn navigate_up(&mut self) {
+    if self.history.should_navigate(&self.input) {
+      if let Some(entry) = self.history.navigate_up(&self.input) {
+        self.input = entry.text.clone();
+        self.cursor_position = self.input.chars().count();
+      }
+    }
+  }
+
+  /// Navigate to next (newer) history entry
+  fn navigate_down(&mut self) {
+    if let Some(entry) = self.history.navigate_down() {
+      self.input = entry.text.clone();
+      self.cursor_position = self.input.chars().count();
+    } else if self.history.is_browsing() {
+      // Past newest - restore original input
+      self.input = self.history.original_input().to_string();
+      self.cursor_position = self.input.chars().count();
+    }
+  }
+
+  /// Save current input to history (both memory and persistent storage)
+  fn save_to_history(&mut self) {
+    self.history.record_entry(&self.input);
+  }
+}
+
 impl View for HomeView {
   fn handle_key(&mut self, data: &mut AppData, key: KeyEvent) -> Option<Box<dyn View>> {
     match key.code {
@@ -188,6 +222,8 @@ impl View for HomeView {
       }
       KeyCode::Enter => {
         if !self.is_input_empty() {
+          // Save input to history before submitting
+          self.save_to_history();
           let input = self.take_input();
           // Store first message to be sent after session is initialized
           data.pending_first_message = Some(input);
@@ -195,8 +231,18 @@ impl View for HomeView {
           data.init_session_requested = true;
           // Return self to trigger App's initialization logic
           // App will handle view switching based on initialization result
-          return Some(Box::new(HomeView::new()));
+          if let Some(ref config) = data.config {
+            return Some(Box::new(HomeView::new(config)));
+          } else {
+            return Some(Box::new(HomeView::default()));
+          }
         }
+      }
+      KeyCode::Up => {
+        self.navigate_up();
+      }
+      KeyCode::Down => {
+        self.navigate_down();
       }
       KeyCode::Backspace => {
         self.backspace();
@@ -283,6 +329,10 @@ impl View for HomeView {
 
 impl Default for HomeView {
   fn default() -> Self {
-    Self::new()
+    Self {
+      input: String::new(),
+      cursor_position: 0,
+      history: InputHistoryManager::new(),
+    }
   }
 }
