@@ -7,6 +7,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// Default value for history max_size (1MB).
+const DEFAULT_HISTORY_MAX_SIZE: usize = 1024 * 1024;
+/// Default value for history max_entries.
+const DEFAULT_HISTORY_MAX_ENTRIES: usize = 1000;
+
 pub mod loader;
 
 pub use loader::{data_dir, load_config_from_dir, system_prompt_path};
@@ -38,6 +43,10 @@ pub struct Config {
   /// Default thinking mode (whether to use think by default)
   #[serde(default = "default_true")]
   pub default_thinking: bool,
+
+  /// Input history configuration
+  #[serde(default)]
+  pub history: HistoryConfig,
 }
 
 impl Default for Config {
@@ -49,12 +58,21 @@ impl Default for Config {
       models: HashMap::new(),
       logging: LoggingConfig::default(),
       default_thinking: true,
+      history: HistoryConfig::default(),
     }
   }
 }
 
 fn default_true() -> bool {
   true
+}
+
+fn default_history_max_size() -> usize {
+  DEFAULT_HISTORY_MAX_SIZE
+}
+
+fn default_history_max_entries() -> usize {
+  DEFAULT_HISTORY_MAX_ENTRIES
 }
 
 impl Config {
@@ -149,6 +167,29 @@ impl Default for LoggingConfig {
   fn default() -> Self {
     Self {
       level: default_log_level(),
+    }
+  }
+}
+
+/// Input history configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryConfig {
+  /// Maximum file size in bytes (0 = unlimited).
+  /// When exceeded, older entries are removed.
+  #[serde(default = "default_history_max_size")]
+  pub max_size: usize,
+
+  /// Maximum number of entries (0 = unlimited).
+  /// When exceeded, older entries are removed.
+  #[serde(default = "default_history_max_entries")]
+  pub max_entries: usize,
+}
+
+impl Default for HistoryConfig {
+  fn default() -> Self {
+    Self {
+      max_size: DEFAULT_HISTORY_MAX_SIZE,
+      max_entries: DEFAULT_HISTORY_MAX_ENTRIES,
     }
   }
 }

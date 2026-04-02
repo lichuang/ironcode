@@ -131,6 +131,7 @@ fn merge_configs(base: Config, override_: Config) -> Config {
       },
     },
     default_thinking: override_.default_thinking,
+    history: override_.history,
   }
 }
 
@@ -392,6 +393,7 @@ supports_streaming = true
       models: HashMap::new(),
       logging: LoggingConfig::default(),
       default_thinking: true,
+      history: crate::config::HistoryConfig::default(),
     };
     let result = validate_config(&config);
     assert!(result.is_err());

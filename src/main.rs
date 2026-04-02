@@ -1,6 +1,7 @@
 mod cli;
 mod config;
 mod error;
+mod history;
 mod llm;
 mod tools;
 mod tui;
