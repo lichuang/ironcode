@@ -11,7 +11,7 @@ ratatui = "0.30.0"
 tokio = { version = "1.44.0", features = ["full"] }
 tokio-stream = { version = "0.1.15", features = ["sync"] }
 futures = "0.3.31"
-chrono = "0.4.40"
+chrono = { version = "0.4.40", features = ["serde"] }
 log = "0.4.26"
 env_logger = "0.11.7"
 async-openai = { version = "0.33.0", features = ["chat-completion"] }

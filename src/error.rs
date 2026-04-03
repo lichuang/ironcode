@@ -28,6 +28,10 @@ pub enum Error {
   #[error("OpenAI API error: {0}")]
   OpenAI(#[from] async_openai::error::OpenAIError),
 
+  /// Session persistence errors
+  #[error(transparent)]
+  Session(#[from] SessionError),
+
   /// Runtime environment errors
   #[error(transparent)]
   Runtime(#[from] RuntimeError),
@@ -137,6 +141,31 @@ pub enum LlmError {
 
   #[error("Streaming error: {0}")]
   StreamError(String),
+}
+
+/// Session persistence errors
+#[derive(thiserror::Error, Debug)]
+pub enum SessionError {
+  #[error("Session '{id}' not found")]
+  NotFound { id: String },
+
+  #[error("Failed to serialize message: {source}")]
+  SerializeMessage { source: serde_json::Error },
+
+  #[error("Failed to serialize session meta: {source}")]
+  SerializeMeta { source: serde_json::Error },
+
+  #[error("Failed to deserialize message: {source}")]
+  DeserializeMessage { source: serde_json::Error },
+
+  #[error("Failed to deserialize session meta: {source}")]
+  DeserializeMeta { source: serde_json::Error },
+
+  #[error("Failed to read session meta for '{id}': {source}")]
+  ReadMeta { id: String, source: std::io::Error },
+
+  #[error("Failed to write session meta for '{id}': {source}")]
+  WriteMeta { id: String, source: std::io::Error },
 }
 
 /// Runtime environment errors

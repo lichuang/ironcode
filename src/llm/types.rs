@@ -1,5 +1,7 @@
+use serde::{Deserialize, Serialize};
+
 /// A message in a conversation
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
   /// The role of the message author
   pub role: Role,
@@ -59,7 +61,7 @@ impl Message {
 }
 
 /// A tool call requested by the assistant
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
   /// The ID of the tool call
   pub id: String,
@@ -115,7 +117,8 @@ impl ToolResult {
 }
 
 /// The role of a message author
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Role {
   /// System message (e.g., instructions)
   System,

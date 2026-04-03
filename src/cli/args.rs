@@ -18,6 +18,14 @@ pub struct Args {
   /// (for logs, prompts, etc.) can be configured via the `dir` option in config.toml.
   #[arg(short = 'c', long, value_name = "DIR")]
   pub config: Option<PathBuf>,
+
+  /// Start a new session instead of continuing the last one
+  #[arg(long)]
+  pub new_session: bool,
+
+  /// Load a specific session by ID
+  #[arg(long, value_name = "ID")]
+  pub session: Option<String>,
 }
 
 impl Args {

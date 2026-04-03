@@ -1,0 +1,303 @@
+use std::fs::{self, File, OpenOptions};
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
+
+use crate::error::{Result, SessionError};
+use crate::llm::types::Message;
+use crate::session::SessionMeta;
+
+/// Manages persistent storage of chat sessions
+#[allow(dead_code)]
+pub struct SessionStore {
+  sessions_dir: PathBuf,
+}
+
+#[allow(dead_code)]
+const META_FILE: &str = "meta.json";
+#[allow(dead_code)]
+const CONTEXT_FILE: &str = "context.jsonl";
+
+#[allow(dead_code)]
+impl SessionStore {
+  /// Create a new session store rooted at the given data directory
+  pub fn new(data_dir: &Path) -> Self {
+    Self {
+      sessions_dir: data_dir.join("sessions"),
+    }
+  }
+
+  /// Create a new session directory with initial meta and empty context file
+  pub fn create(&self, meta: &SessionMeta) -> Result<()> {
+    let session_dir = self.sessions_dir.join(&meta.id);
+    fs::create_dir_all(&session_dir)?;
+
+    self.write_meta(&session_dir, meta)?;
+
+    let context_path = session_dir.join(CONTEXT_FILE);
+    OpenOptions::new()
+      .create(true)
+      .truncate(true)
+      .write(true)
+      .open(&context_path)?;
+
+    Ok(())
+  }
+
+  /// Append a single message to the session's context.jsonl
+  pub fn append_message(&self, id: &str, message: &Message) -> Result<()> {
+    let session_dir = self.session_dir(id)?;
+    let context_path = session_dir.join(CONTEXT_FILE);
+
+    let mut file = OpenOptions::new()
+      .create(true)
+      .truncate(false)
+      .append(true)
+      .open(&context_path)?;
+
+    let line =
+      serde_json::to_string(message).map_err(|e| SessionError::SerializeMessage { source: e })?;
+
+    writeln!(file, "{}", line)?;
+
+    Ok(())
+  }
+
+  /// Load session metadata and all messages
+  pub fn load(&self, id: &str) -> Result<(SessionMeta, Vec<Message>)> {
+    let session_dir = self.session_dir(id)?;
+    if !session_dir.exists() {
+      return Err(SessionError::NotFound { id: id.to_string() }.into());
+    }
+
+    let meta_path = session_dir.join(META_FILE);
+    let meta_content = fs::read_to_string(&meta_path).map_err(|e| SessionError::ReadMeta {
+      id: id.to_string(),
+      source: e,
+    })?;
+    let meta: SessionMeta = serde_json::from_str(&meta_content)
+      .map_err(|e| SessionError::DeserializeMeta { source: e })?;
+
+    let context_path = session_dir.join(CONTEXT_FILE);
+    let mut messages = Vec::new();
+
+    if context_path.exists() {
+      let file = File::open(&context_path)?;
+      let reader = BufReader::new(file);
+      for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+          continue;
+        }
+        let message: Message = serde_json::from_str(&line)
+          .map_err(|e| SessionError::DeserializeMessage { source: e })?;
+        messages.push(message);
+      }
+    }
+
+    Ok((meta, messages))
+  }
+
+  /// List all sessions, sorted by most recently updated first
+  pub fn list(&self) -> Result<Vec<SessionMeta>> {
+    let mut sessions = Vec::new();
+
+    if !self.sessions_dir.exists() {
+      return Ok(sessions);
+    }
+
+    for entry in fs::read_dir(&self.sessions_dir)? {
+      let entry = entry?;
+      let path = entry.path();
+      if !path.is_dir() {
+        continue;
+      }
+
+      let meta_path = path.join(META_FILE);
+      if !meta_path.exists() {
+        continue;
+      }
+
+      let content = fs::read_to_string(&meta_path)?;
+      let meta: SessionMeta =
+        serde_json::from_str(&content).map_err(|e| SessionError::DeserializeMeta { source: e })?;
+      sessions.push(meta);
+    }
+
+    sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    Ok(sessions)
+  }
+
+  /// Rewrite the session's meta.json
+  pub fn update_meta(&self, meta: &SessionMeta) -> Result<()> {
+    let session_dir = self.session_dir(&meta.id)?;
+    self.write_meta(&session_dir, meta)
+  }
+
+  /// Replace the entire context.jsonl with the given messages
+  pub fn reset_messages(&self, id: &str, messages: &[Message]) -> Result<()> {
+    let session_dir = self.session_dir(id)?;
+    let context_path = session_dir.join(CONTEXT_FILE);
+
+    let mut file = OpenOptions::new()
+      .create(true)
+      .truncate(true)
+      .write(true)
+      .open(&context_path)?;
+
+    for message in messages {
+      let line =
+        serde_json::to_string(message).map_err(|e| SessionError::SerializeMessage { source: e })?;
+      writeln!(file, "{}", line)?;
+    }
+
+    Ok(())
+  }
+
+  /// Delete a session directory and all its contents
+  pub fn delete(&self, id: &str) -> Result<()> {
+    let session_dir = self.session_dir(id)?;
+    if session_dir.exists() {
+      fs::remove_dir_all(&session_dir)?;
+    }
+    Ok(())
+  }
+
+  /// Get the ID of the most recently updated session
+  pub fn latest_id(&self) -> Result<Option<String>> {
+    let sessions = self.list()?;
+    Ok(sessions.into_iter().next().map(|m| m.id))
+  }
+
+  fn session_dir(&self, id: &str) -> Result<PathBuf> {
+    Ok(self.sessions_dir.join(id))
+  }
+
+  fn write_meta(&self, session_dir: &Path, meta: &SessionMeta) -> Result<()> {
+    let meta_path = session_dir.join(META_FILE);
+    let content =
+      serde_json::to_string_pretty(meta).map_err(|e| SessionError::SerializeMeta { source: e })?;
+    fs::write(&meta_path, content).map_err(|e| SessionError::WriteMeta {
+      id: meta.id.clone(),
+      source: e,
+    })?;
+    Ok(())
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use std::thread;
+  use std::time::Duration;
+
+  use tempfile::TempDir;
+
+  use super::*;
+  use crate::llm::types::{Message, Role};
+
+  #[test]
+  fn test_create_and_load() {
+    let temp_dir = TempDir::new().unwrap();
+    let store = SessionStore::new(temp_dir.path());
+
+    let meta = SessionMeta::new("test-session", "You are a helpful assistant");
+    store.create(&meta).unwrap();
+
+    let (loaded_meta, messages) = store.load("test-session").unwrap();
+    assert_eq!(loaded_meta.id, "test-session");
+    assert_eq!(loaded_meta.system_prompt, "You are a helpful assistant");
+    assert!(messages.is_empty());
+  }
+
+  #[test]
+  fn test_append_and_load_messages() {
+    let temp_dir = TempDir::new().unwrap();
+    let store = SessionStore::new(temp_dir.path());
+
+    let meta = SessionMeta::new("test-session", "system");
+    store.create(&meta).unwrap();
+
+    store
+      .append_message("test-session", &Message::system("system prompt"))
+      .unwrap();
+    store
+      .append_message("test-session", &Message::user("hello"))
+      .unwrap();
+    store
+      .append_message("test-session", &Message::assistant("hi"))
+      .unwrap();
+
+    let (_, messages) = store.load("test-session").unwrap();
+    assert_eq!(messages.len(), 3);
+    assert_eq!(messages[0].role, Role::System);
+    assert_eq!(messages[1].content, "hello");
+    assert_eq!(messages[2].content, "hi");
+  }
+
+  #[test]
+  fn test_title_generation() {
+    let mut meta = SessionMeta::new("test", "system");
+    assert!(meta.title.is_empty());
+
+    meta.update_title_from_message(&Message::user("Implement session store"));
+    assert_eq!(meta.title, "Implement session store");
+
+    // Should not overwrite
+    meta.update_title_from_message(&Message::user("Another message"));
+    assert_eq!(meta.title, "Implement session store");
+  }
+
+  #[test]
+  fn test_list_and_latest() {
+    let temp_dir = TempDir::new().unwrap();
+    let store = SessionStore::new(temp_dir.path());
+
+    let mut meta1 = SessionMeta::new("session-1", "system");
+    meta1.title = "First".to_string();
+    store.create(&meta1).unwrap();
+
+    thread::sleep(Duration::from_millis(10));
+
+    let mut meta2 = SessionMeta::new("session-2", "system");
+    meta2.title = "Second".to_string();
+    store.create(&meta2).unwrap();
+
+    let sessions = store.list().unwrap();
+    assert_eq!(sessions.len(), 2);
+    assert_eq!(sessions[0].id, "session-2"); // More recent first
+
+    assert_eq!(store.latest_id().unwrap(), Some("session-2".to_string()));
+  }
+
+  #[test]
+  fn test_reset_messages() {
+    let temp_dir = TempDir::new().unwrap();
+    let store = SessionStore::new(temp_dir.path());
+
+    let meta = SessionMeta::new("test", "system");
+    store.create(&meta).unwrap();
+
+    store
+      .append_message("test", &Message::user("hello"))
+      .unwrap();
+    store
+      .reset_messages("test", &[Message::system("system")])
+      .unwrap();
+
+    let (_, messages) = store.load("test").unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].role, Role::System);
+  }
+
+  #[test]
+  fn test_delete() {
+    let temp_dir = TempDir::new().unwrap();
+    let store = SessionStore::new(temp_dir.path());
+
+    let meta = SessionMeta::new("test", "system");
+    store.create(&meta).unwrap();
+    assert!(store.load("test").is_ok());
+
+    store.delete("test").unwrap();
+    assert!(store.load("test").is_err());
+  }
+}

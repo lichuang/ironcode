@@ -3,6 +3,7 @@ mod config;
 mod error;
 mod history;
 mod llm;
+mod session;
 mod tools;
 mod tui;
 mod utils;
