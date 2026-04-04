@@ -5,12 +5,14 @@ use crossterm::event::KeyEvent;
 use log::{error, info};
 use ratatui::Frame;
 
+use crate::cli::Args;
 use crate::cli::runtime::Runtime;
 use crate::config::Config;
 use crate::error::Result;
 use crate::llm::{ChatSession, SessionEvent};
+use crate::session::{SessionMode, SessionStore};
 use crate::tui::FrameRequester;
-use crate::view::chat::{ChatMessage, StreamingChunk};
+use crate::view::chat::{ChatMessage, StreamingChunk, llm_messages_to_chat_history};
 use crate::view::{ChatView, View};
 
 /// Application data that can be modified by views
@@ -72,19 +74,36 @@ impl App {
   /// # Arguments
   /// * `config` - The loaded configuration
   /// * `data_dir` - The data directory for loading system prompt (data_dir/prompts/system.md)
-  pub fn new(config: Config, data_dir: &Path) -> Result<Self> {
+  /// * `args` - Command line arguments for session control
+  /// * `session_store` - Persistent session storage
+  pub fn new(
+    config: Config,
+    data_dir: &Path,
+    args: &Args,
+    session_store: Arc<SessionStore>,
+  ) -> Result<Self> {
     let runtime = Runtime::new(data_dir)?;
     let mut data = AppData::new();
     data.config = Some(config.clone());
 
-    // Initialize chat session immediately
     let system_prompt = runtime.render_system_prompt();
-    let chat_session = ChatSession::create(
+
+    let mode = if let Some(id) = &args.session {
+      SessionMode::ResumeById(id.clone())
+    } else {
+      SessionMode::New
+    };
+
+    let (chat_session, messages) = ChatSession::create_or_resume(
       &config,
       system_prompt,
       runtime.tool_registry.clone(),
       runtime.executable_tool_registry.clone(),
+      session_store,
+      mode,
     )?;
+
+    data.chat_history = llm_messages_to_chat_history(&messages);
     let session_handle = chat_session.handle.clone();
 
     // Create ChatView directly

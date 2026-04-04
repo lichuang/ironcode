@@ -18,6 +18,7 @@ use log::{info, warn};
 use cli::{App, Args};
 use config::Config;
 use config::loader::{data_dir, load_config_from_dir};
+use session::SessionStore;
 use tui::{Tui, TuiEvent, TuiEventStream, init_terminal, restore_terminal};
 
 // Re-export error types for convenience
@@ -97,9 +98,12 @@ async fn main() -> Result<()> {
   // Create TUI infrastructure
   let mut tui = Tui::new()?;
 
+  // Create session store
+  let session_store = std::sync::Arc::new(SessionStore::new(&data_dir));
+
   // Create app state with configuration
   // Pass data_dir for loading system prompt from data_dir/prompts/system.md
-  let mut app = App::new(config, &data_dir)?;
+  let mut app = App::new(config, &data_dir, &args, session_store)?;
 
   // Give the view a frame requester for animations
   app.set_frame_requester(tui.frame_requester());

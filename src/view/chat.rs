@@ -100,6 +100,50 @@ pub enum ChatMessage {
   },
 }
 
+/// Convert LLM messages into UI chat history.
+///
+/// This is used when resuming a persisted session to rebuild the visual chat log.
+pub fn llm_messages_to_chat_history(messages: &[crate::llm::types::Message]) -> Vec<ChatMessage> {
+  use crate::llm::types::Role;
+
+  let mut history = Vec::new();
+  for msg in messages {
+    match msg.role {
+      Role::System => {}
+      Role::User => {
+        history.push(ChatMessage::User {
+          content: msg.content.clone(),
+        });
+      }
+      Role::Assistant => {
+        let content = msg.content.clone();
+        let (thinking_content, content) = if let Some(start) = content.find("<think>") {
+          if let Some(end) = content.find("</think>") {
+            let think = content[start + 7..end].to_string();
+            let after = content[end + 8..].to_string();
+            (Some(think), after)
+          } else {
+            (None, content)
+          }
+        } else {
+          (None, content)
+        };
+        if !content.is_empty() || thinking_content.is_some() {
+          history.push(ChatMessage::Assistant {
+            content,
+            thinking_content,
+          });
+        }
+      }
+      Role::Tool => {
+        // Tool results are not rendered directly in the chat history;
+        // the corresponding tool call indicator is added via ToolCallCompleted events.
+      }
+    }
+  }
+  history
+}
+
 #[allow(dead_code)]
 impl ChatMessage {
   /// Get the content of the message

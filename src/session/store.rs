@@ -300,4 +300,119 @@ mod tests {
     store.delete("test").unwrap();
     assert!(store.load("test").is_err());
   }
+
+  #[test]
+  fn test_latest_id_empty_store() {
+    let temp_dir = TempDir::new().unwrap();
+    let store = SessionStore::new(temp_dir.path());
+    assert_eq!(store.latest_id().unwrap(), None);
+  }
+
+  #[test]
+  fn test_latest_id_single_session() {
+    let temp_dir = TempDir::new().unwrap();
+    let store = SessionStore::new(temp_dir.path());
+
+    let meta = SessionMeta::new("lonely-session", "system");
+    store.create(&meta).unwrap();
+
+    assert_eq!(
+      store.latest_id().unwrap(),
+      Some("lonely-session".to_string())
+    );
+  }
+
+  #[test]
+  fn test_latest_id_after_delete_all() {
+    let temp_dir = TempDir::new().unwrap();
+    let store = SessionStore::new(temp_dir.path());
+
+    let meta1 = SessionMeta::new("session-a", "system");
+    store.create(&meta1).unwrap();
+
+    let meta2 = SessionMeta::new("session-b", "system");
+    store.create(&meta2).unwrap();
+
+    assert!(store.latest_id().unwrap().is_some());
+
+    store.delete("session-a").unwrap();
+    store.delete("session-b").unwrap();
+
+    assert_eq!(store.latest_id().unwrap(), None);
+  }
+
+  #[test]
+  fn test_latest_id_reflects_meta_update() {
+    let temp_dir = TempDir::new().unwrap();
+    let store = SessionStore::new(temp_dir.path());
+
+    let mut meta1 = SessionMeta::new("older", "system");
+    meta1.title = "Old".to_string();
+    store.create(&meta1).unwrap();
+
+    thread::sleep(Duration::from_millis(10));
+
+    let mut meta2 = SessionMeta::new("newer", "system");
+    meta2.title = "New".to_string();
+    store.create(&meta2).unwrap();
+
+    // Initially newer is latest
+    assert_eq!(store.latest_id().unwrap(), Some("newer".to_string()));
+
+    // Wait and update older's meta
+    thread::sleep(Duration::from_millis(10));
+    meta1.title = "Old but updated".to_string();
+    meta1.updated_at = chrono::Local::now();
+    store.update_meta(&meta1).unwrap();
+
+    // Now older should be the latest
+    assert_eq!(store.latest_id().unwrap(), Some("older".to_string()));
+  }
+
+  #[test]
+  fn test_latest_id_with_multiple_sessions() {
+    use crate::llm::session::generate_session_id;
+
+    let temp_dir = TempDir::new().unwrap();
+    let store = SessionStore::new(temp_dir.path());
+
+    let id_a = generate_session_id();
+    let id_b = generate_session_id();
+    let id_c = generate_session_id();
+
+    // Create three sessions with small delays
+    let mut meta_a = SessionMeta::new(&id_a, "system");
+    meta_a.title = "A".to_string();
+    store.create(&meta_a).unwrap();
+    thread::sleep(Duration::from_millis(10));
+
+    let mut meta_b = SessionMeta::new(&id_b, "system");
+    meta_b.title = "B".to_string();
+    store.create(&meta_b).unwrap();
+    thread::sleep(Duration::from_millis(10));
+
+    let mut meta_c = SessionMeta::new(&id_c, "system");
+    meta_c.title = "C".to_string();
+    store.create(&meta_c).unwrap();
+
+    // latest_id should return the most recently created session
+    assert_eq!(store.latest_id().unwrap(), Some(id_c.clone()));
+
+    // Update session-b to make it the latest
+    thread::sleep(Duration::from_millis(10));
+    meta_b.title = "B updated".to_string();
+    meta_b.updated_at = chrono::Local::now();
+    store.update_meta(&meta_b).unwrap();
+
+    assert_eq!(store.latest_id().unwrap(), Some(id_b.clone()));
+
+    // Delete the latest and verify fallback to session-c
+    store.delete(&id_b).unwrap();
+    assert_eq!(store.latest_id().unwrap(), Some(id_c.clone()));
+
+    // Delete all remaining
+    store.delete(&id_a).unwrap();
+    store.delete(&id_c).unwrap();
+    assert_eq!(store.latest_id().unwrap(), None);
+  }
 }

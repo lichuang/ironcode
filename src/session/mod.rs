@@ -1,7 +1,20 @@
 pub mod store;
+pub use store::SessionStore;
 
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
+
+/// How to initialize a chat session
+#[derive(Debug, Clone)]
+pub enum SessionMode {
+  /// Always create a brand-new session
+  New,
+  /// Resume the most recently updated session, or create one if none exist
+  #[allow(dead_code)]
+  ResumeLatest,
+  /// Resume a specific session by ID
+  ResumeById(String),
+}
 
 use crate::llm::types::{Message, Role};
 
