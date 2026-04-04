@@ -1,6 +1,8 @@
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use crate::error::{Result, SessionError};
 use crate::llm::types::Message;
@@ -10,6 +12,8 @@ use crate::session::SessionMeta;
 #[allow(dead_code)]
 pub struct SessionStore {
   sessions_dir: PathBuf,
+  /// Cached file handles for active sessions' context.jsonl files
+  files: Mutex<HashMap<String, File>>,
 }
 
 #[allow(dead_code)]
@@ -23,6 +27,7 @@ impl SessionStore {
   pub fn new(data_dir: &Path) -> Self {
     Self {
       sessions_dir: data_dir.join("sessions"),
+      files: Mutex::new(HashMap::new()),
     }
   }
 
@@ -34,25 +39,33 @@ impl SessionStore {
     self.write_meta(&session_dir, meta)?;
 
     let context_path = session_dir.join(CONTEXT_FILE);
-    OpenOptions::new()
+    let file = OpenOptions::new()
       .create(true)
       .truncate(true)
       .write(true)
       .open(&context_path)?;
+
+    self.files.lock().unwrap().insert(meta.id.clone(), file);
 
     Ok(())
   }
 
   /// Append a single message to the session's context.jsonl
   pub fn append_message(&self, id: &str, message: &Message) -> Result<()> {
-    let session_dir = self.session_dir(id)?;
-    let context_path = session_dir.join(CONTEXT_FILE);
+    let mut files = self.files.lock().unwrap();
 
-    let mut file = OpenOptions::new()
-      .create(true)
-      .truncate(false)
-      .append(true)
-      .open(&context_path)?;
+    let file = if let Some(f) = files.get_mut(id) {
+      f
+    } else {
+      let session_dir = self.session_dir(id)?;
+      let context_path = session_dir.join(CONTEXT_FILE);
+      let f = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .append(true)
+        .open(&context_path)?;
+      files.entry(id.to_string()).or_insert(f)
+    };
 
     let line =
       serde_json::to_string(message).map_err(|e| SessionError::SerializeMessage { source: e })?;
@@ -150,6 +163,8 @@ impl SessionStore {
       writeln!(file, "{}", line)?;
     }
 
+    self.files.lock().unwrap().insert(id.to_string(), file);
+
     Ok(())
   }
 
@@ -159,6 +174,7 @@ impl SessionStore {
     if session_dir.exists() {
       fs::remove_dir_all(&session_dir)?;
     }
+    self.files.lock().unwrap().remove(id);
     Ok(())
   }
 
