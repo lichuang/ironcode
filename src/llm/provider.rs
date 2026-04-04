@@ -2,10 +2,11 @@
 //!
 //! Defines the interface for LLM providers (Kimi, OpenAI, etc.)
 
-use crate::error::Result;
-use crate::llm::types::Message;
 use async_openai::types::chat::ChatCompletionResponseStream;
 use async_trait::async_trait;
+
+use crate::error::Result;
+use crate::llm::types::Message;
 
 /// Trait for LLM providers
 #[async_trait]

@@ -5,7 +5,9 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::tools::{ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, parse_arguments};
+use crate::tools::{
+  ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, ToolPayload, parse_arguments,
+};
 
 /// Handler for the AskUserQuestion tool
 pub struct AskUserQuestionHandler;
@@ -61,7 +63,7 @@ impl ToolHandler for AskUserQuestionHandler {
 
     // Extract arguments from payload
     let arguments = match payload {
-      crate::tools::ToolPayload::Function { arguments } => arguments,
+      ToolPayload::Function { arguments } => arguments,
       _ => {
         return Err(ToolError::RespondToModel(
           "AskUserQuestion handler received unsupported payload".to_string(),
@@ -147,8 +149,9 @@ impl Default for AskUserQuestionHandler {
 
 #[cfg(test)]
 mod tests {
+  use std::env;
+
   use super::*;
-  use std::path::PathBuf;
 
   #[test]
   fn test_parse_arguments() {
@@ -213,14 +216,14 @@ mod tests {
 
   #[tokio::test]
   async fn test_ask_user_handler_validation() {
-    let temp_dir = std::env::temp_dir();
+    let temp_dir = env::temp_dir();
     let handler = AskUserQuestionHandler::new();
 
     // Valid question but handler returns error (interactive not supported)
     let invocation = ToolInvocation::new(
       "AskUserQuestion",
       "test-call-id",
-      crate::tools::ToolPayload::Function {
+      ToolPayload::Function {
         arguments: r#"{
           "questions": [
             {
@@ -242,13 +245,13 @@ mod tests {
 
   #[tokio::test]
   async fn test_ask_user_handler_empty_question() {
-    let temp_dir = std::env::temp_dir();
+    let temp_dir = env::temp_dir();
     let handler = AskUserQuestionHandler::new();
 
     let invocation = ToolInvocation::new(
       "AskUserQuestion",
       "test-call-id",
-      crate::tools::ToolPayload::Function {
+      ToolPayload::Function {
         arguments: r#"{
           "questions": [
             {
@@ -270,13 +273,13 @@ mod tests {
 
   #[tokio::test]
   async fn test_ask_user_handler_too_few_options() {
-    let temp_dir = std::env::temp_dir();
+    let temp_dir = env::temp_dir();
     let handler = AskUserQuestionHandler::new();
 
     let invocation = ToolInvocation::new(
       "AskUserQuestion",
       "test-call-id",
-      crate::tools::ToolPayload::Function {
+      ToolPayload::Function {
         arguments: r#"{
           "questions": [
             {
@@ -298,13 +301,13 @@ mod tests {
 
   #[tokio::test]
   async fn test_ask_user_handler_too_many_questions() {
-    let temp_dir = std::env::temp_dir();
+    let temp_dir = env::temp_dir();
     let handler = AskUserQuestionHandler::new();
 
     let invocation = ToolInvocation::new(
       "AskUserQuestion",
       "test-call-id",
-      crate::tools::ToolPayload::Function {
+      ToolPayload::Function {
         arguments: r#"{
           "questions": [
             {"question": "Q1?", "options": [{"label": "A"}, {"label": "B"}]},

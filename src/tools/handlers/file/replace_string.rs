@@ -8,7 +8,9 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use tokio::fs;
 
-use crate::tools::{ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, parse_arguments};
+use crate::tools::{
+  ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, ToolPayload, parse_arguments,
+};
 
 /// Handler for the ReplaceFile tool
 pub struct ReplaceFileHandler;
@@ -81,7 +83,7 @@ impl ToolHandler for ReplaceFileHandler {
 
     // Extract arguments from payload
     let arguments = match payload {
-      crate::tools::ToolPayload::Function { arguments } => arguments,
+      ToolPayload::Function { arguments } => arguments,
       _ => {
         return Err(ToolError::RespondToModel(
           "ReplaceFile handler received unsupported payload".to_string(),
@@ -183,8 +185,9 @@ impl Default for ReplaceFileHandler {
 
 #[cfg(test)]
 mod tests {
+  use std::env;
+
   use super::*;
-  use std::path::PathBuf;
 
   #[test]
   fn test_parse_arguments_single_edit() {
@@ -216,7 +219,7 @@ mod tests {
   #[tokio::test]
   async fn test_str_replace_file_handler_single_edit() {
     // Create a temporary directory
-    let temp_dir = std::env::temp_dir();
+    let temp_dir = env::temp_dir();
     let test_file = temp_dir.join("ironcode_test_str_replace.txt");
 
     // Create test file
@@ -228,7 +231,7 @@ mod tests {
     let invocation = ToolInvocation::new(
       "ReplaceFile",
       "test-call-id",
-      crate::tools::ToolPayload::Function {
+      ToolPayload::Function {
         arguments: format!(
           r#"{{"path": "{}", "edit": {{"old": "World", "new": "Rust"}}}}"#,
           test_file.display()
@@ -256,7 +259,7 @@ mod tests {
   #[tokio::test]
   async fn test_str_replace_file_handler_replace_all() {
     // Create a temporary directory
-    let temp_dir = std::env::temp_dir();
+    let temp_dir = env::temp_dir();
     let test_file = temp_dir.join("ironcode_test_str_replace_all.txt");
 
     // Create test file with multiple occurrences
@@ -268,7 +271,7 @@ mod tests {
     let invocation = ToolInvocation::new(
       "ReplaceFile",
       "test-call-id",
-      crate::tools::ToolPayload::Function {
+      ToolPayload::Function {
         arguments: format!(
           r#"{{"path": "{}", "edit": {{"old": "foo", "new": "qux", "replace_all": true}}}}"#,
           test_file.display()
@@ -295,7 +298,7 @@ mod tests {
   #[tokio::test]
   async fn test_str_replace_file_handler_multiple_edits() {
     // Create a temporary directory
-    let temp_dir = std::env::temp_dir();
+    let temp_dir = env::temp_dir();
     let test_file = temp_dir.join("ironcode_test_str_replace_multi.txt");
 
     // Create test file
@@ -307,7 +310,7 @@ mod tests {
     let invocation = ToolInvocation::new(
       "ReplaceFile",
       "test-call-id",
-      crate::tools::ToolPayload::Function {
+      ToolPayload::Function {
         arguments: format!(
           r#"{{"path": "{}", "edit": [{{"old": "Hello", "new": "Hi"}}, {{"old": "Bar", "new": "Baz"}}]}}"#,
           test_file.display()
@@ -334,7 +337,7 @@ mod tests {
   #[tokio::test]
   async fn test_str_replace_file_handler_no_match() {
     // Create a temporary directory
-    let temp_dir = std::env::temp_dir();
+    let temp_dir = env::temp_dir();
     let test_file = temp_dir.join("ironcode_test_str_replace_no_match.txt");
 
     // Create test file
@@ -344,7 +347,7 @@ mod tests {
     let invocation = ToolInvocation::new(
       "ReplaceFile",
       "test-call-id",
-      crate::tools::ToolPayload::Function {
+      ToolPayload::Function {
         arguments: format!(
           r#"{{"path": "{}", "edit": {{"old": "NonExistent", "new": "Replacement"}}}}"#,
           test_file.display()
@@ -365,14 +368,14 @@ mod tests {
 
   #[tokio::test]
   async fn test_str_replace_file_handler_file_not_found() {
-    let temp_dir = std::env::temp_dir();
+    let temp_dir = env::temp_dir();
     let non_existent_file = temp_dir.join("non_existent_file_12345.txt");
 
     let handler = ReplaceFileHandler::new();
     let invocation = ToolInvocation::new(
       "ReplaceFile",
       "test-call-id",
-      crate::tools::ToolPayload::Function {
+      ToolPayload::Function {
         arguments: format!(
           r#"{{"path": "{}", "edit": {{"old": "foo", "new": "bar"}}}}"#,
           non_existent_file.display()

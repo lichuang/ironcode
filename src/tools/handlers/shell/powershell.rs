@@ -4,13 +4,16 @@
 
 use std::process::Stdio;
 
+use anyhow::anyhow;
 use async_trait::async_trait;
 use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::time::{self, Duration};
 
-use crate::tools::{ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, parse_arguments};
+use crate::tools::{
+  ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, ToolPayload, parse_arguments,
+};
 
 /// Handler for the PowerShell tool
 pub struct PowerShellHandler;
@@ -51,7 +54,7 @@ impl ToolHandler for PowerShellHandler {
 
     // Extract arguments from payload
     let arguments = match payload {
-      crate::tools::ToolPayload::Function { arguments } => arguments,
+      ToolPayload::Function { arguments } => arguments,
       _ => {
         return Err(ToolError::RespondToModel(
           "PowerShell handler received unsupported payload".to_string(),
@@ -95,7 +98,7 @@ impl ToolHandler for PowerShellHandler {
           let message = if combined_output.is_empty() {
             format!("Command failed with exit code: {}", exit_code)
           } else {
-            format!("{}", combined_output)
+            combined_output
           };
           Ok(ToolOutput::success(format!(
             "{}
@@ -139,11 +142,11 @@ async fn execute_powershell_command(
   let stdout = child
     .stdout
     .take()
-    .ok_or_else(|| anyhow::anyhow!("Failed to capture stdout"))?;
+    .ok_or_else(|| anyhow!("Failed to capture stdout"))?;
   let stderr = child
     .stderr
     .take()
-    .ok_or_else(|| anyhow::anyhow!("Failed to capture stderr"))?;
+    .ok_or_else(|| anyhow!("Failed to capture stderr"))?;
 
   // Create buffered readers
   let stdout_reader = BufReader::new(stdout);
@@ -166,7 +169,7 @@ async fn execute_powershell_command(
               stdout_output.push('\n');
             }
             Ok(None) => break,
-            Err(e) => return Err(anyhow::anyhow!("Error reading stdout: {}", e)),
+            Err(e) => return Err(anyhow!("Error reading stdout: {}", e)),
           }
         }
         line = stderr_lines.next_line() => {
@@ -176,7 +179,7 @@ async fn execute_powershell_command(
               stderr_output.push('\n');
             }
             Ok(None) => break,
-            Err(e) => return Err(anyhow::anyhow!("Error reading stderr: {}", e)),
+            Err(e) => return Err(anyhow!("Error reading stderr: {}", e)),
           }
         }
         status = child.wait() => {
@@ -214,7 +217,7 @@ async fn execute_powershell_command(
     Err(_) => {
       // Timeout - kill the process
       let _ = child.kill().await;
-      Err(anyhow::anyhow!("timeout"))
+      Err(anyhow!("timeout"))
     }
   }
 }

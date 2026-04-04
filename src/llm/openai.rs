@@ -1,5 +1,3 @@
-use crate::error::{LlmError, Result};
-use crate::llm::types::{ChatConfig, Message, Role};
 use async_openai::{
   Client,
   config::OpenAIConfig,
@@ -10,6 +8,11 @@ use async_openai::{
     CreateChatCompletionRequestArgs,
   },
 };
+
+use std::result::Result as StdResult;
+
+use crate::error::{LlmError, Result};
+use crate::llm::types::{ChatConfig, Message, Role};
 
 /// OpenAI API client wrapper
 #[allow(dead_code)]
@@ -65,7 +68,7 @@ impl OpenAIClient {
     let request_messages: Vec<ChatCompletionRequestMessage> = messages
       .into_iter()
       .map(Self::convert_message)
-      .collect::<std::result::Result<Vec<_>, _>>()?;
+      .collect::<StdResult<Vec<_>, _>>()?;
 
     let mut request = CreateChatCompletionRequestArgs::default();
     request
@@ -107,9 +110,7 @@ impl OpenAIClient {
   }
 
   /// Convert our Message type to async-openai's message type
-  fn convert_message(
-    msg: Message,
-  ) -> std::result::Result<ChatCompletionRequestMessage, OpenAIError> {
+  fn convert_message(msg: Message) -> StdResult<ChatCompletionRequestMessage, OpenAIError> {
     match msg.role {
       Role::System => ChatCompletionRequestSystemMessageArgs::default()
         .content(msg.content)

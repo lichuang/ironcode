@@ -5,6 +5,7 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use serde_json::from_str;
 use walkdir::WalkDir;
 
 use super::Tool;
@@ -146,13 +147,13 @@ fn parse_parameters(body: &str) -> Option<serde_json::Value> {
       let after_fence = &after_header[code_start + 7..];
       if let Some(code_end) = after_fence.find("```") {
         let json_str = after_fence[..code_end].trim();
-        return serde_json::from_str(json_str).ok();
+        return from_str(json_str).ok();
       }
     } else if let Some(code_start) = after_header.find("```") {
       let after_fence = &after_header[code_start + 3..];
       if let Some(code_end) = after_fence.find("```") {
         let json_str = after_fence[..code_end].trim();
-        return serde_json::from_str(json_str).ok();
+        return from_str(json_str).ok();
       }
     }
   }

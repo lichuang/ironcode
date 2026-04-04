@@ -1,3 +1,11 @@
+use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use chrono::Local;
+use log::{debug, info, warn};
+
 use crate::config::loader::system_prompt_path;
 use crate::error::{Result, RuntimeError};
 use crate::tools::handlers::{
@@ -11,10 +19,6 @@ use crate::tools::{ExecutableToolRegistry, ToolRegistry};
 use crate::tools::handlers::BashHandler;
 #[cfg(target_os = "windows")]
 use crate::tools::handlers::PowerShellHandler;
-use log::{debug, info, warn};
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 /// Runtime environment arguments for template substitution
 ///
@@ -54,20 +58,19 @@ impl RuntimeArgs {
 
   /// Get current timestamp in ISO format
   fn load_now() -> String {
-    chrono::Local::now().to_rfc3339()
+    Local::now().to_rfc3339()
   }
 
   /// Get current working directory
   fn load_work_dir() -> Result<String> {
-    std::env::current_dir()
+    env::current_dir()
       .map(|p| p.to_string_lossy().to_string())
       .map_err(|e| RuntimeError::GetCurrentDir { source: e }.into())
   }
 
   /// Get directory listing of working directory
   fn load_work_dir_ls() -> Result<String> {
-    let work_dir =
-      std::env::current_dir().map_err(|e| RuntimeError::GetCurrentDir { source: e })?;
+    let work_dir = env::current_dir().map_err(|e| RuntimeError::GetCurrentDir { source: e })?;
     let mut entries = Vec::new();
 
     for entry in fs::read_dir(&work_dir).map_err(|e| RuntimeError::read_dir(&work_dir, e))? {
@@ -240,20 +243,10 @@ impl Runtime {
     let prompt_path = system_prompt_path(config_dir);
     debug!("Loading system prompt from: {:?}", prompt_path);
 
-    match fs::read_to_string(&prompt_path) {
-      Ok(content) => {
-        if content.trim().is_empty() {
-          warn!("System prompt file exists but is empty: {:?}", prompt_path);
-        } else {
-          debug!("Loaded system prompt, length: {} chars", content.len());
-        }
-        content
-      }
-      Err(e) => {
-        warn!("Failed to load system prompt from {:?}: {}", prompt_path, e);
-        String::new()
-      }
-    }
+    fs::read_to_string(&prompt_path).unwrap_or_else(|e| {
+      warn!("Failed to load system prompt from {:?}: {}", prompt_path, e);
+      String::new()
+    })
   }
 
   /// Render the system prompt with all template variables substituted

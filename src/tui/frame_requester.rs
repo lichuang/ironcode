@@ -17,6 +17,7 @@ use std::time::Instant;
 
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
+use tokio::time::sleep_until;
 
 use crate::utils::time::ONE_YEAR;
 
@@ -60,6 +61,7 @@ impl FrameRequester {
 #[cfg(test)]
 impl FrameRequester {
   /// Create a stub requester for testing that does nothing.
+  #[allow(dead_code)]
   pub fn test_dummy() -> Self {
     let (tx, _rx) = mpsc::unbounded_channel();
     FrameRequester {
@@ -96,7 +98,7 @@ impl FrameScheduler {
     let mut next_deadline: Option<Instant> = None;
     loop {
       let target = next_deadline.unwrap_or_else(|| Instant::now() + ONE_YEAR);
-      let deadline = tokio::time::sleep_until(target.into());
+      let deadline = sleep_until(target.into());
       tokio::pin!(deadline);
 
       tokio::select! {

@@ -30,7 +30,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use async_openai::types::chat::{ChatCompletionTool, ChatCompletionTools, FunctionObject};
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use serde_json::from_str;
+use thiserror::Error;
 
 pub mod handlers;
 pub mod loader;
@@ -156,9 +159,6 @@ impl ToolRegistry {
 // ============================================================================
 // Tool Execution Framework (inspired by codex-rs)
 // ============================================================================
-
-use async_trait::async_trait;
-use thiserror::Error;
 
 /// Errors that can occur during tool execution
 #[derive(Debug, Error)]
@@ -372,6 +372,6 @@ pub fn parse_arguments<T>(arguments: &str) -> Result<T, ToolError>
 where
   T: for<'de> Deserialize<'de>,
 {
-  serde_json::from_str(arguments)
+  from_str(arguments)
     .map_err(|err| ToolError::RespondToModel(format!("Failed to parse arguments: {}", err)))
 }

@@ -3,9 +3,11 @@
 //! Configuration is loaded from TOML file at:
 //! - ~/.ironcode/config.toml (default location)
 
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::env;
 use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
 
 /// Default value for history max_size (1MB).
 const DEFAULT_HISTORY_MAX_SIZE: usize = 1024 * 1024;
@@ -95,7 +97,7 @@ impl Config {
   pub fn resolve_api_key(&self, key: &str) -> String {
     if key.starts_with("${") && key.ends_with("}") {
       let var_name = &key[2..key.len() - 1];
-      std::env::var(var_name).unwrap_or_default()
+      env::var(var_name).unwrap_or_default()
     } else {
       key.to_string()
     }

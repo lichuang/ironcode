@@ -8,7 +8,9 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use tokio::fs;
 
-use crate::tools::{ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, parse_arguments};
+use crate::tools::{
+  ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, ToolPayload, parse_arguments,
+};
 
 /// Handler for the WriteFile tool
 pub struct WriteFileHandler;
@@ -44,7 +46,7 @@ impl ToolHandler for WriteFileHandler {
 
     // Extract arguments from payload
     let arguments = match payload {
-      crate::tools::ToolPayload::Function { arguments } => arguments,
+      ToolPayload::Function { arguments } => arguments,
       _ => {
         return Err(ToolError::RespondToModel(
           "WriteFile handler received unsupported payload".to_string(),
@@ -105,6 +107,7 @@ impl ToolHandler for WriteFileHandler {
         match fs::OpenOptions::new()
           .append(true)
           .create(true)
+          .truncate(false)
           .open(&resolved_path)
           .await
         {
@@ -158,8 +161,9 @@ impl Default for WriteFileHandler {
 
 #[cfg(test)]
 mod tests {
+  use std::env;
+
   use super::*;
-  use std::path::PathBuf;
 
   #[test]
   fn test_parse_arguments() {
@@ -184,7 +188,7 @@ mod tests {
   #[tokio::test]
   async fn test_write_file_handler_overwrite() {
     // Create a temporary directory
-    let temp_dir = std::env::temp_dir();
+    let temp_dir = env::temp_dir();
     let test_file = temp_dir.join("ironcode_test_write_file.txt");
 
     // Clean up if exists
@@ -194,7 +198,7 @@ mod tests {
     let invocation = ToolInvocation::new(
       "WriteFile",
       "test-call-id",
-      crate::tools::ToolPayload::Function {
+      ToolPayload::Function {
         arguments: format!(
           r#"{{"path": "{}", "content": "Hello World", "mode": "overwrite"}}"#,
           test_file.display()
@@ -221,7 +225,7 @@ mod tests {
   #[tokio::test]
   async fn test_write_file_handler_append() {
     // Create a temporary directory
-    let temp_dir = std::env::temp_dir();
+    let temp_dir = env::temp_dir();
     let test_file = temp_dir.join("ironcode_test_write_file_append.txt");
 
     // Clean up if exists
@@ -234,7 +238,7 @@ mod tests {
     let invocation = ToolInvocation::new(
       "WriteFile",
       "test-call-id",
-      crate::tools::ToolPayload::Function {
+      ToolPayload::Function {
         arguments: format!(
           r#"{{"path": "{}", "content": "World", "mode": "append"}}"#,
           test_file.display()
@@ -259,7 +263,7 @@ mod tests {
 
   #[tokio::test]
   async fn test_write_file_handler_parent_not_exists() {
-    let temp_dir = std::env::temp_dir();
+    let temp_dir = env::temp_dir();
     let non_existent_parent = temp_dir.join("non_existent_dir_12345");
     let test_file = non_existent_parent.join("test.txt");
 
@@ -267,7 +271,7 @@ mod tests {
     let invocation = ToolInvocation::new(
       "WriteFile",
       "test-call-id",
-      crate::tools::ToolPayload::Function {
+      ToolPayload::Function {
         arguments: format!(
           r#"{{"path": "{}", "content": "Hello"}}"#,
           test_file.display()

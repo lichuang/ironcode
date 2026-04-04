@@ -4,6 +4,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use serde_json::{from_str, to_string, to_string_pretty};
+
 use crate::error::{Result, SessionError};
 use crate::llm::types::Message;
 use crate::session::SessionMeta;
@@ -67,8 +69,7 @@ impl SessionStore {
       files.entry(id.to_string()).or_insert(f)
     };
 
-    let line =
-      serde_json::to_string(message).map_err(|e| SessionError::SerializeMessage { source: e })?;
+    let line = to_string(message).map_err(|e| SessionError::SerializeMessage { source: e })?;
 
     writeln!(file, "{}", line)?;
 
@@ -87,8 +88,8 @@ impl SessionStore {
       id: id.to_string(),
       source: e,
     })?;
-    let meta: SessionMeta = serde_json::from_str(&meta_content)
-      .map_err(|e| SessionError::DeserializeMeta { source: e })?;
+    let meta: SessionMeta =
+      from_str(&meta_content).map_err(|e| SessionError::DeserializeMeta { source: e })?;
 
     let context_path = session_dir.join(CONTEXT_FILE);
     let mut messages = Vec::new();
@@ -101,8 +102,8 @@ impl SessionStore {
         if line.trim().is_empty() {
           continue;
         }
-        let message: Message = serde_json::from_str(&line)
-          .map_err(|e| SessionError::DeserializeMessage { source: e })?;
+        let message: Message =
+          from_str(&line).map_err(|e| SessionError::DeserializeMessage { source: e })?;
         messages.push(message);
       }
     }
@@ -132,7 +133,7 @@ impl SessionStore {
 
       let content = fs::read_to_string(&meta_path)?;
       let meta: SessionMeta =
-        serde_json::from_str(&content).map_err(|e| SessionError::DeserializeMeta { source: e })?;
+        from_str(&content).map_err(|e| SessionError::DeserializeMeta { source: e })?;
       sessions.push(meta);
     }
 
@@ -158,8 +159,7 @@ impl SessionStore {
       .open(&context_path)?;
 
     for message in messages {
-      let line =
-        serde_json::to_string(message).map_err(|e| SessionError::SerializeMessage { source: e })?;
+      let line = to_string(message).map_err(|e| SessionError::SerializeMessage { source: e })?;
       writeln!(file, "{}", line)?;
     }
 
@@ -190,8 +190,7 @@ impl SessionStore {
 
   fn write_meta(&self, session_dir: &Path, meta: &SessionMeta) -> Result<()> {
     let meta_path = session_dir.join(META_FILE);
-    let content =
-      serde_json::to_string_pretty(meta).map_err(|e| SessionError::SerializeMeta { source: e })?;
+    let content = to_string_pretty(meta).map_err(|e| SessionError::SerializeMeta { source: e })?;
     fs::write(&meta_path, content).map_err(|e| SessionError::WriteMeta {
       id: meta.id.clone(),
       source: e,
@@ -205,6 +204,7 @@ mod tests {
   use std::thread;
   use std::time::Duration;
 
+  use chrono::Local;
   use tempfile::TempDir;
 
   use super::*;
@@ -378,7 +378,7 @@ mod tests {
     // Wait and update older's meta
     thread::sleep(Duration::from_millis(10));
     meta1.title = "Old but updated".to_string();
-    meta1.updated_at = chrono::Local::now();
+    meta1.updated_at = Local::now();
     store.update_meta(&meta1).unwrap();
 
     // Now older should be the latest
@@ -417,7 +417,7 @@ mod tests {
     // Update session-b to make it the latest
     thread::sleep(Duration::from_millis(10));
     meta_b.title = "B updated".to_string();
-    meta_b.updated_at = chrono::Local::now();
+    meta_b.updated_at = Local::now();
     store.update_meta(&meta_b).unwrap();
 
     assert_eq!(store.latest_id().unwrap(), Some(id_b.clone()));

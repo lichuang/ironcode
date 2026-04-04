@@ -3,12 +3,15 @@
 //! Provides persistent storage of user input history with shell-like navigation
 //! (Up/Down keys). History is stored as JSON Lines at `~/.ironcode/history.jsonl`.
 
-use std::fs::File;
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
+use std::thread::sleep;
+use std::time::Duration;
 
 use fs4::fs_std::FileExt;
 use serde::{Deserialize, Serialize};
+use serde_json::{from_str, to_string};
 
 use crate::config::loader::data_dir;
 use crate::config::{Config, HistoryConfig};
@@ -296,7 +299,7 @@ impl InputHistoryStorage {
       match file.try_lock_shared() {
         Ok(()) => break,
         Err(_) if attempt < MAX_LOCK_RETRIES - 1 => {
-          std::thread::sleep(std::time::Duration::from_millis(LOCK_RETRY_DELAY_MS));
+          sleep(Duration::from_millis(LOCK_RETRY_DELAY_MS));
         }
         Err(_) => {
           log::warn!(
@@ -322,7 +325,7 @@ impl InputHistoryStorage {
         if line.trim().is_empty() {
           return None;
         }
-        match serde_json::from_str::<HistoryEntry>(line) {
+        match from_str::<HistoryEntry>(line) {
           Ok(entry) => Some(entry),
           Err(e) => {
             log::warn!("Failed to parse history entry: {}", e);
@@ -340,15 +343,15 @@ impl InputHistoryStorage {
   /// Uses an exclusive lock to prevent concurrent modifications.
   pub fn append_entry(&self, text: impl Into<String>) -> std::io::Result<()> {
     let entry = HistoryEntry::new(text);
-    let line = format!("{}\n", serde_json::to_string(&entry)?);
+    let line = format!("{}\n", to_string(&entry)?);
 
     // Ensure parent directory exists
     if let Some(parent) = self.path.parent() {
-      std::fs::create_dir_all(parent)?;
+      fs::create_dir_all(parent)?;
     }
 
     // Open file for read/write (append mode doesn't work well with locking)
-    let mut file = std::fs::OpenOptions::new()
+    let mut file = OpenOptions::new()
       .create(true)
       .truncate(false)
       .read(true)
@@ -360,16 +363,13 @@ impl InputHistoryStorage {
       match file.try_lock_exclusive() {
         Ok(true) => break,
         Ok(false) if attempt < MAX_LOCK_RETRIES - 1 => {
-          std::thread::sleep(std::time::Duration::from_millis(LOCK_RETRY_DELAY_MS));
+          sleep(Duration::from_millis(LOCK_RETRY_DELAY_MS));
         }
         Ok(false) => {
-          return Err(std::io::Error::new(
-            std::io::ErrorKind::WouldBlock,
-            format!(
-              "Failed to acquire exclusive lock on history file after {} attempts",
-              MAX_LOCK_RETRIES
-            ),
-          ));
+          return Err(std::io::Error::other(format!(
+            "Failed to acquire exclusive lock on history file after {} attempts",
+            MAX_LOCK_RETRIES
+          )));
         }
         Err(e) => {
           return Err(std::io::Error::other(format!(
@@ -429,16 +429,13 @@ impl InputHistoryStorage {
       match file.try_lock_shared() {
         Ok(()) => break,
         Err(_) if attempt < MAX_LOCK_RETRIES - 1 => {
-          std::thread::sleep(std::time::Duration::from_millis(LOCK_RETRY_DELAY_MS));
+          sleep(Duration::from_millis(LOCK_RETRY_DELAY_MS));
         }
         Err(_) => {
-          return Err(std::io::Error::new(
-            std::io::ErrorKind::WouldBlock,
-            format!(
-              "Failed to acquire shared lock after {} attempts",
-              MAX_LOCK_RETRIES
-            ),
-          ));
+          return Err(std::io::Error::other(format!(
+            "Failed to acquire shared lock after {} attempts",
+            MAX_LOCK_RETRIES
+          )));
         }
       }
     }
@@ -459,26 +456,20 @@ impl InputHistoryStorage {
     }
 
     // Open file for read/write
-    let mut file = std::fs::OpenOptions::new()
-      .read(true)
-      .write(true)
-      .open(&self.path)?;
+    let mut file = OpenOptions::new().read(true).write(true).open(&self.path)?;
 
     // Acquire exclusive lock
     for attempt in 0..MAX_LOCK_RETRIES {
       match file.try_lock_exclusive() {
         Ok(true) => break,
         Ok(false) if attempt < MAX_LOCK_RETRIES - 1 => {
-          std::thread::sleep(std::time::Duration::from_millis(LOCK_RETRY_DELAY_MS));
+          sleep(Duration::from_millis(LOCK_RETRY_DELAY_MS));
         }
         Ok(false) => {
-          return Err(std::io::Error::new(
-            std::io::ErrorKind::WouldBlock,
-            format!(
-              "Failed to acquire exclusive lock for trim after {} attempts",
-              MAX_LOCK_RETRIES
-            ),
-          ));
+          return Err(std::io::Error::other(format!(
+            "Failed to acquire exclusive lock for trim after {} attempts",
+            MAX_LOCK_RETRIES
+          )));
         }
         Err(e) => {
           return Err(std::io::Error::other(format!(
@@ -527,7 +518,7 @@ impl InputHistoryStorage {
       let mut size = 0;
       let mut count = 0;
       for entry in entries.iter().rev().take(keep_count) {
-        let line = serde_json::to_string(entry)?;
+        let line = to_string(entry)?;
         size += line.len() + 1; // +1 for newline
         if size > max_size {
           break;
@@ -548,7 +539,7 @@ impl InputHistoryStorage {
     // Rewrite file
     let new_content = kept_entries
       .iter()
-      .map(serde_json::to_string)
+      .map(to_string)
       .collect::<Result<Vec<_>, _>>()?
       .join("\n");
 
@@ -578,7 +569,7 @@ impl InputHistoryStorage {
   /// Clear all history.
   pub fn clear(&self) -> std::io::Result<()> {
     if self.path.exists() {
-      std::fs::remove_file(&self.path)?;
+      fs::remove_file(&self.path)?;
     }
     Ok(())
   }
@@ -857,7 +848,7 @@ mod tests {
     storage.append_entry("another entry").unwrap();
 
     // File should be trimmed to fit within size limit (allow some tolerance for JSON overhead)
-    let metadata = std::fs::metadata(storage.path()).unwrap();
+    let metadata = fs::metadata(storage.path()).unwrap();
     // The limit is approximate since we keep whole entries
     assert!(
       metadata.len() as usize <= config.history.max_size.saturating_add(100),

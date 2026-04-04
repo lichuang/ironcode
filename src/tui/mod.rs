@@ -3,16 +3,21 @@
 //! Provides the building blocks for an async event-driven terminal interface,
 //! including frame scheduling and unified event handling.
 
-use crate::error::{Result, TuiError};
-use std::io::Stdout;
-use std::io::stdout;
+use std::io::{Stdout, stdout};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
 use crossterm::event::KeyEvent;
+use crossterm::execute;
+use crossterm::terminal::{
+  EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use tokio::sync::broadcast;
+
+use crate::error::{Result, TuiError};
 
 mod event_stream;
 mod frame_rate_limiter;
@@ -27,7 +32,7 @@ pub use frame_requester::FrameRequester;
 // pub use message_broker::MessageBroker;  // Currently unused
 
 /// Target frame interval for UI redraw scheduling (120 FPS max).
-pub const TARGET_FRAME_INTERVAL: std::time::Duration = frame_rate_limiter::MIN_FRAME_INTERVAL;
+pub const TARGET_FRAME_INTERVAL: Duration = frame_rate_limiter::MIN_FRAME_INTERVAL;
 
 /// Events that can be processed by the TUI event loop.
 #[derive(Debug, Clone)]
@@ -105,16 +110,14 @@ impl Tui {
 
 /// Initialize the terminal for TUI mode.
 pub fn init_terminal() -> Result<()> {
-  crossterm::terminal::enable_raw_mode().map_err(|e| TuiError::InitTerminal { source: e })?;
-  crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen)
-    .map_err(|e| TuiError::InitTerminal { source: e })?;
+  enable_raw_mode().map_err(|e| TuiError::InitTerminal { source: e })?;
+  execute!(stdout(), EnterAlternateScreen).map_err(|e| TuiError::InitTerminal { source: e })?;
   Ok(())
 }
 
 /// Restore the terminal to normal mode.
 pub fn restore_terminal() -> Result<()> {
-  crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen)
-    .map_err(|e| TuiError::RestoreTerminal { source: e })?;
-  crossterm::terminal::disable_raw_mode().map_err(|e| TuiError::RestoreTerminal { source: e })?;
+  execute!(stdout(), LeaveAlternateScreen).map_err(|e| TuiError::RestoreTerminal { source: e })?;
+  disable_raw_mode().map_err(|e| TuiError::RestoreTerminal { source: e })?;
   Ok(())
 }

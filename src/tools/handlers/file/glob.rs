@@ -2,12 +2,16 @@
 //!
 //! Find files and directories using glob patterns.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use tokio::fs::read_dir;
 
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::tools::{ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, parse_arguments};
+use crate::tools::{
+  ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, ToolPayload, parse_arguments,
+};
 
 /// Maximum number of matches to return
 const MAX_MATCHES: usize = 1000;
@@ -47,7 +51,7 @@ impl ToolHandler for GlobHandler {
 
     // Extract arguments from payload
     let arguments = match payload {
-      crate::tools::ToolPayload::Function { arguments } => arguments,
+      ToolPayload::Function { arguments } => arguments,
       _ => {
         return Err(ToolError::RespondToModel(
           "Glob handler received unsupported payload".to_string(),
@@ -167,10 +171,10 @@ impl ToolHandler for GlobHandler {
 }
 
 /// List directory contents for error messages
-async fn list_directory(dir: &PathBuf) -> Result<String, std::io::Error> {
+async fn list_directory(dir: &Path) -> Result<String, std::io::Error> {
   let mut entries = Vec::new();
 
-  let mut read_dir = tokio::fs::read_dir(dir).await?;
+  let mut read_dir = read_dir(dir).await?;
   while let Some(entry) = read_dir.next_entry().await? {
     let name = entry.file_name().to_string_lossy().to_string();
     let metadata = entry.metadata().await?;
@@ -200,7 +204,6 @@ impl Default for GlobHandler {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use std::path::PathBuf;
 
   #[test]
   fn test_parse_arguments() {
@@ -229,7 +232,7 @@ mod tests {
     let invocation = ToolInvocation::new(
       "Glob",
       "test-call-id",
-      crate::tools::ToolPayload::Function {
+      ToolPayload::Function {
         arguments: r#"{"pattern": "*.toml", "include_dirs": false}"#.to_string(),
       },
       &cwd,
@@ -249,7 +252,7 @@ mod tests {
     let invocation = ToolInvocation::new(
       "Glob",
       "test-call-id",
-      crate::tools::ToolPayload::Function {
+      ToolPayload::Function {
         arguments: r#"{"pattern": "src/**/*.rs"}"#.to_string(),
       },
       &cwd,
@@ -270,7 +273,7 @@ mod tests {
     let invocation = ToolInvocation::new(
       "Glob",
       "test-call-id",
-      crate::tools::ToolPayload::Function {
+      ToolPayload::Function {
         arguments: r#"{"pattern": "*.nonexistent"}"#.to_string(),
       },
       &cwd,
@@ -290,7 +293,7 @@ mod tests {
     let invocation = ToolInvocation::new(
       "Glob",
       "test-call-id",
-      crate::tools::ToolPayload::Function {
+      ToolPayload::Function {
         arguments: r#"{"pattern": "**/*.rs"}"#.to_string(),
       },
       &cwd,
@@ -310,7 +313,7 @@ mod tests {
     let invocation = ToolInvocation::new(
       "Glob",
       "test-call-id",
-      crate::tools::ToolPayload::Function {
+      ToolPayload::Function {
         arguments: r#"{"pattern": "*.rs", "directory": "/nonexistent/path/12345"}"#.to_string(),
       },
       &cwd,

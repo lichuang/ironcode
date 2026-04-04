@@ -12,7 +12,9 @@ use crate::error::Result;
 use crate::llm::{ChatSession, SessionEvent};
 use crate::session::{SessionMode, SessionStore};
 use crate::tui::FrameRequester;
-use crate::view::chat::{ChatMessage, StreamingChunk, llm_messages_to_chat_history};
+use crate::view::chat::{
+  ChatMessage, StreamingChunk, ToolCallStatus, llm_messages_to_chat_history,
+};
 use crate::view::{ChatView, View};
 
 /// Application data that can be modified by views
@@ -206,7 +208,7 @@ impl App {
             Arc::make_mut(&mut self.current_chunks).push(StreamingChunk::ToolCall {
               name: name.clone(),
               arguments,
-              status: crate::view::chat::ToolCallStatus::Running,
+              status: ToolCallStatus::Running,
             });
             self.data.streaming_response = self.current_chunks.clone();
           }
@@ -227,7 +229,7 @@ impl App {
             }) = chunks.last_mut()
               && n == &name
             {
-              *status = crate::view::chat::ToolCallStatus::Completed;
+              *status = ToolCallStatus::Completed;
               tool_args = Some(arguments.clone());
             }
             // Add completed tool call to chat history so it persists

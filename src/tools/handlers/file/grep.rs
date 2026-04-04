@@ -8,7 +8,9 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use tokio::process::Command;
 
-use crate::tools::{ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, parse_arguments};
+use crate::tools::{
+  ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, ToolPayload, parse_arguments,
+};
 
 /// Handler for the Grep tool
 pub struct GrepHandler;
@@ -85,7 +87,7 @@ impl ToolHandler for GrepHandler {
 
     // Extract arguments from payload
     let arguments = match payload {
-      crate::tools::ToolPayload::Function { arguments } => arguments,
+      ToolPayload::Function { arguments } => arguments,
       _ => {
         return Err(ToolError::RespondToModel(
           "Grep handler received unsupported payload".to_string(),
@@ -218,8 +220,10 @@ impl Default for GrepHandler {
 
 #[cfg(test)]
 mod tests {
+  use std::process::id;
+  use std::time::SystemTime;
+
   use super::*;
-  use std::path::PathBuf;
 
   #[test]
   fn test_parse_arguments() {
@@ -265,7 +269,7 @@ mod tests {
     let invocation = ToolInvocation::new(
       "Grep",
       "test-call-id",
-      crate::tools::ToolPayload::Function {
+      ToolPayload::Function {
         arguments: r#"{"pattern": "ReadFile", "output_mode": "files_with_matches"}"#.to_string(),
       },
       &cwd,
@@ -286,7 +290,7 @@ mod tests {
     let invocation = ToolInvocation::new(
       "Grep",
       "test-call-id",
-      crate::tools::ToolPayload::Function {
+      ToolPayload::Function {
         arguments: r#"{"pattern": "ReadFile", "output_mode": "content", "line_number": true, "path": "src/tools/handlers/file/read.rs"}"#.to_string(),
       },
       &cwd,
@@ -306,14 +310,14 @@ mod tests {
     // Use a pattern that is very unlikely to exist in the codebase
     let pattern = format!(
       "NO_MATCH_{}_PATTERN_{}",
-      std::process::id(),
-      std::time::SystemTime::now().elapsed().unwrap().as_secs()
+      id(),
+      SystemTime::now().elapsed().unwrap().as_secs()
     );
     let args = format!(r#"{{"pattern": "{}", "path": "src"}}"#, pattern);
     let invocation = ToolInvocation::new(
       "Grep",
       "test-call-id",
-      crate::tools::ToolPayload::Function { arguments: args },
+      ToolPayload::Function { arguments: args },
       &cwd,
     );
 
@@ -335,7 +339,7 @@ mod tests {
     let invocation = ToolInvocation::new(
       "Grep",
       "test-call-id",
-      crate::tools::ToolPayload::Function {
+      ToolPayload::Function {
         arguments:
           r#"{"pattern": "ReadFile", "glob": "*.rs", "output_mode": "files_with_matches"}"#
             .to_string(),
@@ -354,7 +358,7 @@ mod tests {
     let invocation = ToolInvocation::new(
       "Grep",
       "test-call-id",
-      crate::tools::ToolPayload::Function {
+      ToolPayload::Function {
         arguments:
           r#"{"pattern": "use", "path": "src/tools", "output_mode": "content", "head_limit": 3}"#
             .to_string(),

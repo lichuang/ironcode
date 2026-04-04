@@ -4,13 +4,16 @@
 
 use std::process::Stdio;
 
+use anyhow::anyhow;
 use async_trait::async_trait;
 use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::time::{self, Duration};
 
-use crate::tools::{ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, parse_arguments};
+use crate::tools::{
+  ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, ToolPayload, parse_arguments,
+};
 
 /// Handler for the Bash tool
 pub struct BashHandler;
@@ -51,7 +54,7 @@ impl ToolHandler for BashHandler {
 
     // Extract arguments from payload
     let arguments = match payload {
-      crate::tools::ToolPayload::Function { arguments } => arguments,
+      ToolPayload::Function { arguments } => arguments,
       _ => {
         return Err(ToolError::RespondToModel(
           "Bash handler received unsupported payload".to_string(),
@@ -95,7 +98,7 @@ impl ToolHandler for BashHandler {
           let message = if combined_output.is_empty() {
             format!("Command failed with exit code: {}", exit_code)
           } else {
-            combined_output.to_string()
+            combined_output
           };
           Ok(ToolOutput::success(format!(
             "{}
@@ -139,11 +142,11 @@ async fn execute_shell_command(
   let stdout = child
     .stdout
     .take()
-    .ok_or_else(|| anyhow::anyhow!("Failed to capture stdout"))?;
+    .ok_or_else(|| anyhow!("Failed to capture stdout"))?;
   let stderr = child
     .stderr
     .take()
-    .ok_or_else(|| anyhow::anyhow!("Failed to capture stderr"))?;
+    .ok_or_else(|| anyhow!("Failed to capture stderr"))?;
 
   // Create buffered readers
   let stdout_reader = BufReader::new(stdout);
@@ -166,7 +169,7 @@ async fn execute_shell_command(
               stdout_output.push('\n');
             }
             Ok(None) => break,
-            Err(e) => return Err(anyhow::anyhow!("Error reading stdout: {}", e)),
+            Err(e) => return Err(anyhow!("Error reading stdout: {}", e)),
           }
         }
         line = stderr_lines.next_line() => {
@@ -176,7 +179,7 @@ async fn execute_shell_command(
               stderr_output.push('\n');
             }
             Ok(None) => break,
-            Err(e) => return Err(anyhow::anyhow!("Error reading stderr: {}", e)),
+            Err(e) => return Err(anyhow!("Error reading stderr: {}", e)),
           }
         }
         status = child.wait() => {
@@ -214,7 +217,7 @@ async fn execute_shell_command(
     Err(_) => {
       // Timeout - kill the process
       let _ = child.kill().await;
-      Err(anyhow::anyhow!("timeout"))
+      Err(anyhow!("timeout"))
     }
   }
 }
@@ -234,6 +237,9 @@ impl Default for BashHandler {
 
 #[cfg(test)]
 mod tests {
+  use std::env;
+  use std::fs;
+
   use super::*;
 
   #[test]
@@ -256,12 +262,12 @@ mod tests {
 
   #[tokio::test]
   async fn test_bash_handler_echo() {
-    let temp_dir = std::env::temp_dir();
+    let temp_dir = env::temp_dir();
     let handler = BashHandler::new();
     let invocation = ToolInvocation::new(
       "Bash",
       "test-call-id",
-      crate::tools::ToolPayload::Function {
+      ToolPayload::Function {
         arguments: r#"{"command": "echo 'Hello World'"}"#.to_string(),
       },
       &temp_dir,
@@ -276,12 +282,12 @@ mod tests {
 
   #[tokio::test]
   async fn test_bash_handler_exit_code() {
-    let temp_dir = std::env::temp_dir();
+    let temp_dir = env::temp_dir();
     let handler = BashHandler::new();
     let invocation = ToolInvocation::new(
       "Bash",
       "test-call-id",
-      crate::tools::ToolPayload::Function {
+      ToolPayload::Function {
         arguments: r#"{"command": "exit 42"}"#.to_string(),
       },
       &temp_dir,
@@ -296,12 +302,12 @@ mod tests {
 
   #[tokio::test]
   async fn test_bash_handler_empty_command() {
-    let temp_dir = std::env::temp_dir();
+    let temp_dir = env::temp_dir();
     let handler = BashHandler::new();
     let invocation = ToolInvocation::new(
       "Bash",
       "test-call-id",
-      crate::tools::ToolPayload::Function {
+      ToolPayload::Function {
         arguments: r#"{"command": "   "}"#.to_string(),
       },
       &temp_dir,
@@ -316,12 +322,12 @@ mod tests {
 
   #[tokio::test]
   async fn test_bash_handler_chained_commands() {
-    let temp_dir = std::env::temp_dir();
+    let temp_dir = env::temp_dir();
     let handler = BashHandler::new();
     let invocation = ToolInvocation::new(
       "Bash",
       "test-call-id",
-      crate::tools::ToolPayload::Function {
+      ToolPayload::Function {
         arguments: r#"{"command": "echo 'line1' && echo 'line2'"}"#.to_string(),
       },
       &temp_dir,
@@ -337,15 +343,15 @@ mod tests {
 
   #[tokio::test]
   async fn test_bash_handler_working_directory() {
-    let temp_dir = std::env::temp_dir();
+    let temp_dir = env::temp_dir();
     let test_dir = temp_dir.join("ironcode_bash_test_");
-    let _ = std::fs::create_dir(&test_dir);
+    let _ = fs::create_dir(&test_dir);
 
     let handler = BashHandler::new();
     let invocation = ToolInvocation::new(
       "Bash",
       "test-call-id",
-      crate::tools::ToolPayload::Function {
+      ToolPayload::Function {
         arguments: r#"{"command": "pwd"}"#.to_string(),
       },
       &test_dir,
@@ -355,6 +361,6 @@ mod tests {
     assert!(result.is_ok());
 
     // Cleanup
-    let _ = std::fs::remove_dir(&test_dir);
+    let _ = fs::remove_dir(&test_dir);
   }
 }

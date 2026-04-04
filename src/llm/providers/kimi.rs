@@ -2,24 +2,33 @@
 //!
 //! Supports Kimi API with Coding Agent authentication headers.
 
+use std::collections::hash_map::DefaultHasher;
+use std::env::consts::{ARCH, OS};
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use async_openai::error::OpenAIError;
 use async_openai::types::chat::{
-  ChatCompletionResponseStream, CreateChatCompletionStreamResponse, FinishReason,
-  Role as OpenAIRole,
+  ChatChoiceStream, ChatCompletionMessageToolCallChunk, ChatCompletionResponseStream,
+  ChatCompletionStreamResponseDelta, CreateChatCompletionStreamResponse, FinishReason,
+  FunctionCallStream, FunctionType, Role as OpenAIRole,
 };
 use async_trait::async_trait;
 use futures::StreamExt;
+use futures::stream::unfold;
 
+use hostname::get;
+use reqwest::Client;
 use reqwest::header::HeaderMap;
 use reqwest_eventsource::RequestBuilderExt;
 use serde::{Deserialize, Serialize};
+use serde_json::{from_str, to_string_pretty};
+use std::result::Result as StdResult;
 
 use crate::error::{LlmError, Result};
 use crate::llm::provider::LLMProvider;
 use crate::llm::types::{ChatConfig, Message, Role};
-use crate::tools::ToolRegistry;
+use crate::tools::{Tool, ToolRegistry};
 
 /// Custom delta that includes reasoning_content for Kimi API
 #[derive(Debug, Clone, Deserialize)]
@@ -72,7 +81,7 @@ struct KimiStreamResponse {
 }
 
 /// Custom deserializer for created field (handles both i64 and u32)
-fn deserialize_created<'de, D>(deserializer: D) -> std::result::Result<u32, D::Error>
+fn deserialize_created<'de, D>(deserializer: D) -> StdResult<u32, D::Error>
 where
   D: serde::Deserializer<'de>,
 {
@@ -216,15 +225,15 @@ impl KimiProvider {
       let user_agent = KIMI_USER_AGENT;
 
       // Device name (hostname)
-      let device_name = hostname::get()
+      let device_name = get()
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_else(|_| "unknown".to_string());
 
       // Device model (OS + ARCH)
-      let device_model = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+      let device_model = format!("{}-{}", OS, ARCH);
 
       // OS version
-      let os_version = std::env::consts::OS.to_string();
+      let os_version = OS.to_string();
 
       // Device ID (hashed hostname)
       let device_id = generate_device_id(&device_name);
@@ -289,7 +298,7 @@ impl KimiProvider {
     }
 
     // Build reqwest client with default headers
-    let http_client = reqwest::Client::builder()
+    let http_client = Client::builder()
       .default_headers(custom_headers)
       .build()
       .map_err(|e| LlmError::InvalidConfig(format!("Failed to build HTTP client: {}", e)))?;
@@ -388,7 +397,7 @@ impl KimiProvider {
   }
 
   /// Convert tools to ToolDefinition format
-  fn convert_tools(tools: &[&crate::tools::Tool]) -> Vec<ToolDefinition> {
+  fn convert_tools(tools: &[&Tool]) -> Vec<ToolDefinition> {
     tools
       .iter()
       .map(|tool| ToolDefinition {
@@ -449,7 +458,7 @@ impl LLMProvider for KimiProvider {
     log::info!("KimiProvider: Sending request to {}", url);
 
     // Print request details
-    if let Ok(request_json) = serde_json::to_string_pretty(&request) {
+    if let Ok(request_json) = to_string_pretty(&request) {
       log::info!("KimiProvider: Request body:\n{}", request_json);
     }
 
@@ -462,7 +471,7 @@ impl LLMProvider for KimiProvider {
       .map_err(|e| LlmError::StreamError(format!("Failed to create event source: {}", e)))?;
 
     // Convert EventSource to ChatCompletionResponseStream
-    let stream = futures::stream::unfold(event_source, |mut es| async move {
+    let stream = unfold(event_source, |mut es| async move {
       loop {
         match es.next().await {
           Some(Ok(reqwest_eventsource::Event::Open)) => {
@@ -477,7 +486,7 @@ impl LLMProvider for KimiProvider {
               return None;
             }
             // Parse using Kimi's custom format that includes reasoning_content
-            match serde_json::from_str::<KimiStreamResponse>(&message.data) {
+            match from_str::<KimiStreamResponse>(&message.data) {
               Ok(kimi_response) => {
                 log::debug!(
                   "KimiProvider: Parsed Kimi response: id={}, model={}, choices={}",
@@ -498,7 +507,7 @@ impl LLMProvider for KimiProvider {
                 let converted = convert_kimi_response(kimi_response);
 
                 // Log the converted response
-                if let Ok(response_json) = serde_json::to_string_pretty(&converted) {
+                if let Ok(response_json) = to_string_pretty(&converted) {
                   log::info!("KimiProvider: Converted response:\n{}", response_json);
                 }
 
@@ -541,9 +550,6 @@ impl LLMProvider for KimiProvider {
 
 /// Generate a pseudo-device ID based on hostname
 fn generate_device_id(hostname: &str) -> String {
-  use std::collections::hash_map::DefaultHasher;
-  use std::hash::{Hash, Hasher};
-
   let mut hasher = DefaultHasher::new();
   hostname.hash(&mut hasher);
   format!("{:016x}", hasher.finish())
@@ -552,8 +558,6 @@ fn generate_device_id(hostname: &str) -> String {
 /// Convert Kimi stream response to standard OpenAI format
 /// This embeds reasoning_content as special markers within content for downstream processing
 fn convert_kimi_response(kimi: KimiStreamResponse) -> CreateChatCompletionStreamResponse {
-  use async_openai::types::chat::{ChatChoiceStream, ChatCompletionStreamResponseDelta};
-
   let choices = kimi
     .choices
     .into_iter()
@@ -587,25 +591,19 @@ fn convert_kimi_response(kimi: KimiStreamResponse) -> CreateChatCompletionStream
       };
 
       // Convert tool calls - use ChatCompletionMessageToolCallChunk for streaming
-      let tool_calls: Option<Vec<async_openai::types::chat::ChatCompletionMessageToolCallChunk>> =
+      let tool_calls: Option<Vec<ChatCompletionMessageToolCallChunk>> =
         choice.delta.tool_calls.map(|calls| {
           calls
             .into_iter()
-            .map(
-              |call| async_openai::types::chat::ChatCompletionMessageToolCallChunk {
-                index: call.index.unwrap_or(0),
-                id: call.id,
-                r#type: call
-                  .call_type
-                  .map(|_t| async_openai::types::chat::FunctionType::Function),
-                function: call
-                  .function
-                  .map(|f| async_openai::types::chat::FunctionCallStream {
-                    name: f.name,
-                    arguments: f.arguments,
-                  }),
-              },
-            )
+            .map(|call| ChatCompletionMessageToolCallChunk {
+              index: call.index.unwrap_or(0),
+              id: call.id,
+              r#type: call.call_type.map(|_t| FunctionType::Function),
+              function: call.function.map(|f| FunctionCallStream {
+                name: f.name,
+                arguments: f.arguments,
+              }),
+            })
             .collect()
         });
 

@@ -5,9 +5,15 @@
 use std::io::Cursor;
 
 use async_trait::async_trait;
+use readability::extractor::extract;
+use reqwest::Client;
+use reqwest::header::CONTENT_TYPE;
 use serde::Deserialize;
+use url::Url;
 
-use crate::tools::{ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, parse_arguments};
+use crate::tools::{
+  ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, ToolPayload, parse_arguments,
+};
 
 /// Handler for the FetchURL tool
 pub struct FetchURLHandler;
@@ -34,7 +40,7 @@ impl ToolHandler for FetchURLHandler {
 
     // Extract arguments from payload
     let arguments = match payload {
-      crate::tools::ToolPayload::Function { arguments } => arguments,
+      ToolPayload::Function { arguments } => arguments,
       _ => {
         return Err(ToolError::RespondToModel(
           "FetchURL handler received unsupported payload".to_string(),
@@ -46,7 +52,7 @@ impl ToolHandler for FetchURLHandler {
     let args: FetchURLArgs = parse_arguments(&arguments)?;
 
     // Validate URL
-    let url = match url::Url::parse(&args.url) {
+    let url = match Url::parse(&args.url) {
       Ok(u) => u,
       Err(e) => {
         return Err(ToolError::RespondToModel(format!(
@@ -57,7 +63,7 @@ impl ToolHandler for FetchURLHandler {
     };
 
     // Fetch the URL
-    let client = match reqwest::Client::builder()
+    let client = match Client::builder()
       .user_agent(
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
          (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
@@ -96,7 +102,7 @@ impl ToolHandler for FetchURLHandler {
     // Check content type
     let content_type = response
       .headers()
-      .get(reqwest::header::CONTENT_TYPE)
+      .get(CONTENT_TYPE)
       .and_then(|v| v.to_str().ok())
       .unwrap_or("")
       .to_lowercase();
@@ -123,7 +129,7 @@ impl ToolHandler for FetchURLHandler {
 
     // For HTML, extract main content using readability
     let mut cursor = Cursor::new(&body_bytes);
-    match readability::extractor::extract(&mut cursor, &url) {
+    match extract(&mut cursor, &url) {
       Ok(product) => {
         if product.text.trim().is_empty() {
           Err(ToolError::RespondToModel(
@@ -159,8 +165,9 @@ impl Default for FetchURLHandler {
 
 #[cfg(test)]
 mod tests {
+  use std::env;
+
   use super::*;
-  use std::path::PathBuf;
 
   #[test]
   fn test_parse_arguments() {
@@ -171,13 +178,13 @@ mod tests {
 
   #[tokio::test]
   async fn test_fetch_url_invalid_url() {
-    let temp_dir = std::env::temp_dir();
+    let temp_dir = env::temp_dir();
     let handler = FetchURLHandler::new();
 
     let invocation = ToolInvocation::new(
       "FetchURL",
       "test-call-id",
-      crate::tools::ToolPayload::Function {
+      ToolPayload::Function {
         arguments: r#"{"url": "not-a-valid-url"}"#.to_string(),
       },
       &temp_dir,

@@ -5,7 +5,9 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::tools::{ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, parse_arguments};
+use crate::tools::{
+  ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, ToolPayload, parse_arguments,
+};
 
 /// Handler for the SetTodoList tool
 pub struct SetTodoListHandler;
@@ -42,7 +44,7 @@ impl ToolHandler for SetTodoListHandler {
 
     // Extract arguments from payload
     let arguments = match payload {
-      crate::tools::ToolPayload::Function { arguments } => arguments,
+      ToolPayload::Function { arguments } => arguments,
       _ => {
         return Err(ToolError::RespondToModel(
           "SetTodoList handler received unsupported payload".to_string(),
@@ -105,8 +107,9 @@ impl Default for SetTodoListHandler {
 
 #[cfg(test)]
 mod tests {
+  use std::env;
+
   use super::*;
-  use std::path::PathBuf;
 
   #[test]
   fn test_parse_arguments() {
@@ -127,13 +130,13 @@ mod tests {
 
   #[tokio::test]
   async fn test_set_todo_list_handler() {
-    let temp_dir = std::env::temp_dir();
+    let temp_dir = env::temp_dir();
     let handler = SetTodoListHandler::new();
 
     let invocation = ToolInvocation::new(
       "SetTodoList",
       "test-call-id",
-      crate::tools::ToolPayload::Function {
+      ToolPayload::Function {
         arguments: r#"{
           "todos": [
             {"title": "Task 1", "status": "done"},
@@ -158,13 +161,13 @@ mod tests {
 
   #[tokio::test]
   async fn test_empty_title_validation() {
-    let temp_dir = std::env::temp_dir();
+    let temp_dir = env::temp_dir();
     let handler = SetTodoListHandler::new();
 
     let invocation = ToolInvocation::new(
       "SetTodoList",
       "test-call-id",
-      crate::tools::ToolPayload::Function {
+      ToolPayload::Function {
         arguments: r#"{
           "todos": [
             {"title": "", "status": "pending"}
@@ -183,13 +186,13 @@ mod tests {
 
   #[tokio::test]
   async fn test_invalid_status_validation() {
-    let temp_dir = std::env::temp_dir();
+    let temp_dir = env::temp_dir();
     let handler = SetTodoListHandler::new();
 
     let invocation = ToolInvocation::new(
       "SetTodoList",
       "test-call-id",
-      crate::tools::ToolPayload::Function {
+      ToolPayload::Function {
         arguments: r#"{
           "todos": [
             {"title": "Task 1", "status": "invalid"}

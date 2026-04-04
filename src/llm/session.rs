@@ -3,18 +3,26 @@
 //! Manages a conversation with an LLM using the actor pattern.
 //! The session runs in a dedicated tokio task and communicates via channels.
 
+use std::env;
+use std::future::pending;
+use std::mem::take;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use async_openai::types::chat::{
+  ChatCompletionMessageToolCallChunk, ChatCompletionResponseStream, FunctionCallStream,
+};
+use chrono::{Datelike, Local, Timelike};
+use log::{debug, error, info};
+use tokio::sync::mpsc;
+
 use crate::config::Config;
 use crate::error::{ConfigError, Result};
 use crate::llm::provider::LLMProvider;
 use crate::llm::providers::KimiProvider;
 use crate::llm::types::{ChatConfig, Message, Role, ToolCall};
 use crate::session::{SessionMeta, SessionMode, SessionStore};
-use crate::tools::{ExecutableToolRegistry, ToolInvocation, ToolPayload};
-use async_openai::types::chat::ChatCompletionResponseStream;
-use chrono::{Datelike, Local, Timelike};
-use log::{debug, error, info};
-use std::sync::Arc;
-use tokio::sync::mpsc;
+use crate::tools::{ExecutableToolRegistry, ToolInvocation, ToolPayload, ToolRegistry};
 
 /// Maximum characters to display in user input log preview
 const USER_INPUT_PREVIEW_LEN: usize = 50;
@@ -25,7 +33,7 @@ pub(crate) fn generate_session_id() -> String {
   let now = Local::now();
 
   // Get current directory name
-  let dir_name = std::env::current_dir()
+  let dir_name = env::current_dir()
     .ok()
     .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
     .unwrap_or_else(|| "unknown".to_string());
@@ -139,7 +147,7 @@ struct SessionActor {
   /// Executable tool registry for handling tool calls (shared)
   tool_registry: Arc<ExecutableToolRegistry>,
   /// Working directory for tool execution
-  cwd: std::path::PathBuf,
+  cwd: PathBuf,
   /// Session store for persistence
   session_store: Arc<SessionStore>,
   /// Session metadata for persistence
@@ -170,7 +178,7 @@ impl SessionActor {
       stream_rx: None,
       pending_tool_calls: Vec::new(),
       tool_registry,
-      cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+      cwd: env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
       session_store,
       meta,
     }
@@ -193,7 +201,7 @@ impl SessionActor {
         Some(event) = async {
           match &mut self.stream_rx {
             Some(rx) => rx.recv().await,
-            None => std::future::pending().await,
+            None => pending().await,
           }
         } => {
           self.handle_stream_event(event).await;
@@ -402,9 +410,9 @@ impl SessionActor {
       }
       SessionEvent::Completed => {
         // Add the complete assistant message to history (with tool calls if any)
-        let response = std::mem::take(&mut self.current_response);
-        let thinking = std::mem::take(&mut self.current_thinking);
-        let tool_calls = std::mem::take(&mut self.pending_tool_calls);
+        let response = take(&mut self.current_response);
+        let thinking = take(&mut self.current_thinking);
+        let tool_calls = take(&mut self.pending_tool_calls);
 
         let has_content = !response.is_empty() || !thinking.is_empty();
         let has_tool_calls = !tool_calls.is_empty();
@@ -634,7 +642,7 @@ impl ChatSession {
   fn resume(
     id: String,
     config: &Config,
-    tool_registry: Arc<crate::tools::ToolRegistry>,
+    tool_registry: Arc<ToolRegistry>,
     executable_tool_registry: Arc<ExecutableToolRegistry>,
     session_store: Arc<SessionStore>,
     meta: SessionMeta,
@@ -658,7 +666,7 @@ impl ChatSession {
   pub fn create_or_resume(
     config: &Config,
     system_prompt: String,
-    tool_registry: Arc<crate::tools::ToolRegistry>,
+    tool_registry: Arc<ToolRegistry>,
     executable_tool_registry: Arc<ExecutableToolRegistry>,
     session_store: Arc<SessionStore>,
     mode: SessionMode,
@@ -714,7 +722,7 @@ impl ChatSession {
   /// * `tool_registry` - Shared tool registry for function calling
   pub(crate) fn create_provider(
     config: &Config,
-    tool_registry: Arc<crate::tools::ToolRegistry>,
+    tool_registry: Arc<ToolRegistry>,
   ) -> Result<Box<dyn LLMProvider>> {
     // Get default model configuration
     let model_config = config
@@ -779,7 +787,7 @@ impl ChatSession {
   fn create_with_store(
     config: &Config,
     system_prompt: impl Into<String>,
-    tool_registry: Arc<crate::tools::ToolRegistry>,
+    tool_registry: Arc<ToolRegistry>,
     executable_tool_registry: Arc<ExecutableToolRegistry>,
     session_store: Arc<SessionStore>,
     meta: SessionMeta,
@@ -869,8 +877,7 @@ async fn handle_stream(
   let mut has_received_thinking = false;
 
   // Buffer for accumulating tool calls
-  let mut tool_call_buffer: Vec<async_openai::types::chat::ChatCompletionMessageToolCallChunk> =
-    Vec::new();
+  let mut tool_call_buffer: Vec<ChatCompletionMessageToolCallChunk> = Vec::new();
 
   while let Some(result) = stream.next().await {
     match result {
@@ -906,14 +913,12 @@ async fn handle_stream(
 
               // Ensure buffer has enough slots
               while tool_call_buffer.len() <= idx {
-                tool_call_buffer.push(
-                  async_openai::types::chat::ChatCompletionMessageToolCallChunk {
-                    index: tool_call_buffer.len() as u32,
-                    id: None,
-                    r#type: None,
-                    function: None,
-                  },
-                );
+                tool_call_buffer.push(ChatCompletionMessageToolCallChunk {
+                  index: tool_call_buffer.len() as u32,
+                  id: None,
+                  r#type: None,
+                  function: None,
+                });
               }
 
               // Update the tool call at this index
@@ -932,7 +937,7 @@ async fn handle_stream(
               // Update function if provided
               if let Some(ref function) = tool_call.function {
                 if existing.function.is_none() {
-                  existing.function = Some(async_openai::types::chat::FunctionCallStream {
+                  existing.function = Some(FunctionCallStream {
                     name: None,
                     arguments: None,
                   });

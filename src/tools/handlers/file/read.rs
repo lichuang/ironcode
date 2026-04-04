@@ -8,7 +8,9 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use tokio::fs;
 
-use crate::tools::{ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, parse_arguments};
+use crate::tools::{
+  ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, ToolPayload, parse_arguments,
+};
 
 /// Handler for the ReadFile tool
 pub struct ReadFileHandler;
@@ -55,7 +57,7 @@ impl ToolHandler for ReadFileHandler {
 
     // Extract arguments from payload
     let arguments = match payload {
-      crate::tools::ToolPayload::Function { arguments } => arguments,
+      ToolPayload::Function { arguments } => arguments,
       _ => {
         return Err(ToolError::RespondToModel(
           "ReadFile handler received unsupported payload".to_string(),
@@ -188,8 +190,9 @@ impl Default for ReadFileHandler {
 
 #[cfg(test)]
 mod tests {
+  use std::env;
+
   use super::*;
-  use std::path::PathBuf;
 
   #[test]
   fn test_parse_arguments() {
@@ -214,7 +217,7 @@ mod tests {
   #[tokio::test]
   async fn test_read_file_handler() {
     // Create a temporary file
-    let temp_dir = std::env::temp_dir();
+    let temp_dir = env::temp_dir();
     let test_file = temp_dir.join("ironcode_test_read_file.txt");
     let test_content = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n";
     fs::write(&test_file, test_content).await.unwrap();
@@ -223,7 +226,7 @@ mod tests {
     let invocation = ToolInvocation::new(
       "ReadFile",
       "test-call-id",
-      crate::tools::ToolPayload::Function {
+      ToolPayload::Function {
         arguments: format!(
           r#"{{"path": "{}", "offset": 2, "limit": 3}}"#,
           test_file.display()

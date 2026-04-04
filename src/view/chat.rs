@@ -1,3 +1,5 @@
+use std::env;
+use std::mem::take;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -13,6 +15,7 @@ use crate::cli::AppData;
 use crate::config::Config;
 use crate::history::InputHistoryManager;
 use crate::llm::SessionHandle;
+use crate::llm::types::Message;
 use crate::tui::{FrameRequester, TARGET_FRAME_INTERVAL};
 use crate::utils::colors::{BLUE, GREEN, HIGHLIGHT as HIGHLIGHT_COLOR, TEXT as TEXT_COLOR};
 use crate::utils::{
@@ -103,7 +106,7 @@ pub enum ChatMessage {
 /// Convert LLM messages into UI chat history.
 ///
 /// This is used when resuming a persisted session to rebuild the visual chat log.
-pub fn llm_messages_to_chat_history(messages: &[crate::llm::types::Message]) -> Vec<ChatMessage> {
+pub fn llm_messages_to_chat_history(messages: &[Message]) -> Vec<ChatMessage> {
   use crate::llm::types::Role;
 
   let mut history = Vec::new();
@@ -117,14 +120,12 @@ pub fn llm_messages_to_chat_history(messages: &[crate::llm::types::Message]) -> 
       }
       Role::Assistant => {
         let content = msg.content.clone();
-        let (thinking_content, content) = if let Some(start) = content.find("<think>") {
-          if let Some(end) = content.find("</think>") {
-            let think = content[start + 7..end].to_string();
-            let after = content[end + 8..].to_string();
-            (Some(think), after)
-          } else {
-            (None, content)
-          }
+        let (thinking_content, content) = if let Some(start) = content.find("<think>")
+          && let Some(end) = content.find("</think>")
+        {
+          let think = content[start + 7..end].to_string();
+          let after = content[end + 8..].to_string();
+          (Some(think), after)
         } else {
           (None, content)
         };
@@ -328,11 +329,11 @@ impl ChatView {
 
   /// Build the prompt string (username@current_dir)
   fn build_prompt() -> String {
-    let username = std::env::var("USER")
-      .or_else(|_| std::env::var("USERNAME"))
+    let username = env::var("USER")
+      .or_else(|_| env::var("USERNAME"))
       .unwrap_or_else(|_| "user".to_string());
 
-    let current_dir = std::env::current_dir()
+    let current_dir = env::current_dir()
       .ok()
       .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
       .unwrap_or_else(|| "~".to_string());
@@ -452,7 +453,7 @@ impl ChatView {
       // Save input to history before submitting
       self.save_to_history();
 
-      let message = std::mem::take(&mut self.input);
+      let message = take(&mut self.input);
       // Add user message to chat history
       data.chat_history.push(ChatMessage::User {
         content: message.clone(),

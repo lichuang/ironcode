@@ -2,10 +2,19 @@
 //!
 //! Search on the internet to get latest information.
 
-use async_trait::async_trait;
-use serde::Deserialize;
+use std::io::Cursor;
 
-use crate::tools::{ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, parse_arguments};
+use async_trait::async_trait;
+use duckduckgo_search::DuckDuckGoSearch;
+use readability::extractor::extract;
+use reqwest::Client;
+use reqwest::header::CONTENT_TYPE;
+use serde::Deserialize;
+use url::Url;
+
+use crate::tools::{
+  ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, ToolPayload, parse_arguments,
+};
 
 /// Handler for the SearchWeb tool
 pub struct SearchWebHandler;
@@ -42,7 +51,7 @@ impl ToolHandler for SearchWebHandler {
 
     // Extract arguments from payload
     let arguments = match payload {
-      crate::tools::ToolPayload::Function { arguments } => arguments,
+      ToolPayload::Function { arguments } => arguments,
       _ => {
         return Err(ToolError::RespondToModel(
           "SearchWeb handler received unsupported payload".to_string(),
@@ -68,7 +77,7 @@ impl ToolHandler for SearchWebHandler {
     }
 
     // Perform search using DuckDuckGo
-    let search = duckduckgo_search::DuckDuckGoSearch::new();
+    let search = DuckDuckGoSearch::new();
     let results = match search.search(&args.query).await {
       Ok(r) => r,
       Err(e) => {
@@ -125,9 +134,9 @@ impl ToolHandler for SearchWebHandler {
 
 /// Helper to fetch page content for include_content mode
 async fn fetch_page_content(url: &str) -> Result<String, String> {
-  let parsed_url = url::Url::parse(url).map_err(|e| format!("Invalid URL: {}", e))?;
+  let parsed_url = Url::parse(url).map_err(|e| format!("Invalid URL: {}", e))?;
 
-  let client = reqwest::Client::builder()
+  let client = Client::builder()
     .user_agent(
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
        (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
@@ -147,7 +156,7 @@ async fn fetch_page_content(url: &str) -> Result<String, String> {
 
   let content_type = response
     .headers()
-    .get(reqwest::header::CONTENT_TYPE)
+    .get(CONTENT_TYPE)
     .and_then(|v| v.to_str().ok())
     .unwrap_or("")
     .to_lowercase();
@@ -161,8 +170,8 @@ async fn fetch_page_content(url: &str) -> Result<String, String> {
     return Ok(String::from_utf8_lossy(&body_bytes).to_string());
   }
 
-  let mut cursor = std::io::Cursor::new(&body_bytes);
-  match readability::extractor::extract(&mut cursor, &parsed_url) {
+  let mut cursor = Cursor::new(&body_bytes);
+  match extract(&mut cursor, &parsed_url) {
     Ok(product) => Ok(product.text),
     Err(e) => Err(format!("Extraction error: {}", e)),
   }
@@ -183,6 +192,8 @@ impl Default for SearchWebHandler {
 
 #[cfg(test)]
 mod tests {
+  use std::env;
+
   use super::*;
 
   #[test]
@@ -205,13 +216,13 @@ mod tests {
 
   #[tokio::test]
   async fn test_search_web_empty_query() {
-    let temp_dir = std::env::temp_dir();
+    let temp_dir = env::temp_dir();
     let handler = SearchWebHandler::new();
 
     let invocation = ToolInvocation::new(
       "SearchWeb",
       "test-call-id",
-      crate::tools::ToolPayload::Function {
+      ToolPayload::Function {
         arguments: r#"{"query": ""}"#.to_string(),
       },
       &temp_dir,
@@ -225,13 +236,13 @@ mod tests {
 
   #[tokio::test]
   async fn test_search_web_invalid_limit() {
-    let temp_dir = std::env::temp_dir();
+    let temp_dir = env::temp_dir();
     let handler = SearchWebHandler::new();
 
     let invocation = ToolInvocation::new(
       "SearchWeb",
       "test-call-id",
-      crate::tools::ToolPayload::Function {
+      ToolPayload::Function {
         arguments: r#"{"query": "Rust", "limit": 25}"#.to_string(),
       },
       &temp_dir,

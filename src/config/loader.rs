@@ -1,8 +1,14 @@
 //! Configuration file loader
 
-use super::{Config, LoggingConfig};
-use crate::error::{ConfigError, Result};
+use std::fs;
 use std::path::{Path, PathBuf};
+
+use shellexpand::tilde;
+use toml::from_str;
+
+use crate::error::{ConfigError, Result};
+
+use super::{Config, LoggingConfig};
 
 /// Default configuration directory name (in home directory)
 const DEFAULT_DIR: &str = ".ironcode";
@@ -31,7 +37,7 @@ pub fn data_dir(config: &Config) -> PathBuf {
     .map(|dir| {
       // Expand ~ to home directory if present
       let dir_str = dir.to_string_lossy();
-      let expanded = shellexpand::tilde(&dir_str);
+      let expanded = tilde(&dir_str);
       PathBuf::from(expanded.as_ref())
     })
     .or_else(default_data_dir)
@@ -71,7 +77,7 @@ pub fn load_config_from_dir(config_dir: &Path) -> Result<Config> {
 }
 
 /// Load configuration from a specific file path
-pub fn load_config_from(path: &PathBuf) -> Result<Config> {
+pub fn load_config_from(path: &Path) -> Result<Config> {
   let mut config = Config::default();
 
   // Load from config file
@@ -87,10 +93,10 @@ pub fn load_config_from(path: &PathBuf) -> Result<Config> {
 }
 
 /// Load configuration from a specific file path
-pub fn load_from_file(path: &PathBuf) -> Result<Config> {
-  let content = std::fs::read_to_string(path).map_err(|e| ConfigError::read_file(path, e))?;
+pub fn load_from_file(path: &Path) -> Result<Config> {
+  let content = fs::read_to_string(path).map_err(|e| ConfigError::read_file(path, e))?;
 
-  let config: Config = toml::from_str(&content).map_err(|e| ConfigError::parse_toml(path, e))?;
+  let config: Config = from_str(&content).map_err(|e| ConfigError::parse_toml(path, e))?;
 
   Ok(config)
 }
@@ -164,8 +170,7 @@ pub fn ensure_data_dir(config: &Config) -> Result<PathBuf> {
   let data_dir_path = data_dir(config);
 
   if !data_dir_path.exists() {
-    std::fs::create_dir_all(&data_dir_path)
-      .map_err(|e| ConfigError::create_dir(&data_dir_path, e))?;
+    fs::create_dir_all(&data_dir_path).map_err(|e| ConfigError::create_dir(&data_dir_path, e))?;
   }
 
   Ok(data_dir_path)
@@ -180,7 +185,7 @@ pub fn create_default_config() -> Result<PathBuf> {
 
   // Ensure the config directory exists
   if !config_dir.exists() {
-    std::fs::create_dir_all(&config_dir).map_err(|e| ConfigError::create_dir(&config_dir, e))?;
+    fs::create_dir_all(&config_dir).map_err(|e| ConfigError::create_dir(&config_dir, e))?;
   }
 
   let config_path = config_dir.join(CONFIG_FILE);
@@ -215,7 +220,7 @@ supports_vision = true
 level = "info"
 "#;
 
-    std::fs::write(&config_path, default_config)
+    fs::write(&config_path, default_config)
       .map_err(|e| ConfigError::write_file(&config_path, e))?;
   }
 
@@ -228,6 +233,7 @@ mod tests {
   use super::*;
   use std::collections::HashMap;
   use std::env;
+  use std::result::Result as StdResult;
 
   fn fixtures_dir() -> PathBuf {
     PathBuf::from(file!()).parent().unwrap().join("fixtures")
@@ -250,7 +256,7 @@ max_context_size = 128000
 supports_streaming = true
 "#;
 
-    let config: Config = toml::from_str(toml).expect("Failed to parse TOML");
+    let config: Config = from_str(toml).expect("Failed to parse TOML");
     assert_eq!(config.default_model, "openai/gpt-4o");
     assert!(config.providers.contains_key("openai"));
     assert!(config.models.contains_key("openai/gpt-4o"));
@@ -423,7 +429,7 @@ provider = "openai"
 model = "gpt-4o"
 "#;
 
-    let result: std::result::Result<Config, _> = toml::from_str(toml);
+    let result: StdResult<Config, _> = from_str(toml);
     assert!(
       result.is_ok(),
       "Provider type 'openai' should be accepted as string"
@@ -449,7 +455,7 @@ provider = "kimi"
 model = "kimi-for-coding"
 "#;
 
-    let result: std::result::Result<Config, _> = toml::from_str(toml);
+    let result: StdResult<Config, _> = from_str(toml);
     assert!(result.is_ok(), "Valid provider type should be accepted");
     let config = result.unwrap();
     let provider = config.providers.get("kimi").unwrap();

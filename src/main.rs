@@ -9,6 +9,12 @@ mod tui;
 mod utils;
 mod view;
 
+use std::env;
+use std::fs::{self, OpenOptions};
+use std::sync::Arc;
+
+use env_logger::Target;
+
 use anyhow::Result;
 use clap::Parser;
 use crossterm::event::KeyEventKind;
@@ -29,13 +35,10 @@ pub use error::{Error, Result as IronResult};
 /// Logs are always written to ${data_dir}/logs/ironcode.log
 /// where data_dir is determined by the config.dir setting (defaults to ~/.ironcode/)
 fn init_logging(config: &Config) {
-  use env_logger::Target;
-  use std::fs::OpenOptions;
-
   let mut builder = env_logger::Builder::new();
 
   // Parse RUST_LOG env var first, then fall back to config level
-  if let Ok(rust_log) = std::env::var("RUST_LOG") {
+  if let Ok(rust_log) = env::var("RUST_LOG") {
     builder.parse_filters(&rust_log);
   } else {
     builder.parse_filters(&config.logging.level);
@@ -48,7 +51,7 @@ fn init_logging(config: &Config) {
 
   // Create logs directory if it doesn't exist
   if !logs_dir.exists()
-    && let Err(e) = std::fs::create_dir_all(&logs_dir)
+    && let Err(e) = fs::create_dir_all(&logs_dir)
   {
     builder.init();
     warn!("Failed to create logs directory {:?}: {}", logs_dir, e);
@@ -56,7 +59,12 @@ fn init_logging(config: &Config) {
   }
 
   // Open log file and write to it
-  match OpenOptions::new().create(true).append(true).open(&log_file) {
+  match OpenOptions::new()
+    .create(true)
+    .truncate(false)
+    .append(true)
+    .open(&log_file)
+  {
     Ok(file) => {
       builder.target(Target::Pipe(Box::new(file)));
     }
@@ -99,7 +107,7 @@ async fn main() -> Result<()> {
   let mut tui = Tui::new()?;
 
   // Create session store
-  let session_store = std::sync::Arc::new(SessionStore::new(&data_dir));
+  let session_store = Arc::new(SessionStore::new(&data_dir));
 
   // Create app state with configuration
   // Pass data_dir for loading system prompt from data_dir/prompts/system.md
