@@ -92,6 +92,8 @@ impl App {
 
     let mode = if let Some(id) = &args.session {
       SessionMode::ResumeById(id.clone())
+    } else if args.r#continue {
+      SessionMode::ResumeLatest
     } else {
       SessionMode::New
     };

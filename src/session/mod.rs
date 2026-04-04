@@ -10,7 +10,6 @@ pub enum SessionMode {
   /// Always create a brand-new session
   New,
   /// Resume the most recently updated session, or create one if none exist
-  #[allow(dead_code)]
   ResumeLatest,
   /// Resume a specific session by ID
   ResumeById(String),

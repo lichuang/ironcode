@@ -26,6 +26,10 @@ pub struct Args {
   /// Load a specific session by ID
   #[arg(long, value_name = "ID")]
   pub session: Option<String>,
+
+  /// Continue the most recent session
+  #[arg(long)]
+  pub r#continue: bool,
 }
 
 impl Args {
