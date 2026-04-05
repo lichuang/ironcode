@@ -1,188 +1,197 @@
 # IronCode Development TODO
 
-## 项目对比：ironcode vs kimi-cli
+## Project Comparison: ironcode vs kimi-cli
 
-### 差异总结
+### Summary
 
-| 维度 | **kimi-cli** (Python) | **ironcode** (Rust) |
-|------|----------------------|---------------------|
-| **架构成熟度** | 企业级（多代理、MCP、ACP） | 轻量级（单会话、基础工具） |
-| **UI 模式** | Shell / Web / ACP / VS Code | TUI only |
-| **会话管理** | 持久化 sessions + checkpoints | 基础持久化存储层已就绪 |
-| **上下文管理** | 自动 compaction | 无 |
-| **多代理** | LaborMarket + Task 工具 | 无 |
-| **MCP 支持** | 完整（管理 CLI + 加载） | 框架有，未实现 |
-| **认证** | OAuth device flow | 仅 API key |
-| **Skill 系统** | 标准 + Flow skills | 无 |
-| **Web 搜索** | 专用 Moonshot 服务 | DuckDuckGo |
+| Dimension | **kimi-cli** (Python) | **ironcode** (Rust) |
+|-----------|----------------------|---------------------|
+| **Architecture Maturity** | Enterprise-grade (multi-agent, MCP, ACP) | Lightweight (single session, basic tools) |
+| **UI Modes** | Shell / Web / ACP / VS Code | TUI only |
+| **Session Management** | Persistent sessions + checkpoints | Basic persistence layer ready |
+| **Context Management** | Automatic compaction | None |
+| **Multi-agent** | LaborMarket + Task tools | None |
+| **MCP Support** | Full (management CLI + loading) | Framework exists, not implemented |
+| **Authentication** | OAuth device flow | API key only |
+| **Skill System** | Standard + Flow skills | None |
+| **Web Search** | Dedicated Moonshot service | DuckDuckGo |
 
-### 功能缺失对比
+### Missing Features (kimi-cli has, ironcode lacks)
 
-#### kimi-cli 有，ironcode 缺失的功能：
-
-1. **Persistent Sessions & Context** - 完整会话持久化
-2. **Context Compaction** - 自动上下文压缩
-3. **Subagent/Multi-agent System** - Task 工具 + LaborMarket
-4. **MCP Full Support** - `kimi mcp` 管理 CLI
-5. **Web UI** - FastAPI + WebSocket 后端
-6. **Skill System** - 标准技能 + Flow skills (Mermaid/D2)
-7. **OAuth & Authentication** - 设备流 OAuth
-8. **Advanced Web Tools** - 专用搜索/抓取服务
-9. **Structured Ask User** - 结构化问题系统
-10. **D-Mail / Checkpoint** - 时间旅行回退功能
-11. **ACP Protocol** - IDE 集成协议
-12. **Approval System** - 富文本 diff 显示
-13. **Print/Non-interactive Mode** - `--print` 模式
-14. **Auto-retry with Backoff** - 指数退避重试
-15. **YOLO Mode** - 自动批准所有操作
+1. **Persistent Sessions & Context** - Complete session persistence
+2. **Context Compaction** - Automatic context compression
+3. **Subagent/Multi-agent System** - Task tool + LaborMarket
+4. **MCP Full Support** - `kimi mcp` management CLI
+5. **Web UI** - FastAPI + WebSocket backend
+6. **Skill System** - Standard skills + Flow skills (Mermaid/D2)
+7. **OAuth & Authentication** - Device flow OAuth
+8. **Advanced Web Tools** - Dedicated search/scraping services
+9. **Structured Ask User** - Structured question system
+10. **D-Mail / Checkpoint** - Time travel rollback functionality
+11. **ACP Protocol** - IDE integration protocol
+12. **Approval System** - Rich text diff display
+13. **Print/Non-interactive Mode** - `--print` mode
+14. **Auto-retry with Backoff** - Exponential backoff retry
+15. **YOLO Mode** - Auto-approve all operations
 
 ---
 
-## 开发计划（按优先级排序）
+## Development Plan (By Priority)
 
-### Phase 1: 基础架构强化
-**目标：建立可扩展的基础，解决核心痛点**
+### Phase 1: Infrastructure Strengthening
+**Goal:** Build scalable foundation, address core pain points
 
-#### 1. Session 持久化系统
-- [✅] 设计会话存储格式（JSON/JSONL）
-- [✅] 实现 `~/.ironcode/sessions/` 目录管理
-- [×] 会话保存（自动/手动触发）— store 层已完成，待集成到 ChatSession Actor
-- [×] 会话列表界面（加载历史会话）
-- [✅] 会话元数据（标题、时间、消息数）
+#### 1. Session Persistence System ✅ COMPLETED
+- [✅] Design session storage format (JSON/JSONL)
+- [✅] Implement `~/.ironcode/sessions/` directory management
+- [✅] Session saving (auto/manual trigger) - store layer integrated with ChatSession Actor
+- [✅] Session metadata (title, timestamps, message count)
+- [×] Session list UI (load historical sessions) - moved to Phase 2
 
-#### 2. 上下文压缩（Context Compaction）
-- [×] Token 计数估算（tiktoken-rs 或近似算法）
-- [×] 压缩触发阈值配置
-- [×] 滚动窗口策略（保留最近 N 条消息）
-- [×] 摘要生成策略（LLM 生成历史摘要）
-- [×] 压缩事件通知 UI
+#### 2. Context Compaction
+- [×] Token counting estimation (tiktoken-rs or approximate algorithm)
+- [×] Compaction trigger threshold configuration
+- [×] Rolling window strategy (keep recent N messages)
+- [×] Summary generation strategy (LLM-generated historical summary)
+- [×] Compaction event notification UI
 
-#### 3. 改进的错误处理和重试
-- [×] 集成 tokio-retry 或自定义退避逻辑
-- [×] LLM 流中断恢复机制
-- [×] 网络错误友好提示
-- [×] 可配置重试次数和延迟
-
----
-
-### Phase 2: 核心功能增强
-**目标：达到可用的生产力工具水平**
-
-#### 4. 增强的审批系统
-- [×] YOLO 模式（`--yolo` / 配置项）
-- [×] 文件修改 diff 显示
-- [×] Shell 命令预览确认
-- [×] 按工具类型配置自动批准（如只自动批准 ReadFile）
-
-#### 5. 结构化 AskUser 工具
-- [×] 单选/多选问题类型
-- [×] 确认对话框（是/否）
-- [×] 输入验证和默认值
-- [×] 富文本渲染（Markdown）
-
-#### 6. MCP 完整支持
-- [×] MCP 服务器配置格式设计
-- [×] `ironcode mcp` 子命令框架
-- [×] `mcp add/remove/list` 实现
-- [×] MCP 工具动态加载和注册
-- [×] MCP 服务器生命周期管理
-
-#### 7. OAuth 认证支持
-- [×] Kimi OAuth device flow 实现
-- [×] Token 刷新机制
-- [×] `ironcode login/logout` 命令
-- [×] 安全存储 token（keychain/keyring）
+#### 3. Improved Error Handling and Retry
+- [×] Integrate tokio-retry or custom backoff logic
+- [×] LLM stream interruption recovery mechanism
+- [×] User-friendly network error messages
+- [×] Configurable retry count and delay
 
 ---
 
-### Phase 3: 多代理与高级功能
-**目标：复杂任务处理能力**
+### Phase 2: Core Feature Enhancement
+**Goal:** Reach productive tool level
 
-#### 8. Subagent / 多代理系统
-- [×] Task 工具设计（创建子任务）
-- [×] Agent 池管理（LaborMarket 模式）
-- [×] 父子会话隔离和通信
-- [×] 子代理结果汇总
-- [×] 并发任务执行限制
+#### 4. Session List UI
+- [×] TUI session list interface (browse historical sessions)
+- [×] Session search and filtering
+- [×] Session deletion functionality
 
-#### 9. Checkpoint / D-Mail 系统
-- [×] 上下文快照保存机制
-- [×] Checkpoint 列表和命名
-- [×] 回退到指定 checkpoint
-- [×] 分支会话创建
-- [×] Checkpoint 可视化（时间线 UI）
+#### 5. Enhanced Approval System
+- [×] YOLO mode (`--yolo` / config option)
+- [×] File modification diff display
+- [×] Shell command preview confirmation
+- [×] Per-tool auto-approval configuration (e.g., only auto-approve ReadFile)
 
-#### 10. Skill 系统基础
-- [×] Skill 文件格式设计（YAML/JSON）
-- [×] Skill 加载和解析
-- [×] Skill 变量替换
-- [×] Flow skills 基础（简单工作流）
+#### 6. Structured AskUser Tool
+- [×] Single-select/multi-select question types
+- [×] Confirmation dialogs (yes/no)
+- [×] Input validation and default values
+- [×] Rich text rendering (Markdown)
 
----
+#### 7. Full MCP Support
+- [×] MCP server configuration format design
+- [×] `ironcode mcp` subcommand framework
+- [×] `mcp add/remove/list` implementation
+- [×] MCP tool dynamic loading and registration
+- [×] MCP server lifecycle management
 
-### Phase 4: 多模态与生态集成
-**目标：多样化交互和 IDE 集成**
-
-#### 11. Print / 非交互模式
-- [×] `--print` 命令行参数
-- [×] 单次查询模式（类似 `kimi "query"`）
-- [×] 管道输入支持（`cat file.rs | ironcode`）
-- [×] JSON 输出模式（用于脚本）
-
-#### 12. Web UI（可选）
-- [×] FastAPI + WebSocket 后端设计
-- [×] 前端框架选择（React/Vue/Svelte）
-- [×] 与 TUI 共享核心逻辑（Session、Tool）
-- [×] 文件上传支持
-
-#### 13. ACP 协议支持（可选）
-- [×] Agent Client Protocol 规范研究
-- [×] ACP 服务器实现
-- [×] VS Code 扩展兼容测试
-
-#### 14. 增强工具集
-- [×] 图像/vision 支持（图片输入）
-- [×] 代码解析工具（AST 感知）
-- [×] Git 集成工具（diff、blame、log）
-- [×] LSP 客户端集成（代码补全、跳转）
+#### 8. OAuth Authentication Support
+- [×] Kimi OAuth device flow implementation
+- [×] Token refresh mechanism
+- [×] `ironcode login/logout` commands
+- [×] Secure token storage (keychain/keyring)
 
 ---
 
-## 当前建议的下一步（Top 3）
+### Phase 3: Multi-Agent and Advanced Features
+**Goal:** Complex task processing capabilities
 
-### 1. Session 持久化集成 [P0]
-**状态：** 存储层（JSONL + `SessionStore`）已完成，待集成到 `ChatSession` Actor 和 `App` 启动流程。
+#### 9. Subagent / Multi-Agent System
+- [×] Task tool design (create subtasks)
+- [×] Agent pool management (LaborMarket pattern)
+- [×] Parent-child session isolation and communication
+- [×] Sub-agent result aggregation
+- [×] Concurrent task execution limits
 
-**为什么优先：**
-- 用户痛点：每次重启都要重新开始对话
-- 技术难度：中等（主要是文件 I/O 和序列化）
-- 用户体验提升：巨大
+#### 10. Checkpoint / D-Mail System
+- [×] Context snapshot saving mechanism
+- [×] Checkpoint list and naming
+- [×] Rollback to specific checkpoint
+- [×] Branch session creation
+- [×] Checkpoint visualization (timeline UI)
 
-**实现思路：**
-```rust
-// ~/.ironcode/sessions/
-// ├── {session_id}/
-// │   ├── meta.json
-// │   └── context.jsonl
-```
-
-### 2. YOLO 模式 + 审批显示 [P0]
-**为什么优先：**
-- 开发效率：减少重复的确认操作
-- 技术难度：低
-- 安全：渐进式信任（可按工具类型配置）
-
-### 3. 上下文压缩 [P1]
-**为什么优先：**
-- 长会话会触发 token 限制
-- 技术难度：中高（需要摘要策略）
-- 成本优化：减少不必要的 token 消耗
+#### 11. Skill System Foundation
+- [×] Skill file format design (YAML/JSON)
+- [×] Skill loading and parsing
+- [×] Skill variable substitution
+- [×] Flow skills foundation (simple workflows)
 
 ---
 
-## 备注
+### Phase 4: Multimodal and Ecosystem Integration
+**Goal:** Diverse interactions and IDE integration
 
-- 每个 Phase 可以独立并行开发
-- 建议从 Phase 1 开始，打好基础后再进入 Phase 2
-- Phase 3 和 4 属于高级功能，可根据用户反馈调整优先级
-- 保持 ironcode 的简洁性，不要盲目堆砌功能
+#### 12. Print / Non-Interactive Mode
+- [×] `--print` command line argument
+- [×] Single-shot query mode (similar to `kimi "query"`)
+- [×] Pipe input support (`cat file.rs | ironcode`)
+- [×] JSON output mode (for scripting)
+
+#### 13. Web UI (Optional)
+- [×] FastAPI + WebSocket backend design
+- [×] Frontend framework selection (React/Vue/Svelte)
+- [×] Share core logic with TUI (Session, Tool)
+- [×] File upload support
+
+#### 14. ACP Protocol Support (Optional)
+- [×] Agent Client Protocol specification research
+- [×] ACP server implementation
+- [×] VS Code extension compatibility testing
+
+#### 15. Enhanced Tool Set
+- [×] Image/vision support (image input)
+- [×] Code parsing tools (AST-aware)
+- [×] Git integration tools (diff, blame, log)
+- [×] LSP client integration (code completion, go-to-definition)
+
+---
+
+## Recommended Next Steps (Top 3)
+
+### 1. YOLO Mode + Approval System [P0]
+**Status:** Pending implementation
+
+**Why prioritize:**
+- Development efficiency: Reduce repetitive confirmation operations
+- Technical difficulty: Low
+- Security: Progressive trust (configurable by tool type)
+
+### 2. Session List UI [P0]
+**Status:** Storage layer complete, TUI interface pending
+
+**Why prioritize:**
+- User pain point: Hard to discover and load historical sessions (need to remember session ID)
+- Technical difficulty: Medium
+- User experience improvement: Huge
+
+### 3. Context Compaction [P1]
+**Status:** Pending implementation
+
+**Why prioritize:**
+- Long sessions hit token limits
+- Technical difficulty: Medium-High (requires summary strategy)
+- Cost optimization: Reduce unnecessary token consumption
+
+---
+
+## Completed Features (Archived)
+
+### ✅ Session Persistence System (Phase 1)
+- Storage layer (JSONL + `SessionStore`)
+- Integration with `ChatSession` Actor
+- `--session <ID>` and `--continue` argument support
+- Automatic message and metadata saving
+
+---
+
+## Notes
+
+- Each Phase can be developed independently and in parallel
+- Recommended to start from Phase 1, build foundation before entering Phase 2
+- Phase 3 and 4 are advanced features, adjust priority based on user feedback
+- Maintain ironcode's simplicity, avoid feature bloat
