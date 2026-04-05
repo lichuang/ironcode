@@ -29,6 +29,8 @@ pub struct AppData {
   pub(crate) streaming_response: Arc<Vec<StreamingChunk>>,
   /// Application configuration (shared with views)
   pub(crate) config: Option<Config>,
+  /// Precise token count from API usage (if available)
+  pub(crate) precise_token_count: Option<u32>,
 }
 
 impl AppData {
@@ -39,6 +41,7 @@ impl AppData {
       chat_history: Vec::new(),
       streaming_response: Arc::new(Vec::new()),
       config: None,
+      precise_token_count: None,
     }
   }
 }
@@ -291,6 +294,20 @@ impl App {
           SessionEvent::Shutdown => {
             // Session has been shutdown
             info!("ChatSession {} shutdown", session.handle.id);
+          }
+          SessionEvent::Usage {
+            total_tokens,
+            prompt_tokens,
+            completion_tokens,
+          } => {
+            log::info!(
+              "App: Received precise token usage - total={}, prompt={}, completion={}",
+              total_tokens,
+              prompt_tokens,
+              completion_tokens
+            );
+            // Store the precise token count for status bar display
+            self.data.precise_token_count = Some(total_tokens);
           }
         }
       }

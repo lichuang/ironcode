@@ -10,8 +10,8 @@ use std::sync::Arc;
 use async_openai::error::OpenAIError;
 use async_openai::types::chat::{
   ChatChoiceStream, ChatCompletionMessageToolCallChunk, ChatCompletionResponseStream,
-  ChatCompletionStreamResponseDelta, CreateChatCompletionStreamResponse, FinishReason,
-  FunctionCallStream, FunctionType, Role as OpenAIRole,
+  ChatCompletionStreamResponseDelta, CompletionUsage, CreateChatCompletionStreamResponse,
+  FinishReason, FunctionCallStream, FunctionType, Role as OpenAIRole,
 };
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -78,6 +78,19 @@ struct KimiStreamResponse {
   created: u32,
   model: String,
   choices: Vec<KimiChoice>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  usage: Option<KimiUsage>,
+}
+
+/// Token usage information from Kimi API
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
+struct KimiUsage {
+  prompt_tokens: u32,
+  completion_tokens: u32,
+  total_tokens: u32,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  cached_tokens: Option<u32>,
 }
 
 /// Custom deserializer for created field (handles both i64 and u32)
@@ -170,6 +183,16 @@ struct ChatCompletionRequest {
   /// Thinking mode configuration for Kimi API
   #[serde(skip_serializing_if = "Option::is_none")]
   thinking: Option<ThinkingConfig>,
+  /// Stream options to include usage information
+  #[serde(skip_serializing_if = "Option::is_none")]
+  stream_options: Option<StreamOptions>,
+}
+
+/// Stream options for controlling streaming behavior
+#[derive(Debug, Clone, Serialize)]
+struct StreamOptions {
+  /// Include usage information in the final chunk
+  include_usage: bool,
 }
 
 /// Kimi provider with Coding Agent support
@@ -436,6 +459,9 @@ impl LLMProvider for KimiProvider {
       stream: Some(true),
       tools: None,
       thinking: None,
+      stream_options: Some(StreamOptions {
+        include_usage: true,
+      }),
     };
 
     // Add thinking configuration if enabled
@@ -624,14 +650,22 @@ fn convert_kimi_response(kimi: KimiStreamResponse) -> CreateChatCompletionStream
     })
     .collect();
 
+  // Convert usage if present
+  let usage = kimi.usage.map(|u| CompletionUsage {
+    prompt_tokens: u.prompt_tokens,
+    completion_tokens: u.completion_tokens,
+    total_tokens: u.total_tokens,
+    prompt_tokens_details: None,
+    completion_tokens_details: None,
+  });
+
   CreateChatCompletionStreamResponse {
     id: kimi.id,
     object: kimi.object,
     created: kimi.created,
     model: kimi.model,
     choices,
-    #[allow(unused)]
-    usage: None,
+    usage,
     #[allow(unused)]
     // system_fingerprint is deprecated, but we keep it for compatibility
     #[allow(deprecated)]

@@ -86,6 +86,15 @@ pub enum SessionEvent {
   Error(String),
   /// Session has been shutdown
   Shutdown,
+  /// Token usage information from the API (sent when stream finishes)
+  Usage {
+    /// Total tokens in the conversation (prompt + completion)
+    total_tokens: u32,
+    /// Tokens in the prompt (input)
+    prompt_tokens: u32,
+    /// Tokens in the completion (output)
+    completion_tokens: u32,
+  },
 }
 
 /// Handle to interact with a running session actor
@@ -148,6 +157,8 @@ struct SessionActor {
   tool_registry: Arc<ExecutableToolRegistry>,
   /// Working directory for tool execution
   cwd: PathBuf,
+  /// Precise token count from API usage (if available)
+  precise_token_count: Option<u32>,
   /// Session store for persistence
   session_store: Arc<SessionStore>,
   /// Session metadata for persistence
@@ -181,6 +192,7 @@ impl SessionActor {
       cwd: env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
       session_store,
       meta,
+      precise_token_count: None,
     }
   }
 
@@ -406,6 +418,22 @@ impl SessionActor {
         // Forward to caller
         if self.event_tx.send(event.clone()).is_err() {
           error!("Session {}: Failed to forward ToolCallCompleted", self.id);
+        }
+      }
+      SessionEvent::Usage {
+        total_tokens,
+        prompt_tokens,
+        completion_tokens,
+      } => {
+        info!(
+          "Session {}: Precise token usage - total={}, prompt={}, completion={}",
+          self.id, total_tokens, prompt_tokens, completion_tokens
+        );
+        // Store the precise token count
+        self.precise_token_count = Some(*total_tokens);
+        // Forward to caller
+        if self.event_tx.send(event.clone()).is_err() {
+          error!("Session {}: Failed to forward Usage", self.id);
         }
       }
       SessionEvent::Completed => {
@@ -890,6 +918,22 @@ async fn handle_stream(
           response.model,
           response.choices.len()
         );
+
+        // Check for usage information (only present in the final chunk)
+        if let Some(usage) = &response.usage {
+          log::info!(
+            "Session: Received usage - total={}, prompt={}, completion={}",
+            usage.total_tokens,
+            usage.prompt_tokens,
+            usage.completion_tokens
+          );
+          let _ = tx.send(SessionEvent::Usage {
+            total_tokens: usage.total_tokens,
+            prompt_tokens: usage.prompt_tokens,
+            completion_tokens: usage.completion_tokens,
+          });
+        }
+
         for (i, choice) in response.choices.iter().enumerate() {
           log::debug!(
             "Session: Choice[{}]: delta={:?}, finish_reason={:?}",

@@ -705,8 +705,11 @@ impl ChatView {
     use crate::utils::token_counter::estimate_chat_messages_tokens;
 
     self.status_bar_info.state = self.state;
-    // Recalculate token count from all messages using the canonical function
-    self.status_bar_info.token_count = estimate_chat_messages_tokens(&data.chat_history);
+    // Use precise token count from API if available, otherwise estimate
+    self.status_bar_info.token_count = data
+      .precise_token_count
+      .map(|t| t as usize)
+      .unwrap_or_else(|| estimate_chat_messages_tokens(&data.chat_history));
   }
 }
 
