@@ -142,6 +142,7 @@ fn merge_configs(base: Config, override_: Config) -> Config {
     },
     default_thinking: override_.default_thinking,
     history: override_.history,
+    compaction: override_.compaction,
   }
 }
 

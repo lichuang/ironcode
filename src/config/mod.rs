@@ -13,6 +13,10 @@ use serde::{Deserialize, Serialize};
 const DEFAULT_HISTORY_MAX_SIZE: usize = 1024 * 1024;
 /// Default value for history max_entries.
 const DEFAULT_HISTORY_MAX_ENTRIES: usize = 1000;
+/// Default value for compaction trigger ratio (85%).
+const DEFAULT_COMPACTION_TRIGGER_RATIO: f32 = 0.85;
+/// Default value for reserved context size (50K tokens).
+const DEFAULT_RESERVED_CONTEXT_SIZE: usize = 50_000;
 
 pub mod loader;
 
@@ -49,6 +53,10 @@ pub struct Config {
   /// Input history configuration
   #[serde(default)]
   pub history: HistoryConfig,
+
+  /// Compaction configuration for context management
+  #[serde(default)]
+  pub compaction: CompactionConfig,
 }
 
 impl Default for Config {
@@ -61,6 +69,7 @@ impl Default for Config {
       logging: LoggingConfig::default(),
       default_thinking: true,
       history: HistoryConfig::default(),
+      compaction: CompactionConfig::default(),
     }
   }
 }
@@ -192,6 +201,49 @@ impl Default for HistoryConfig {
     Self {
       max_size: DEFAULT_HISTORY_MAX_SIZE,
       max_entries: DEFAULT_HISTORY_MAX_ENTRIES,
+    }
+  }
+}
+
+/// Compaction configuration for automatic context compression.
+///
+/// Controls when and how the conversation context should be compacted
+/// to prevent exceeding the model's context window limits.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompactionConfig {
+  /// Reserved token count for LLM response generation.
+  /// Auto-compaction triggers when context_tokens + reserved_context_size >= max_context_size.
+  /// Default is 50000.
+  #[serde(default = "default_reserved_context_size")]
+  pub reserved_context_size: usize,
+
+  /// Context usage ratio threshold for auto-compaction (0.5 - 0.99).
+  /// Auto-compaction triggers when context_tokens >= max_context_size * trigger_ratio
+  /// or when context_tokens + reserved_context_size >= max_context_size.
+  /// Default is 0.85 (85%).
+  #[serde(default = "default_compaction_trigger_ratio")]
+  pub trigger_ratio: f32,
+
+  /// Whether automatic compaction is enabled.
+  /// Default is true.
+  #[serde(default = "default_true")]
+  pub enabled: bool,
+}
+
+fn default_reserved_context_size() -> usize {
+  DEFAULT_RESERVED_CONTEXT_SIZE
+}
+
+fn default_compaction_trigger_ratio() -> f32 {
+  DEFAULT_COMPACTION_TRIGGER_RATIO
+}
+
+impl Default for CompactionConfig {
+  fn default() -> Self {
+    Self {
+      reserved_context_size: DEFAULT_RESERVED_CONTEXT_SIZE,
+      trigger_ratio: DEFAULT_COMPACTION_TRIGGER_RATIO,
+      enabled: true,
     }
   }
 }

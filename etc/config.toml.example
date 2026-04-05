@@ -123,6 +123,32 @@ max_tokens = 4096
 supports_streaming = true
 
 # =============================================================================
+# Compaction - Automatic context compression settings
+# =============================================================================
+
+# Controls when and how the conversation context is automatically compacted
+# to prevent exceeding the model's context window limits.
+
+[compaction]
+# Whether automatic compaction is enabled.
+# When true, compaction will trigger automatically when token limits are approached.
+# Default: true
+enabled = true
+
+# Context usage ratio threshold (0.5 - 0.99) for triggering auto-compaction.
+# Auto-compaction triggers when:
+#   current_tokens >= max_context_size * trigger_ratio
+# OR
+#   current_tokens + reserved_context_size >= max_context_size
+# Default: 0.85 (85%)
+trigger_ratio = 0.85
+
+# Reserved token count for LLM response generation.
+# This ensures enough headroom for the model to generate a response after compaction.
+# Default: 50000
+reserved_context_size = 50000
+
+# =============================================================================
 # Logging
 # =============================================================================
 

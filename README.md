@@ -89,4 +89,22 @@ provider = "kimi"
 model = "kimi-for-coding"
 max_context_size = 128000
 supports_streaming = true
+
+# Context compaction settings (auto-compression when approaching token limits)
+[compaction]
+enabled = true
+trigger_ratio = 0.85
+reserved_context_size = 50000
 ```
+
+### Compaction Configuration
+
+The `[compaction]` section controls automatic context compression to prevent exceeding the model's context window:
+
+- `enabled` — Enable auto-compaction (default: `true`)
+- `trigger_ratio` — Token usage ratio threshold (0.5-0.99) that triggers compaction (default: `0.85`)
+- `reserved_context_size` — Reserved tokens for LLM response generation (default: `50000`)
+
+Compaction triggers when **either** condition is met:
+- `current_tokens >= max_context_size * trigger_ratio`
+- `current_tokens + reserved_context_size >= max_context_size`
