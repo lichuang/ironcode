@@ -22,7 +22,7 @@ use crate::utils::{
   HIGHLIGHT, MOON_FRAMES, PRIMARY, PRIMARY_BORDER, SPINNER_FRAMES, THINKING, char_display_width,
   string_display_width,
 };
-use crate::view::View;
+use crate::view::{STATUS_BAR_HEIGHT, StatusBarInfo, View, render_status_bar};
 
 /// Error when creating ChatView without a valid session
 #[derive(Debug)]
@@ -231,6 +231,8 @@ pub struct ChatView {
   session_handle: SessionHandle,
   /// Input history manager
   history: InputHistoryManager,
+  /// Status bar info (reused across draws)
+  status_bar_info: StatusBarInfo,
 }
 
 impl ChatView {
@@ -271,6 +273,9 @@ impl ChatView {
 
     log::debug!("ChatView created with initial state: {:?}", state);
 
+    // Initialize status bar info
+    let status_bar_info = StatusBarInfo::from_app_data(data, &session_handle.id, state);
+
     Self {
       input: String::new(),
       cursor_position: 0,
@@ -284,6 +289,7 @@ impl ChatView {
       state,
       session_handle,
       history: InputHistoryManager::with_config(config),
+      status_bar_info,
     }
   }
 
@@ -690,6 +696,15 @@ impl ChatView {
     let text = Paragraph::new(Text::from(lines));
     f.render_widget(text, area);
   }
+
+  /// Update status bar info with current state
+  ///
+  /// This method updates the mutable fields of status_bar_info.
+  /// Static fields (session_id, model_name) are set once during construction.
+  fn update_status_bar_info(&mut self, data: &AppData) {
+    self.status_bar_info.state = self.state;
+    self.status_bar_info.message_count = data.chat_history.len();
+  }
 }
 
 impl View for ChatView {
@@ -839,7 +854,17 @@ impl View for ChatView {
 
   fn draw(&mut self, f: &mut Frame, data: &AppData) {
     let area = f.area();
-    let available_width = area.width;
+
+    // Split area into main content (top) and status bar (bottom)
+    // Status bar has 2 lines: 1 for separator line, 1 for content
+    let main_chunks = Layout::default()
+      .direction(Direction::Vertical)
+      .constraints([Constraint::Min(0), Constraint::Length(STATUS_BAR_HEIGHT)])
+      .split(area);
+
+    let main_area = main_chunks[0];
+    let status_area = main_chunks[1];
+    let available_width = main_area.width;
 
     // Calculate input height (dynamic based on content, including prompt width)
     // No height limit - content will wrap naturally based on available width
@@ -977,7 +1002,7 @@ impl View for ChatView {
     let chunks = Layout::default()
       .direction(Direction::Vertical)
       .constraints(constraints)
-      .split(area);
+      .split(main_area);
 
     // Render history: user messages and AI responses
     let mut chunk_idx = 0;
@@ -1118,6 +1143,10 @@ impl View for ChatView {
 
       f.set_cursor_position((cursor_x, cursor_y));
     }
+
+    // Update and render status bar
+    self.update_status_bar_info(data);
+    render_status_bar(f, status_area, &self.status_bar_info);
   }
 
   fn set_frame_requester(&mut self, frame_requester: FrameRequester) {

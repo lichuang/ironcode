@@ -5,8 +5,10 @@ use crate::cli::AppData;
 use crate::tui::FrameRequester;
 
 pub mod chat;
+pub mod status_bar;
 
 pub use chat::ChatView;
+pub use status_bar::{STATUS_BAR_HEIGHT, StatusBarInfo, render_status_bar};
 
 /// Trait for all views in the application
 pub trait View {
