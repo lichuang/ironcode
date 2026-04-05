@@ -102,6 +102,31 @@ pub fn estimate_messages_tokens(messages: &[impl AsRef<str>]) -> usize {
   total
 }
 
+use crate::llm::types::Message;
+
+/// Estimate total tokens for LLM messages.
+///
+/// This is used by the session to check compaction thresholds.
+pub fn estimate_llm_messages_tokens(messages: &[Message]) -> usize {
+  let mut total = 0usize;
+
+  for msg in messages {
+    // Each message has ~4 tokens overhead (role markers, formatting)
+    total += 4;
+    total += estimate_tokens(&msg.content);
+
+    // Count tool calls if present
+    if let Some(tool_calls) = &msg.tool_calls {
+      for tc in tool_calls {
+        total += estimate_tokens(&tc.name);
+        total += estimate_tokens(&tc.arguments);
+      }
+    }
+  }
+
+  total
+}
+
 /// Estimate total tokens for chat messages (used by status bar).
 ///
 /// This is the canonical implementation used by both status_bar.rs and
@@ -183,8 +208,9 @@ mod tests {
   #[test]
   fn test_messages() {
     let msgs = vec!["Hello", "World"];
-    // 2 messages * 4 overhead + 1 + 1 = 10 tokens
-    assert_eq!(estimate_messages_tokens(&msgs), 10);
+    // 2 messages * 4 overhead + 2 + 2 = 12 tokens
+    // Each "Hello"/"World" is 5 chars -> 2 tokens, plus 4 overhead each
+    assert_eq!(estimate_messages_tokens(&msgs), 12);
   }
 
   #[test]

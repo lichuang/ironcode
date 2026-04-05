@@ -230,7 +230,7 @@ level = "info"
 
 #[cfg(test)]
 mod tests {
-  use super::super::{Config, LoggingConfig};
+  use super::super::{CompactionConfig, Config, HistoryConfig, LoggingConfig};
   use super::*;
   use std::collections::HashMap;
   use std::env;
@@ -406,7 +406,8 @@ supports_streaming = true
       models: HashMap::new(),
       logging: LoggingConfig::default(),
       default_thinking: true,
-      history: crate::config::HistoryConfig::default(),
+      history: HistoryConfig::default(),
+      compaction: CompactionConfig::default(),
     };
     let result = validate_config(&config);
     assert!(result.is_err());

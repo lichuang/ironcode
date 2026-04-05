@@ -50,10 +50,10 @@
 
 #### 2. Context Compaction
 - [✅] Token counting estimation (tiktoken-rs or approximate algorithm)
-- [×] Compaction trigger threshold configuration
-- [×] Rolling window strategy (keep recent N messages)
+- [✅] Compaction trigger threshold configuration
+- [✅] Rolling window strategy (keep recent N messages)
 - [×] Summary generation strategy (LLM-generated historical summary)
-- [×] Compaction event notification UI
+- [✅] Compaction event notification UI
 
 #### 3. Improved Error Handling and Retry
 - [×] Integrate tokio-retry or custom backoff logic

@@ -9,6 +9,7 @@ use ratatui::{
 };
 
 use crate::cli::AppData;
+use crate::config::DEFAULT_MAX_CONTEXT_SIZE;
 use crate::utils::colors::{MUTED, PRIMARY, SUBTLE, TEXT};
 use crate::utils::token_counter::estimate_chat_messages_tokens;
 use crate::view::chat::ChatDisplayState;
@@ -51,10 +52,10 @@ impl StatusBarInfo {
           .models
           .get(&c.default_model)
           .and_then(|m| m.max_context_size)
-          .unwrap_or(128_000);
+          .unwrap_or(DEFAULT_MAX_CONTEXT_SIZE);
         (model, max_size)
       })
-      .unwrap_or_else(|| ("unknown".to_string(), 128_000));
+      .unwrap_or_else(|| ("unknown".to_string(), DEFAULT_MAX_CONTEXT_SIZE));
 
     // Calculate estimated token count from all messages
     let token_count = estimate_chat_messages_tokens(&data.chat_history);

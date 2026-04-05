@@ -591,6 +591,7 @@ pub fn save_input(text: impl Into<String>, config: &Config) -> std::io::Result<(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::config::{CompactionConfig, HistoryConfig, LoggingConfig};
   use std::collections::HashMap;
   use tempfile::TempDir;
 
@@ -600,12 +601,13 @@ mod tests {
       default_model: "test/model".to_string(),
       providers: HashMap::new(),
       models: HashMap::new(),
-      logging: crate::config::LoggingConfig::default(),
+      logging: LoggingConfig::default(),
       default_thinking: true,
       history: HistoryConfig {
         max_size,
         max_entries,
       },
+      compaction: CompactionConfig::default(),
     }
   }
 

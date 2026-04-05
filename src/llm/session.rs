@@ -16,13 +16,15 @@ use chrono::{Datelike, Local, Timelike};
 use log::{debug, error, info};
 use tokio::sync::mpsc;
 
-use crate::config::Config;
+use crate::config::{CompactionConfig, Config, DEFAULT_MAX_CONTEXT_SIZE};
 use crate::error::{ConfigError, Result};
+use crate::llm::compaction::{RollingWindowStrategy, calculate_threshold, should_auto_compact};
 use crate::llm::provider::LLMProvider;
 use crate::llm::providers::KimiProvider;
 use crate::llm::types::{ChatConfig, Message, Role, ToolCall};
 use crate::session::{SessionMeta, SessionMode, SessionStore};
 use crate::tools::{ExecutableToolRegistry, ToolInvocation, ToolPayload, ToolRegistry};
+use crate::utils::token_counter::estimate_llm_messages_tokens;
 
 /// Maximum characters to display in user input log preview
 const USER_INPUT_PREVIEW_LEN: usize = 50;
@@ -86,6 +88,15 @@ pub enum SessionEvent {
   Error(String),
   /// Session has been shutdown
   Shutdown,
+  /// Compaction is needed (token limit approaching)
+  CompactionNeeded {
+    /// Current estimated token count
+    current_tokens: usize,
+    /// Token threshold that triggered this notification
+    threshold: usize,
+    /// Maximum context size for the current model
+    max_context_size: usize,
+  },
   /// Token usage information from the API (sent when stream finishes)
   Usage {
     /// Total tokens in the conversation (prompt + completion)
@@ -163,6 +174,15 @@ struct SessionActor {
   session_store: Arc<SessionStore>,
   /// Session metadata for persistence
   meta: SessionMeta,
+  /// Compaction configuration
+  compaction_config: CompactionConfig,
+  /// Maximum context size for the current model
+  max_context_size: usize,
+  /// Rolling window compaction strategy (used for actual compaction)
+  #[allow(dead_code)]
+  compaction_strategy: RollingWindowStrategy,
+  /// Whether compaction has been notified for current threshold
+  compaction_notified: bool,
 }
 
 impl SessionActor {
@@ -176,6 +196,8 @@ impl SessionActor {
     tool_registry: Arc<ExecutableToolRegistry>,
     session_store: Arc<SessionStore>,
     meta: SessionMeta,
+    compaction_config: CompactionConfig,
+    max_context_size: usize,
   ) -> Self {
     Self {
       id,
@@ -193,6 +215,10 @@ impl SessionActor {
       session_store,
       meta,
       precise_token_count: None,
+      compaction_config,
+      max_context_size,
+      compaction_strategy: RollingWindowStrategy::default(),
+      compaction_notified: false,
     }
   }
 
@@ -268,6 +294,9 @@ impl SessionActor {
         self.current_thinking.clear();
         self.pending_tool_calls.clear();
 
+        // Check if compaction is needed before sending
+        self.check_and_notify_compaction().await;
+
         // Log current message history for debugging
         info!("Session {}: Current message history:", self.id);
         for (i, msg) in self.messages.iter().enumerate() {
@@ -339,6 +368,45 @@ impl SessionActor {
         let _ = self.event_tx.send(SessionEvent::Shutdown);
         false
       }
+    }
+  }
+
+  /// Check if compaction is needed and send notification if so.
+  async fn check_and_notify_compaction(&mut self) {
+    if self.max_context_size == 0 {
+      return;
+    }
+
+    // Estimate current token count
+    let current_tokens = if let Some(precise) = self.precise_token_count {
+      precise as usize
+        + estimate_llm_messages_tokens(&self.messages[self.messages.len().saturating_sub(2)..])
+    } else {
+      estimate_llm_messages_tokens(&self.messages)
+    };
+
+    // Check if we should trigger compaction
+    if should_auto_compact(
+      current_tokens,
+      self.max_context_size,
+      &self.compaction_config,
+    ) {
+      if !self.compaction_notified {
+        let threshold = calculate_threshold(self.max_context_size, &self.compaction_config);
+        info!(
+          "Session {}: Compaction needed - {} tokens (threshold: {})",
+          self.id, current_tokens, threshold
+        );
+        let _ = self.event_tx.send(SessionEvent::CompactionNeeded {
+          current_tokens,
+          threshold,
+          max_context_size: self.max_context_size,
+        });
+        self.compaction_notified = true;
+      }
+    } else {
+      // Reset notification flag when below threshold
+      self.compaction_notified = false;
     }
   }
 
@@ -509,6 +577,15 @@ impl SessionActor {
           error!("Session {}: Failed to forward Shutdown event", self.id);
         }
       }
+      SessionEvent::CompactionNeeded { .. } => {
+        // Forward compaction notification to UI
+        if self.event_tx.send(event).is_err() {
+          error!(
+            "Session {}: Failed to forward CompactionNeeded event",
+            self.id
+          );
+        }
+      }
     }
   }
 
@@ -677,6 +754,13 @@ impl ChatSession {
     messages: Vec<Message>,
   ) -> Result<(Self, Vec<Message>)> {
     let provider = Self::create_provider(config, tool_registry)?;
+
+    // Get max context size from default model config
+    let max_context_size = config
+      .default_model_config()
+      .and_then(|m| m.max_context_size)
+      .unwrap_or(DEFAULT_MAX_CONTEXT_SIZE);
+
     let session = Self::start_with_messages(
       id,
       provider,
@@ -684,6 +768,8 @@ impl ChatSession {
       executable_tool_registry,
       session_store,
       meta,
+      config.compaction.clone(),
+      max_context_size,
     );
     Ok((session, messages))
   }
@@ -823,6 +909,13 @@ impl ChatSession {
     let provider = Self::create_provider(config, tool_registry)?;
     let system_prompt = system_prompt.into();
     let messages = vec![Message::system(system_prompt.clone())];
+
+    // Get max context size from default model config
+    let max_context_size = config
+      .default_model_config()
+      .and_then(|m| m.max_context_size)
+      .unwrap_or(DEFAULT_MAX_CONTEXT_SIZE);
+
     let session = Self::start_with_messages(
       meta.id.clone(),
       provider,
@@ -830,6 +923,8 @@ impl ChatSession {
       executable_tool_registry,
       session_store,
       meta,
+      config.compaction.clone(),
+      max_context_size,
     );
     info!(
       "ChatSession {} created from config with store",
@@ -839,6 +934,7 @@ impl ChatSession {
   }
 
   /// Internal: start session with given messages and persistence
+  #[allow(clippy::too_many_arguments)]
   fn start_with_messages(
     id: String,
     provider: Box<dyn LLMProvider>,
@@ -846,6 +942,8 @@ impl ChatSession {
     tool_registry: Arc<ExecutableToolRegistry>,
     session_store: Arc<SessionStore>,
     meta: SessionMeta,
+    compaction_config: CompactionConfig,
+    max_context_size: usize,
   ) -> Self {
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
     let (event_tx, event_rx) = mpsc::unbounded_channel();
@@ -864,6 +962,8 @@ impl ChatSession {
       tool_registry,
       session_store,
       meta,
+      compaction_config,
+      max_context_size,
     );
     tokio::spawn(actor.run());
 

@@ -3,6 +3,7 @@
 //! Provides a unified interface for interacting with various LLM providers.
 //! Currently supports OpenAI-compatible APIs.
 
+pub mod compaction;
 pub mod openai;
 pub mod provider;
 pub mod providers;

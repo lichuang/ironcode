@@ -17,6 +17,8 @@ const DEFAULT_HISTORY_MAX_ENTRIES: usize = 1000;
 const DEFAULT_COMPACTION_TRIGGER_RATIO: f32 = 0.85;
 /// Default value for reserved context size (50K tokens).
 const DEFAULT_RESERVED_CONTEXT_SIZE: usize = 50_000;
+/// Default maximum context size in tokens (128K).
+pub const DEFAULT_MAX_CONTEXT_SIZE: usize = 128_000;
 
 pub mod loader;
 

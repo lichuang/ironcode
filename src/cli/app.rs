@@ -309,6 +309,20 @@ impl App {
             // Store the precise token count for status bar display
             self.data.precise_token_count = Some(total_tokens);
           }
+          SessionEvent::CompactionNeeded {
+            current_tokens,
+            threshold,
+            max_context_size,
+          } => {
+            log::info!(
+              "App: Compaction needed - {} tokens (threshold: {}, max: {})",
+              current_tokens,
+              threshold,
+              max_context_size
+            );
+            // TODO: Show UI notification or auto-compact
+            // For now, just log the information
+          }
         }
       }
 
