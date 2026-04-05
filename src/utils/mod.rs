@@ -3,6 +3,7 @@ pub mod colors;
 pub mod string;
 pub mod style;
 pub mod time;
+pub mod token_counter;
 
 pub use animation::{MOON_FRAMES, SPINNER_FRAMES};
 // pub use colors::{ERROR as Error, PRIMARY as Primary, SECONDARY};  // Currently unused

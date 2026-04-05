@@ -49,7 +49,7 @@
 - [×] Session list UI (load historical sessions) - moved to Phase 2
 
 #### 2. Context Compaction
-- [×] Token counting estimation (tiktoken-rs or approximate algorithm)
+- [✅] Token counting estimation (tiktoken-rs or approximate algorithm)
 - [×] Compaction trigger threshold configuration
 - [×] Rolling window strategy (keep recent N messages)
 - [×] Summary generation strategy (LLM-generated historical summary)

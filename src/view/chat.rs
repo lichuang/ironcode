@@ -702,8 +702,11 @@ impl ChatView {
   /// This method updates the mutable fields of status_bar_info.
   /// Static fields (session_id, model_name) are set once during construction.
   fn update_status_bar_info(&mut self, data: &AppData) {
+    use crate::utils::token_counter::estimate_chat_messages_tokens;
+
     self.status_bar_info.state = self.state;
-    self.status_bar_info.message_count = data.chat_history.len();
+    // Recalculate token count from all messages using the canonical function
+    self.status_bar_info.token_count = estimate_chat_messages_tokens(&data.chat_history);
   }
 }
 

@@ -10,6 +10,7 @@ use ratatui::{
 
 use crate::cli::AppData;
 use crate::utils::colors::{MUTED, PRIMARY, SUBTLE, TEXT};
+use crate::utils::token_counter::estimate_chat_messages_tokens;
 use crate::view::chat::ChatDisplayState;
 
 /// Height of the status bar in lines (1 for separator line + 1 for content)
@@ -24,8 +25,8 @@ pub struct StatusBarInfo {
   pub model_name: String,
   /// Current display state
   pub state: ChatDisplayState,
-  /// Number of messages in history
-  pub message_count: usize,
+  /// Estimated token count for all messages
+  pub token_count: usize,
   /// Whether history navigation is active
   #[allow(dead_code)]
   pub history_active: bool,
@@ -44,11 +45,14 @@ impl StatusBarInfo {
       .map(|c| c.default_model.clone())
       .unwrap_or_else(|| "unknown".to_string());
 
+    // Calculate estimated token count from all messages
+    let token_count = estimate_chat_messages_tokens(&data.chat_history);
+
     Self {
       session_id: short_id,
       model_name,
       state,
-      message_count: data.chat_history.len(),
+      token_count,
       history_active: false, // Will be set by ChatView if needed
     }
   }
@@ -89,14 +93,14 @@ fn render_status_content(f: &mut Frame, area: Rect, info: &StatusBarInfo) {
     Span::styled(&info.model_name, Style::default().fg(TEXT)),
   ]);
 
-  // Center section: Current state
+  // Center section: Current state and token count
   let state_text = format_state(&info.state);
   let center_text = Line::from(vec![
     Span::styled("Status: ", Style::default().fg(SUBTLE)),
     Span::styled(state_text, Style::default().fg(state_color(&info.state))),
-    if info.message_count > 0 {
+    if info.token_count > 0 {
       Span::styled(
-        format!(" | Messages: {}", info.message_count),
+        format!(" | Tokens: ~{}", info.token_count),
         Style::default().fg(MUTED),
       )
     } else {
@@ -119,12 +123,13 @@ fn render_status_content(f: &mut Frame, area: Rect, info: &StatusBarInfo) {
   ]);
 
   // Render each section with proportional widths
+  // Give center more space to prevent token count truncation
   let chunks = Layout::default()
     .direction(Direction::Horizontal)
     .constraints([
-      Constraint::Percentage(40), // Left: session and model
-      Constraint::Percentage(30), // Center: state
-      Constraint::Percentage(30), // Right: shortcuts
+      Constraint::Min(30), // Left: session and model (min 30 chars)
+      Constraint::Min(25), // Center: status and token count (min 25 chars)
+      Constraint::Min(15), // Right: shortcuts (min 15 chars)
     ])
     .split(area);
 
