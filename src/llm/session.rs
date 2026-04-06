@@ -374,23 +374,49 @@ impl SessionActor {
   /// Check if compaction is needed and send notification if so.
   async fn check_and_notify_compaction(&mut self) {
     if self.max_context_size == 0 {
+      log::info!("check_and_notify_compaction: max_context_size is 0, skipping");
       return;
     }
 
     // Estimate current token count
     let current_tokens = if let Some(precise) = self.precise_token_count {
-      precise as usize
-        + estimate_llm_messages_tokens(&self.messages[self.messages.len().saturating_sub(2)..])
+      let recent_tokens =
+        estimate_llm_messages_tokens(&self.messages[self.messages.len().saturating_sub(2)..]);
+      log::info!(
+        "check_and_notify_compaction: precise={}, recent={}, total={}",
+        precise,
+        recent_tokens,
+        precise as usize + recent_tokens
+      );
+      precise as usize + recent_tokens
     } else {
-      estimate_llm_messages_tokens(&self.messages)
+      let estimated = estimate_llm_messages_tokens(&self.messages);
+      log::info!(
+        "check_and_notify_compaction: no precise count, estimated={}",
+        estimated
+      );
+      estimated
     };
 
+    log::info!(
+      "check_and_notify_compaction: current_tokens={}, max_context_size={}, compaction_config.enabled={}",
+      current_tokens,
+      self.max_context_size,
+      self.compaction_config.enabled
+    );
+
     // Check if we should trigger compaction
-    if should_auto_compact(
+    let should_compact = should_auto_compact(
       current_tokens,
       self.max_context_size,
       &self.compaction_config,
-    ) {
+    );
+    log::info!(
+      "check_and_notify_compaction: should_auto_compact={}",
+      should_compact
+    );
+
+    if should_compact {
       if !self.compaction_notified {
         let threshold = calculate_threshold(self.max_context_size, &self.compaction_config);
         info!(
@@ -499,6 +525,8 @@ impl SessionActor {
         );
         // Store the precise token count
         self.precise_token_count = Some(*total_tokens);
+        // Check compaction with precise token count
+        self.check_and_notify_compaction().await;
         // Forward to caller
         if self.event_tx.send(event.clone()).is_err() {
           error!("Session {}: Failed to forward Usage", self.id);

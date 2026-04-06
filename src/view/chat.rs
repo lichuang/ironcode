@@ -17,7 +17,9 @@ use crate::history::InputHistoryManager;
 use crate::llm::SessionHandle;
 use crate::llm::types::Message;
 use crate::tui::{FrameRequester, TARGET_FRAME_INTERVAL};
-use crate::utils::colors::{BLUE, GREEN, HIGHLIGHT as HIGHLIGHT_COLOR, TEXT as TEXT_COLOR};
+use crate::utils::colors::{
+  BLUE, CRITICAL, GREEN, HIGHLIGHT as HIGHLIGHT_COLOR, TEXT as TEXT_COLOR, WARNING,
+};
 use crate::utils::{
   HIGHLIGHT, MOON_FRAMES, PRIMARY, PRIMARY_BORDER, SPINNER_FRAMES, THINKING, char_display_width,
   string_display_width,
@@ -101,6 +103,25 @@ pub enum ChatMessage {
     /// Tool arguments (JSON)
     arguments: String,
   },
+  /// System notification (e.g., compaction warning)
+  System {
+    /// The notification content
+    content: String,
+    /// Notification level (info, warning, error)
+    level: SystemMessageLevel,
+  },
+}
+
+/// Level for system messages
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum SystemMessageLevel {
+  /// Informational message
+  Info,
+  /// Warning message
+  Warning,
+  /// Error/Critical message
+  Error,
 }
 
 /// Convert LLM messages into UI chat history.
@@ -153,6 +174,7 @@ impl ChatMessage {
       ChatMessage::User { content } => content,
       ChatMessage::Assistant { content, .. } => content,
       ChatMessage::ToolCall { .. } => "",
+      ChatMessage::System { content, .. } => content,
     }
   }
 
@@ -165,6 +187,7 @@ impl ChatMessage {
         thinking_content, ..
       } => thinking_content.as_deref(),
       ChatMessage::ToolCall { .. } => None,
+      ChatMessage::System { .. } => None,
     }
   }
 
@@ -183,6 +206,11 @@ impl ChatMessage {
   /// Check if this is a tool call message
   pub fn is_tool_call(&self) -> bool {
     matches!(self, ChatMessage::ToolCall { .. })
+  }
+
+  /// Check if this is a system message
+  pub fn is_system(&self) -> bool {
+    matches!(self, ChatMessage::System { .. })
   }
 }
 
@@ -703,6 +731,7 @@ impl ChatView {
   /// Static fields (session_id, model_name) are set once during construction.
   fn update_status_bar_info(&mut self, data: &AppData) {
     use crate::utils::token_counter::estimate_chat_messages_tokens;
+    use crate::view::status_bar::calculate_compaction_warning_level;
 
     self.status_bar_info.state = self.state;
     // Use precise token count from API if available, otherwise estimate
@@ -710,6 +739,10 @@ impl ChatView {
       .precise_token_count
       .map(|t| t as usize)
       .unwrap_or_else(|| estimate_chat_messages_tokens(&data.chat_history));
+
+    // Update compaction warning level from AppData
+    self.status_bar_info.compaction_warning =
+      calculate_compaction_warning_level(&data.compaction_warning, true);
   }
 }
 
@@ -915,6 +948,11 @@ impl View for ChatView {
           let lines = Self::calculate_line_count(&tool_text, available_width);
           constraints.push(Constraint::Length(lines.max(1) as u16));
         }
+        ChatMessage::System { content, .. } => {
+          // System message: single line notification
+          let lines = Self::calculate_line_count(content, available_width);
+          constraints.push(Constraint::Length(lines.max(1) as u16));
+        }
       }
     }
     // Moon animation row (only shown in Animating state)
@@ -970,6 +1008,7 @@ impl View for ChatView {
           let tool_text = format!("• Used {}({})", name, arguments);
           Self::calculate_line_count(&tool_text, available_width)
         }
+        ChatMessage::System { content, .. } => Self::calculate_line_count(content, available_width),
       })
       .sum::<usize>();
     // Add moon animation height if in Animating state
@@ -1058,6 +1097,24 @@ impl View for ChatView {
               Span::styled(")", Style::default().fg(TEXT_COLOR)),
             ])]);
             let widget = Paragraph::new(text);
+            f.render_widget(widget, chunks[chunk_idx]);
+            chunk_idx += 1;
+          }
+        }
+        ChatMessage::System { content, level } => {
+          // System notification: render with appropriate color based on level
+          if chunk_idx < chunks.len() {
+            use ratatui::style::{Modifier, Style};
+            let color = match level {
+              SystemMessageLevel::Info => HIGHLIGHT_COLOR,
+              SystemMessageLevel::Warning => WARNING,
+              SystemMessageLevel::Error => CRITICAL,
+            };
+            let text = Text::from(vec![Line::from(vec![Span::styled(
+              content.clone(),
+              Style::default().fg(color).add_modifier(Modifier::BOLD),
+            )])]);
+            let widget = Paragraph::new(text).alignment(ratatui::layout::Alignment::Center);
             f.render_widget(widget, chunks[chunk_idx]);
             chunk_idx += 1;
           }

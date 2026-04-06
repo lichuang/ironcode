@@ -33,3 +33,9 @@ pub const BLUE: Color = Color::Blue;
 #[allow(dead_code)]
 /// Green color - used for success indicators (bullet points, etc.)
 pub const GREEN: Color = Color::Green;
+
+/// Warning color - used for compaction warnings and alerts
+pub const WARNING: Color = Color::Yellow;
+
+/// Critical/Error color - used for critical compaction alerts
+pub const CRITICAL: Color = Color::Red;

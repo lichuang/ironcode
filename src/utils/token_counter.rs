@@ -154,6 +154,9 @@ pub fn estimate_chat_messages_tokens(messages: &[ChatMessage]) -> usize {
         total += estimate_tokens(name);
         total += estimate_tokens(arguments);
       }
+      ChatMessage::System { .. } => {
+        // System messages are UI notifications, not part of LLM context
+      }
     }
   }
 

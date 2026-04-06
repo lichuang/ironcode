@@ -13,7 +13,7 @@ use crate::llm::{ChatSession, SessionEvent};
 use crate::session::{SessionMode, SessionStore};
 use crate::tui::FrameRequester;
 use crate::view::chat::{
-  ChatMessage, StreamingChunk, ToolCallStatus, llm_messages_to_chat_history,
+  ChatMessage, StreamingChunk, SystemMessageLevel, ToolCallStatus, llm_messages_to_chat_history,
 };
 use crate::view::{ChatView, View};
 
@@ -31,6 +31,20 @@ pub struct AppData {
   pub(crate) config: Option<Config>,
   /// Precise token count from API usage (if available)
   pub(crate) precise_token_count: Option<u32>,
+  /// Compaction warning state (token threshold approaching)
+  pub(crate) compaction_warning: Option<CompactionWarning>,
+}
+
+/// Compaction warning information
+#[derive(Debug, Clone)]
+pub struct CompactionWarning {
+  /// Current estimated token count
+  pub current_tokens: usize,
+  /// Token threshold that triggered the warning
+  #[allow(dead_code)]
+  pub threshold: usize,
+  /// Maximum context size for the model
+  pub max_context_size: usize,
 }
 
 impl AppData {
@@ -42,6 +56,7 @@ impl AppData {
       streaming_response: Arc::new(Vec::new()),
       config: None,
       precise_token_count: None,
+      compaction_warning: None,
     }
   }
 }
@@ -49,6 +64,13 @@ impl AppData {
 impl Default for AppData {
   fn default() -> Self {
     Self::new()
+  }
+}
+
+impl CompactionWarning {
+  /// Calculate usage percentage
+  pub fn usage_percentage(&self) -> usize {
+    (self.current_tokens as f64 / self.max_context_size as f64 * 100.0) as usize
   }
 }
 
@@ -320,8 +342,22 @@ impl App {
               threshold,
               max_context_size
             );
-            // TODO: Show UI notification or auto-compact
-            // For now, just log the information
+            // Store compaction warning for UI display
+            self.data.compaction_warning = Some(CompactionWarning {
+              current_tokens,
+              threshold,
+              max_context_size,
+            });
+            // Add system notification to chat history
+            let percentage = (current_tokens as f64 / max_context_size as f64 * 100.0) as usize;
+            let message = format!(
+              "⚠️ Context usage is at {}% ({} / {} tokens). Consider starting a new session soon.",
+              percentage, current_tokens, max_context_size
+            );
+            self.data.chat_history.push(ChatMessage::System {
+              content: message,
+              level: SystemMessageLevel::Warning,
+            });
           }
         }
       }
