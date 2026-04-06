@@ -18,7 +18,7 @@ use tokio::sync::mpsc;
 
 use crate::config::{CompactionConfig, Config, DEFAULT_MAX_CONTEXT_SIZE};
 use crate::error::{ConfigError, Result};
-use crate::llm::compaction::{RollingWindowStrategy, calculate_threshold, should_auto_compact};
+use crate::llm::compaction::{Compaction, calculate_threshold, should_auto_compact};
 use crate::llm::provider::LLMProvider;
 use crate::llm::providers::KimiProvider;
 use crate::llm::types::{ChatConfig, Message, Role, ToolCall};
@@ -96,6 +96,15 @@ pub enum SessionEvent {
     threshold: usize,
     /// Maximum context size for the current model
     max_context_size: usize,
+  },
+  /// Compaction completed (messages were compacted)
+  CompactionCompleted {
+    /// Number of messages before compaction
+    message_count_before: usize,
+    /// Number of messages after compaction
+    message_count_after: usize,
+    /// New estimated token count
+    new_token_count: usize,
   },
   /// Token usage information from the API (sent when stream finishes)
   Usage {
@@ -178,9 +187,8 @@ struct SessionActor {
   compaction_config: CompactionConfig,
   /// Maximum context size for the current model
   max_context_size: usize,
-  /// Rolling window compaction strategy (used for actual compaction)
-  #[allow(dead_code)]
-  compaction_strategy: RollingWindowStrategy,
+  /// Compaction handler (used for actual compaction)
+  compaction: Compaction,
   /// Whether compaction has been notified for current threshold
   compaction_notified: bool,
 }
@@ -217,7 +225,7 @@ impl SessionActor {
       precise_token_count: None,
       compaction_config,
       max_context_size,
-      compaction_strategy: RollingWindowStrategy::default(),
+      compaction: Compaction::default(),
       compaction_notified: false,
     }
   }
@@ -429,11 +437,67 @@ impl SessionActor {
           max_context_size: self.max_context_size,
         });
         self.compaction_notified = true;
+
+        // Execute compaction immediately
+        self.execute_compaction().await;
       }
     } else {
       // Reset notification flag when below threshold
       self.compaction_notified = false;
     }
+  }
+
+  /// Execute compaction on the current messages.
+  ///
+  /// Uses the configured compaction strategy to compress message history.
+  /// Updates the session store and notifies the UI of completion.
+  async fn execute_compaction(&mut self) {
+    let message_count_before = self.messages.len();
+
+    // Check if compaction should be performed
+    if !self.compaction.should_compact(&self.messages) {
+      log::info!(
+        "Session {}: Compaction strategy decided not to compact ({} messages)",
+        self.id, message_count_before
+      );
+      return;
+    }
+
+    // Perform compaction
+    log::info!("Session {}: Executing compaction...", self.id);
+    let result = self.compaction.compact(&self.messages);
+
+    if !result.did_compact {
+      log::info!("Session {}: No compaction performed by strategy", self.id);
+      return;
+    }
+
+    // Update messages
+    self.messages = result.messages;
+    let message_count_after = self.messages.len();
+
+    // Estimate new token count
+    let new_token_count = estimate_llm_messages_tokens(&self.messages);
+
+    log::info!(
+      "Session {}: Compaction completed - {} messages -> {} messages, ~{} tokens",
+      self.id, message_count_before, message_count_after, new_token_count
+    );
+
+    // Save compacted messages to session store
+    if let Err(e) = self.session_store.reset_messages(&self.id, &self.messages) {
+      error!("Session {}: Failed to save compacted messages: {}", self.id, e);
+    }
+
+    // Notify UI
+    let _ = self.event_tx.send(SessionEvent::CompactionCompleted {
+      message_count_before,
+      message_count_after,
+      new_token_count,
+    });
+
+    // Reset the notification flag since we've compacted
+    self.compaction_notified = false;
   }
 
   /// Start a chat stream with the current messages
@@ -610,6 +674,15 @@ impl SessionActor {
         if self.event_tx.send(event).is_err() {
           error!(
             "Session {}: Failed to forward CompactionNeeded event",
+            self.id
+          );
+        }
+      }
+      SessionEvent::CompactionCompleted { .. } => {
+        // Forward compaction completion to UI
+        if self.event_tx.send(event).is_err() {
+          error!(
+            "Session {}: Failed to forward CompactionCompleted event",
             self.id
           );
         }

@@ -14,7 +14,7 @@ AI-powered terminal code assistant built with Rust.
 - ✅ **Kimi Provider** — Native Kimi API support with Coding Agent authentication headers
 - ✅ **Thinking Mode** — Supports `<think>` reasoning content extraction
 - ✅ **OpenAI-Compatible Framework** — Extensible provider trait for adding new models
-- ❌ **Context Compaction** — Automatic token limiting and summary generation
+- ✅ **Context Compaction** — Automatic context compression with rolling window strategy
 - ❌ **Auto-Retry with Backoff** — Exponential backoff for failed requests
 
 ### Tool System

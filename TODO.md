@@ -9,7 +9,7 @@
 | **Architecture Maturity** | Enterprise-grade (multi-agent, MCP, ACP) | Lightweight (single session, basic tools) |
 | **UI Modes** | Shell / Web / ACP / VS Code | TUI only |
 | **Session Management** | Persistent sessions + checkpoints | Basic persistence layer ready |
-| **Context Management** | Automatic compaction | None |
+| **Context Management** | Automatic compaction | Automatic compaction (rolling window) |
 | **Multi-agent** | LaborMarket + Task tools | None |
 | **MCP Support** | Full (management CLI + loading) | Framework exists, not implemented |
 | **Authentication** | OAuth device flow | API key only |
@@ -19,7 +19,7 @@
 ### Missing Features (kimi-cli has, ironcode lacks)
 
 1. **Persistent Sessions & Context** - Complete session persistence
-2. **Context Compaction** - Automatic context compression
+2. ~~**Context Compaction**~~ ✅ COMPLETED - Automatic context compression with rolling window strategy
 3. **Subagent/Multi-agent System** - Task tool + LaborMarket
 4. **MCP Full Support** - `kimi mcp` management CLI
 5. **Web UI** - FastAPI + WebSocket backend
@@ -48,12 +48,13 @@
 - [✅] Session metadata (title, timestamps, message count)
 - [×] Session list UI (load historical sessions) - moved to Phase 2
 
-#### 2. Context Compaction
+#### 2. Context Compaction ✅ COMPLETED
 - [✅] Token counting estimation (tiktoken-rs or approximate algorithm)
 - [✅] Compaction trigger threshold configuration
 - [✅] Rolling window strategy (keep recent N messages)
-- [×] Summary generation strategy (LLM-generated historical summary)
 - [✅] Compaction event notification UI
+- [✅] Automatic compaction execution
+- [×] Summary generation strategy (LLM-generated historical summary) - Future enhancement
 
 #### 3. Improved Error Handling and Retry
 - [×] Integrate tokio-retry or custom backoff logic
@@ -169,13 +170,17 @@
 - Technical difficulty: Medium
 - User experience improvement: Huge
 
-### 3. Context Compaction [P1]
-**Status:** Pending implementation
+### 3. ~~Context Compaction~~ ✅ COMPLETED
+**Status:** Rolling window compaction implemented, LLM summary generation pending
 
-**Why prioritize:**
-- Long sessions hit token limits
-- Technical difficulty: Medium-High (requires summary strategy)
-- Cost optimization: Reduce unnecessary token consumption
+**Completed:**
+- Token counting and threshold detection
+- Rolling window strategy (keep recent N messages)
+- UI notifications and status bar warnings
+- Automatic compaction execution
+- Session store integration
+
+**Future:** LLM-generated summary for higher quality compaction
 
 ---
 

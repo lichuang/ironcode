@@ -3,7 +3,8 @@
 //! Provides strategies for compressing conversation history when approaching
 //! token limits.
 
-pub use strategy::RollingWindowStrategy;
+#[allow(unused_imports)]
+pub use strategy::{Compaction, CompactionResult};
 
 use crate::config::CompactionConfig;
 

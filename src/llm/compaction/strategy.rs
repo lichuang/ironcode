@@ -1,4 +1,4 @@
-//! Compaction strategy implementations for context compression.
+//! Compaction implementation for context compression.
 
 use crate::llm::types::{Message, Role};
 
@@ -16,43 +16,25 @@ pub struct CompactionResult {
   pub preserved_count: usize,
 }
 
-/// Compaction strategy trait.
+/// Context compaction implementation.
 ///
-/// Implementations define how to compress conversation history.
-#[allow(dead_code)]
-pub trait CompactionStrategy: Send + Sync {
-  /// Check if compaction should be applied to the given messages.
-  ///
-  /// Returns true if the strategy determines that compaction is needed
-  /// based on message count, content, or other criteria.
-  fn should_compact(&self, messages: &[Message]) -> bool;
-
-  /// Perform compaction on the given messages.
-  ///
-  /// Returns a `CompactionResult` containing the new message list.
-  /// If compaction is not needed, returns the original messages with
-  /// `did_compact: false`.
-  fn compact(&self, messages: &[Message]) -> CompactionResult;
-}
-
-/// Rolling window compaction strategy.
-///
-/// Keeps the most recent N user/assistant message pairs intact,
+/// Uses rolling window strategy: keeps the most recent N user/assistant message pairs intact,
 /// and compacts all older messages into a single summary message.
 ///
 /// # Example
 /// With `max_preserved_messages = 2`:
 /// - Input: [sys, user1, asst1, user2, asst2, user3, asst3]
 /// - Output: [sys, compacted_summary, user3, asst3]
+///
+/// Future: May support LLM-generated summary strategy.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct RollingWindowStrategy {
+pub struct Compaction {
   /// Maximum number of recent user/assistant messages to preserve
   max_preserved_messages: usize,
 }
 
-impl RollingWindowStrategy {
-  /// Create a new rolling window strategy.
+impl Compaction {
+  /// Create a new compaction instance.
   ///
   /// # Arguments
   /// * `max_preserved_messages` - Number of recent messages to preserve
@@ -74,17 +56,11 @@ impl RollingWindowStrategy {
   pub fn max_preserved_messages(&self) -> usize {
     self.max_preserved_messages
   }
-}
 
-impl Default for RollingWindowStrategy {
-  fn default() -> Self {
-    // Default to preserving 2 messages (1 user/assistant pair)
-    Self::new(2)
-  }
-}
-
-impl CompactionStrategy for RollingWindowStrategy {
-  fn should_compact(&self, messages: &[Message]) -> bool {
+  /// Check if compaction should be applied to the given messages.
+  ///
+  /// Returns true if compaction is needed based on message count.
+  pub fn should_compact(&self, messages: &[Message]) -> bool {
     if messages.len() <= self.max_preserved_messages {
       return false;
     }
@@ -98,7 +74,12 @@ impl CompactionStrategy for RollingWindowStrategy {
     user_asst_count > self.max_preserved_messages
   }
 
-  fn compact(&self, messages: &[Message]) -> CompactionResult {
+  /// Perform compaction on the given messages.
+  ///
+  /// Returns a `CompactionResult` containing the new message list.
+  /// If compaction is not needed, returns the original messages with
+  /// `did_compact: false`.
+  pub fn compact(&self, messages: &[Message]) -> CompactionResult {
     if !self.should_compact(messages) {
       return CompactionResult {
         messages: messages.to_vec(),
@@ -150,6 +131,13 @@ impl CompactionStrategy for RollingWindowStrategy {
       compacted_count: to_compact.len(),
       preserved_count: preserved.len(),
     }
+  }
+}
+
+impl Default for Compaction {
+  fn default() -> Self {
+    // Default to preserving 2 messages (1 user/assistant pair)
+    Self::new(2)
   }
 }
 
@@ -216,24 +204,24 @@ mod tests {
   }
 
   #[test]
-  fn test_rolling_window_should_compact() {
-    let strategy = RollingWindowStrategy::new(2);
+  fn test_should_compact() {
+    let compaction = Compaction::new(2);
 
     // 4 messages (2 user/assistant pairs) > 2 preserved
     let messages = create_test_messages(4);
-    assert!(strategy.should_compact(&messages));
+    assert!(compaction.should_compact(&messages));
 
     // 2 messages <= 2 preserved
     let messages = create_test_messages(2);
-    assert!(!strategy.should_compact(&messages));
+    assert!(!compaction.should_compact(&messages));
   }
 
   #[test]
-  fn test_rolling_window_compact() {
-    let strategy = RollingWindowStrategy::new(2);
+  fn test_compact() {
+    let compaction = Compaction::new(2);
     let messages = create_test_messages(6);
 
-    let result = strategy.compact(&messages);
+    let result = compaction.compact(&messages);
 
     assert!(result.did_compact);
     assert_eq!(result.compacted_count, 4); // First 4 messages compacted
@@ -242,27 +230,33 @@ mod tests {
   }
 
   #[test]
-  fn test_rolling_window_no_compact_needed() {
-    let strategy = RollingWindowStrategy::new(2);
+  fn test_no_compact_needed() {
+    let compaction = Compaction::new(2);
     let messages = create_test_messages(2);
 
-    let result = strategy.compact(&messages);
+    let result = compaction.compact(&messages);
 
     assert!(!result.did_compact);
     assert_eq!(result.messages.len(), 2);
   }
 
   #[test]
-  fn test_rolling_window_preserves_system() {
-    let strategy = RollingWindowStrategy::new(2);
+  fn test_preserves_system() {
+    let compaction = Compaction::new(2);
     let mut messages = vec![Message::system("You are helpful")];
     messages.extend(create_test_messages(4));
 
-    let result = strategy.compact(&messages);
+    let result = compaction.compact(&messages);
 
     assert!(result.did_compact);
     // System should be first
     assert_eq!(result.messages[0].role, Role::System);
     assert_eq!(result.messages[0].content, "You are helpful");
+  }
+
+  #[test]
+  fn test_default() {
+    let compaction = Compaction::default();
+    assert_eq!(compaction.max_preserved_messages(), 2);
   }
 }

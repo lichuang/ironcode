@@ -359,6 +359,27 @@ impl App {
               level: SystemMessageLevel::Warning,
             });
           }
+          SessionEvent::CompactionCompleted {
+            message_count_before,
+            message_count_after,
+            new_token_count,
+          } => {
+            log::info!(
+              "App: Compaction completed - {} -> {} messages, ~{} tokens",
+              message_count_before, message_count_after, new_token_count
+            );
+            // Clear the warning since we've compacted
+            self.data.compaction_warning = None;
+            // Add system notification
+            let message = format!(
+              "🗜️ Context compacted: {} messages -> {} messages (~{} tokens)",
+              message_count_before, message_count_after, new_token_count
+            );
+            self.data.chat_history.push(ChatMessage::System {
+              content: message,
+              level: SystemMessageLevel::Info,
+            });
+          }
         }
       }
 
