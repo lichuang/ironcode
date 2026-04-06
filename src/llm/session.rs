@@ -458,7 +458,8 @@ impl SessionActor {
     if !self.compaction.should_compact(&self.messages) {
       log::info!(
         "Session {}: Compaction strategy decided not to compact ({} messages)",
-        self.id, message_count_before
+        self.id,
+        message_count_before
       );
       return;
     }
@@ -481,12 +482,18 @@ impl SessionActor {
 
     log::info!(
       "Session {}: Compaction completed - {} messages -> {} messages, ~{} tokens",
-      self.id, message_count_before, message_count_after, new_token_count
+      self.id,
+      message_count_before,
+      message_count_after,
+      new_token_count
     );
 
     // Save compacted messages to session store
     if let Err(e) = self.session_store.reset_messages(&self.id, &self.messages) {
-      error!("Session {}: Failed to save compacted messages: {}", self.id, e);
+      error!(
+        "Session {}: Failed to save compacted messages: {}",
+        self.id, e
+      );
     }
 
     // Notify UI

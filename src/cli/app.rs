@@ -366,7 +366,9 @@ impl App {
           } => {
             log::info!(
               "App: Compaction completed - {} -> {} messages, ~{} tokens",
-              message_count_before, message_count_after, new_token_count
+              message_count_before,
+              message_count_after,
+              new_token_count
             );
             // Clear the warning since we've compacted
             self.data.compaction_warning = None;

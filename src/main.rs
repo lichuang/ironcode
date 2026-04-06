@@ -13,6 +13,7 @@ use std::env;
 use std::fs::{self, OpenOptions};
 use std::sync::Arc;
 
+use chrono::Local;
 use env_logger::Target;
 
 use anyhow::Result;
@@ -43,6 +44,20 @@ fn init_logging(config: &Config) {
   } else {
     builder.parse_filters(&config.logging.level);
   }
+
+  // Set custom format with local timezone
+  builder.format(|buf, record| {
+    use std::io::Write;
+    let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f%:z");
+    writeln!(
+      buf,
+      "[{} {} {}] {}",
+      timestamp,
+      record.level(),
+      record.target(),
+      record.args()
+    )
+  });
 
   // Determine log file path: ${data_dir}/logs/ironcode.log
   let data_dir = data_dir(config);
