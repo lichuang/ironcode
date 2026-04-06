@@ -209,10 +209,10 @@ fn render_second_line(f: &mut Frame, area: Rect, info: &StatusBarInfo) {
   // Left: Token usage with compaction warning
   let (token_text, token_color, warning_span) = if info.token_count > 0 {
     let percentage = (info.token_count as f64 / info.max_context_size as f64 * 100.0) as usize;
-    let text = format!(
-      "Tokens: {}/{} ({}%)",
-      info.token_count, info.max_context_size, percentage
-    );
+    // Format numbers in k units (e.g., 12k instead of 12345)
+    let used_k = info.token_count / 1000;
+    let max_k = info.max_context_size / 1000;
+    let text = format!("Context: {}%({}k/{}k)", percentage, used_k, max_k);
 
     // Determine color and warning based on compaction level
     match info.compaction_warning {
@@ -230,7 +230,8 @@ fn render_second_line(f: &mut Frame, area: Rect, info: &StatusBarInfo) {
       CompactionWarningLevel::None => (text, MUTED, None),
     }
   } else {
-    ("Tokens: 0".to_string(), MUTED, None)
+    let max_k = info.max_context_size / 1000;
+    (format!("Context: 0%(0k/{}k)", max_k), MUTED, None)
   };
 
   let mut left_spans = vec![Span::styled(token_text, Style::default().fg(token_color))];
