@@ -31,7 +31,7 @@
 11. **ACP Protocol** - IDE integration protocol
 12. **Approval System** - Rich text diff display
 13. **Print/Non-interactive Mode** - `--print` mode
-14. **Auto-retry with Backoff** - Exponential backoff retry
+14. **Auto-retry with Backoff** - Exponential backoff retry (in progress)
 15. **YOLO Mode** - Auto-approve all operations
 
 ---
@@ -56,10 +56,11 @@
 - [✅] Automatic compaction execution
 - [×] Summary generation strategy (LLM-generated historical summary) - Future enhancement
 
-#### 3. Improved Error Handling and Retry ✅ COMPLETED
+#### 3. Improved Error Handling and Retry (In Progress)
 - [✅] Integrate custom exponential backoff retry logic
-- [×] LLM stream interruption recovery mechanism - Future enhancement
-- [×] User-friendly network error messages - Future enhancement
+- [✅] Precise error classification for retry decisions (mirrors kimi-cli)
+- [×] LLM stream interruption recovery mechanism
+- [×] User-friendly network error messages
 - [✅] Configurable retry count and delay
 
 ---

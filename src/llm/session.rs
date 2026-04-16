@@ -1439,16 +1439,11 @@ async fn handle_stream(
 
 /// Check if an error from `chat_stream` is retryable.
 ///
-/// Inspects the actual error enum variants rather than string matching:
 /// - `Llm` errors → delegates to `LlmError::is_retryable()`
-/// - `OpenAI` errors → delegates to `is_openai_error_retryable()`
 /// - All other error types → not retryable
 fn is_error_retryable(err: &crate::error::Error) -> bool {
-  use crate::error::{Error, is_openai_error_retryable};
-
   match err {
-    Error::Llm(llm_err) => llm_err.is_retryable(),
-    Error::OpenAI(openai_err) => is_openai_error_retryable(openai_err),
+    crate::error::Error::Llm(llm_err) => llm_err.is_retryable(),
     _ => false,
   }
 }
@@ -1461,53 +1456,96 @@ mod tests {
   #[test]
   fn test_session_id_format() {
     let id = generate_session_id();
-    // Should contain a hyphen separating dirname and timestamp
     assert!(id.contains('-'));
-    // Should contain colons for time
     assert!(id.contains(':'));
   }
 
   #[test]
   fn test_is_error_retryable() {
-    // LlmError::StreamError is always retryable (transient by nature)
-    let err = crate::error::Error::Llm(LlmError::StreamError("some stream error".to_string()));
+    use crate::error::StreamErrorCategory;
+
+    // --- Stream errors (→ kimi-cli APITimeoutError / APIConnectionError / APIStatusError) ---
+
+    // Timeout — retryable (→ APITimeoutError)
+    let err = crate::error::Error::Llm(LlmError::Stream {
+      category: StreamErrorCategory::Timeout,
+      status_code: None,
+      message: "stream timeout".to_string(),
+    });
     assert!(is_error_retryable(&err));
 
-    // LlmError::InvalidConfig should NOT be retryable
+    // Disconnected — retryable (→ APIConnectionError)
+    let err = crate::error::Error::Llm(LlmError::Stream {
+      category: StreamErrorCategory::Disconnected,
+      status_code: None,
+      message: "connection lost".to_string(),
+    });
+    assert!(is_error_retryable(&err));
+
+    // Transport — retryable
+    let err = crate::error::Error::Llm(LlmError::Stream {
+      category: StreamErrorCategory::Transport,
+      status_code: None,
+      message: "transport error".to_string(),
+    });
+    assert!(is_error_retryable(&err));
+
+    // Http with 429 — retryable (→ APIStatusError)
+    let err = crate::error::Error::Llm(LlmError::Stream {
+      category: StreamErrorCategory::Http,
+      status_code: Some(429),
+      message: "rate limited".to_string(),
+    });
+    assert!(is_error_retryable(&err));
+
+    // Http with 500, 502, 503, 504 — retryable
+    for code in [500, 502, 503, 504] {
+      let err = crate::error::Error::Llm(LlmError::Stream {
+        category: StreamErrorCategory::Http,
+        status_code: Some(code),
+        message: "server error".to_string(),
+      });
+      assert!(
+        is_error_retryable(&err),
+        "Stream HTTP {} should be retryable",
+        code
+      );
+    }
+
+    // Http with 400, 401, 403, 404 — NOT retryable
+    for code in [400, 401, 403, 404] {
+      let err = crate::error::Error::Llm(LlmError::Stream {
+        category: StreamErrorCategory::Http,
+        status_code: Some(code),
+        message: "client error".to_string(),
+      });
+      assert!(
+        !is_error_retryable(&err),
+        "Stream HTTP {} should NOT be retryable",
+        code
+      );
+    }
+
+    // Parse — NOT retryable
+    let err = crate::error::Error::Llm(LlmError::Stream {
+      category: StreamErrorCategory::Parse,
+      status_code: None,
+      message: "invalid UTF-8".to_string(),
+    });
+    assert!(!is_error_retryable(&err));
+
+    // --- EmptyResponse (→ kimi-cli APIEmptyResponseError) ---
+    let err = crate::error::Error::Llm(LlmError::EmptyResponse);
+    assert!(is_error_retryable(&err));
+
+    // --- InvalidConfig — NOT retryable ---
     let err = crate::error::Error::Llm(LlmError::InvalidConfig("bad config".to_string()));
     assert!(!is_error_retryable(&err));
 
-    // LlmError::EmptyResponse should NOT be retryable
-    let err = crate::error::Error::Llm(LlmError::EmptyResponse);
-    assert!(!is_error_retryable(&err));
-
-    // LlmError::Retryable should be retryable
-    let err = crate::error::Error::Llm(LlmError::Retryable {
-      message: "transient".to_string(),
+    // --- BuildRequest — NOT retryable ---
+    let err = crate::error::Error::Llm(LlmError::BuildRequest {
+      source: async_openai::error::OpenAIError::InvalidArgument("test".to_string()),
     });
-    assert!(is_error_retryable(&err));
-  }
-
-  #[test]
-  fn test_is_api_error_type_retryable() {
-    use crate::error::is_api_error_type_retryable;
-
-    // Known retryable types
-    assert!(is_api_error_type_retryable(Some("server_error")));
-    assert!(is_api_error_type_retryable(Some("rate_limit_error")));
-    assert!(is_api_error_type_retryable(Some("timeout")));
-
-    // Known non-retryable types
-    assert!(!is_api_error_type_retryable(Some("invalid_request_error")));
-    assert!(!is_api_error_type_retryable(Some("authentication_error")));
-    assert!(!is_api_error_type_retryable(Some("permission_error")));
-    assert!(!is_api_error_type_retryable(Some("insufficient_quota")));
-    assert!(!is_api_error_type_retryable(Some("model_not_found")));
-
-    // None = typically 5xx, conservatively retryable
-    assert!(is_api_error_type_retryable(None));
-
-    // Unknown type — not retryable
-    assert!(!is_api_error_type_retryable(Some("unknown_error")));
+    assert!(!is_error_retryable(&err));
   }
 }

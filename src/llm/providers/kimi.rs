@@ -20,12 +20,12 @@ use futures::stream::unfold;
 use hostname::get;
 use reqwest::Client;
 use reqwest::header::HeaderMap;
-use reqwest_eventsource::RequestBuilderExt;
+use reqwest_eventsource::{Error as EventSourceError, RequestBuilderExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{from_str, to_string_pretty};
 use std::result::Result as StdResult;
 
-use crate::error::{LlmError, Result};
+use crate::error::{LlmError, Result, StreamErrorCategory};
 use crate::llm::provider::LLMProvider;
 use crate::llm::types::{ChatConfig, Message, Role};
 use crate::tools::{Tool, ToolRegistry};
@@ -494,7 +494,11 @@ impl LLMProvider for KimiProvider {
       .post(&url)
       .json(&request)
       .eventsource()
-      .map_err(|e| LlmError::StreamError(format!("Failed to create event source: {}", e)))?;
+      .map_err(|_| {
+        LlmError::InvalidConfig(
+          "Failed to create event source: request is not cloneable".to_string(),
+        )
+      })?;
 
     // Convert EventSource to ChatCompletionResponseStream
     let stream = unfold(event_source, |mut es| async move {
@@ -547,9 +551,10 @@ impl LLMProvider for KimiProvider {
           }
           Some(Err(e)) => {
             log::error!("KimiProvider: Event source error: {}", e);
+            let llm_err = classify_eventsource_stream_error(&e);
             return Some((
               Err(OpenAIError::StreamError(Box::new(
-                async_openai::error::StreamError::EventStream(format!("Event source error: {}", e)),
+                async_openai::error::StreamError::EventStream(llm_err.to_string()),
               ))),
               es,
             ));
@@ -579,6 +584,56 @@ fn generate_device_id(hostname: &str) -> String {
   let mut hasher = DefaultHasher::new();
   hostname.hash(&mut hasher);
   format!("{:016x}", hasher.finish())
+}
+
+/// Classify a `reqwest_eventsource::Error` from the streaming phase
+/// into a structured `LlmError` with precise error category.
+///
+/// Mirrors kimi-cli's error classification:
+/// - `InvalidStatusCode` → `Stream::Http` (→ kimi-cli's `APIStatusError`)
+/// - `Transport` + `is_timeout()` → `Stream::Timeout` (→ kimi-cli's `APITimeoutError`)
+/// - `Transport` + `is_connect()` → `Stream::Disconnected` (→ kimi-cli's `APIConnectionError`)
+/// - `Transport` other → `Stream::Transport`
+/// - `Utf8` / `Parser` → `Stream::Parse` (NOT retryable)
+fn classify_eventsource_stream_error(e: &EventSourceError) -> LlmError {
+  match e {
+    EventSourceError::InvalidStatusCode(code, _response) => LlmError::Stream {
+      category: StreamErrorCategory::Http,
+      status_code: Some(code.as_u16()),
+      message: format!("HTTP {} during stream", code),
+    },
+    EventSourceError::Transport(reqwest_err) => {
+      if reqwest_err.is_timeout() {
+        LlmError::Stream {
+          category: StreamErrorCategory::Timeout,
+          status_code: None,
+          message: format!("Stream timeout: {}", reqwest_err),
+        }
+      } else if reqwest_err.is_connect() {
+        LlmError::Stream {
+          category: StreamErrorCategory::Disconnected,
+          status_code: None,
+          message: format!("Connection lost: {}", reqwest_err),
+        }
+      } else {
+        LlmError::Stream {
+          category: StreamErrorCategory::Transport,
+          status_code: None,
+          message: format!("Transport error: {}", reqwest_err),
+        }
+      }
+    }
+    EventSourceError::Utf8(_) | EventSourceError::Parser(_) => LlmError::Stream {
+      category: StreamErrorCategory::Parse,
+      status_code: None,
+      message: format!("Parse error: {}", e),
+    },
+    _ => LlmError::Stream {
+      category: StreamErrorCategory::Transport,
+      status_code: None,
+      message: format!("Stream error: {}", e),
+    },
+  }
 }
 
 /// Convert Kimi stream response to standard OpenAI format

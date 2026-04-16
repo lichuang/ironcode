@@ -141,104 +141,102 @@ pub enum LlmError {
   #[error("Invalid model configuration: {0}")]
   InvalidConfig(String),
 
-  #[error("Streaming error: {0}")]
-  StreamError(String),
-
-  /// A transient error that can be retried (network, rate limit, server error).
-  #[error("Retryable error: {message}")]
-  Retryable {
-    /// Human-readable error message
+  /// SSE stream error that occurred after connection was established.
+  ///
+  /// The `category` field distinguishes the error cause for precise retry decisions,
+  /// mirroring kimi-cli's error classification:
+  /// - `Timeout` → kimi-cli's `APITimeoutError`
+  /// - `Disconnected` → kimi-cli's `APIConnectionError`
+  /// - `Http` → kimi-cli's `APIStatusError` (with `status_code`)
+  /// - `Transport` → other transport errors
+  /// - `Parse` → UTF-8/SSE parsing errors (not retryable)
+  #[error("Stream {category}: {message}")]
+  Stream {
+    category: StreamErrorCategory,
+    status_code: Option<u16>,
     message: String,
   },
+}
+
+/// Category of SSE stream error, used for precise retry decisions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamErrorCategory {
+  /// Connection timeout during streaming.
+  Timeout,
+  /// Connection lost/reset during streaming.
+  Disconnected,
+  /// Server returned a non-2xx HTTP status during streaming.
+  Http,
+  /// Other transport error during streaming.
+  Transport,
+  /// UTF-8 or SSE protocol parsing error.
+  Parse,
+}
+
+impl std::fmt::Display for StreamErrorCategory {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      StreamErrorCategory::Timeout => write!(f, "timeout"),
+      StreamErrorCategory::Disconnected => write!(f, "disconnected"),
+      StreamErrorCategory::Http => write!(f, "HTTP error"),
+      StreamErrorCategory::Transport => write!(f, "transport error"),
+      StreamErrorCategory::Parse => write!(f, "parse error"),
+    }
+  }
 }
 
 impl LlmError {
   /// Check if this error is retryable (transient network/server errors).
   ///
-  /// Returns true for:
-  /// - Rate limit errors (HTTP 429)
-  /// - Server errors (HTTP 5xx)
-  /// - Network/timeout errors
-  /// - Explicit `Retryable` variant
-  ///
-  /// Returns false for:
-  /// - Authentication errors (HTTP 401/403)
-  /// - Bad request errors (HTTP 400)
-  /// - Configuration errors
+  /// Classification mirrors kimi-cli's `_is_retryable_error`:
+  /// - `Network` (→ `APIConnectionError` / `APITimeoutError`) — always retryable
+  /// - `Http` (→ `APIStatusError`) — retryable for 429, 500, 502, 503, 504
+  /// - `Stream::Timeout` (→ `APITimeoutError`) — retryable
+  /// - `Stream::Disconnected` (→ `APIConnectionError`) — retryable
+  /// - `Stream::Http` (→ `APIStatusError`) — retryable for 429, 500, 502, 503, 504
+  /// - `Stream::Transport` — retryable
+  /// - `Stream::Parse` — NOT retryable
+  /// - `EmptyResponse` (→ `APIEmptyResponseError`) — retryable
+  /// - All others — not retryable
   pub fn is_retryable(&self) -> bool {
     match self {
-      // Explicit retryable error
-      LlmError::Retryable { .. } => true,
-      // Stream errors are transient by nature (connection interrupted mid-stream)
-      LlmError::StreamError(_) => true,
-      // OpenAI API errors: check for retryable conditions via enum matching
-      LlmError::OpenAI(err) => is_openai_error_retryable(err),
-      LlmError::BuildRequest { .. } => false,
-      LlmError::EmptyResponse => false,
+      LlmError::Stream {
+        category,
+        status_code,
+        ..
+      } => match category {
+        StreamErrorCategory::Timeout => true,
+        StreamErrorCategory::Disconnected => true,
+        StreamErrorCategory::Http => is_http_status_retryable(status_code.unwrap_or(0)),
+        StreamErrorCategory::Transport => true,
+        StreamErrorCategory::Parse => false,
+      },
+      LlmError::EmptyResponse => true,
       LlmError::InvalidConfig(_) => false,
+      LlmError::BuildRequest { .. } => false,
+      LlmError::OpenAI(err) => is_openai_error_retryable(err),
     }
   }
 }
 
-/// Check if an OpenAI API error is retryable using enum matching.
+/// Check if an HTTP status code is retryable.
 ///
-/// Note: async-openai's own client already retries 429/5xx internally, but
-/// Kimi provider bypasses that client (uses `reqwest_eventsource` directly),
-/// so we need our own retry classification here.
-///
-/// Classification strategy:
-/// - `ApiError` — check `r#type` field for known retryable error types.
-///   HTTP status codes are NOT stored in `ApiError`; for 5xx errors
-///   async-openai constructs `ApiError` with all fields as `None`,
-///   so we treat any `ApiError` where `r#type` indicates a server/rate-limit
-///   issue as retryable. If `r#type` is `None` (typical for 5xx), we conservatively
-///   treat it as retryable since the API did return an error.
-/// - `Reqwest` — uses reqwest's `is_timeout()` / `is_connect()` methods
-/// - `StreamError` — transient by nature (connection interrupted mid-stream)
-pub fn is_openai_error_retryable(err: &OpenAIError) -> bool {
-  match err {
-    // API returned an error response — check the type field
-    OpenAIError::ApiError(api_err) => is_api_error_type_retryable(api_err.r#type.as_deref()),
+/// Matches kimi-cli's classification: 429 (rate limit) and 5xx (server errors).
+fn is_http_status_retryable(status: u16) -> bool {
+  matches!(status, 429 | 500 | 502 | 503 | 504)
+}
 
-    // Network-level error from reqwest — use its precise classification
+/// Fallback classification for async-openai `OpenAIError` variants.
+///
+/// Kimi provider does not produce these errors (it uses reqwest directly),
+/// but other providers using the async-openai client might.
+fn is_openai_error_retryable(err: &OpenAIError) -> bool {
+  match err {
     OpenAIError::Reqwest(reqwest_err) => {
       reqwest_err.is_timeout() || reqwest_err.is_connect() || reqwest_err.is_request()
     }
-
-    // Stream interrupted — transient by nature
     OpenAIError::StreamError(_) => true,
-
-    // All other variants (deserialization, file I/O, argument, etc.) are not retryable
     _ => false,
-  }
-}
-
-/// Check if an API error `type` field indicates a retryable condition.
-///
-/// The `r#type` field from OpenAI API error responses typically contains:
-/// - `"server_error"` — 5xx server errors
-/// - `"rate_limit_error"` — rate limiting (429)
-/// - `"insufficient_quota"` — billing/quota exhaustion (NOT retryable)
-/// - `"invalid_request_error"` — bad request (NOT retryable)
-/// - `"authentication_error"` — auth failure (NOT retryable)
-/// - `None` — unknown; for 5xx, async-openai constructs ApiError with all fields as None
-///
-/// When `r#type` is `None`, we conservatively treat it as retryable,
-/// since async-openai sets all fields to None for server errors (5xx).
-pub fn is_api_error_type_retryable(error_type: Option<&str>) -> bool {
-  match error_type {
-    // Known retryable types
-    Some("server_error") | Some("rate_limit_error") | Some("timeout") => true,
-    // Known non-retryable types
-    Some("invalid_request_error")
-    | Some("authentication_error")
-    | Some("permission_error")
-    | Some("insufficient_quota")
-    | Some("model_not_found") => false,
-    // None typically means 5xx (async-openai constructs ApiError with all fields as None)
-    None => true,
-    // Unknown types — conservatively treat as not retryable
-    Some(_) => false,
   }
 }
 
