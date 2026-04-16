@@ -7,7 +7,7 @@ use std::env::consts::{ARCH, OS};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use async_openai::error::OpenAIError;
+use async_openai::error::{OpenAIError, StreamError};
 use async_openai::types::chat::{
   ChatChoiceStream, ChatCompletionMessageToolCallChunk, ChatCompletionResponseStream,
   ChatCompletionStreamResponseDelta, CompletionUsage, CreateChatCompletionStreamResponse,
@@ -196,12 +196,38 @@ struct StreamOptions {
 }
 
 /// Kimi provider with Coding Agent support
-#[derive(Debug, Clone)]
 pub struct KimiProvider {
   http_client: reqwest::Client,
   base_url: String,
   config: ChatConfig,
   tool_registry: Arc<ToolRegistry>,
+  api_key: String,
+  coding_agent: bool,
+}
+
+impl std::fmt::Debug for KimiProvider {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("KimiProvider")
+      .field("base_url", &self.base_url)
+      .field("config", &self.config)
+      .field("tool_registry", &self.tool_registry)
+      .field("coding_agent", &self.coding_agent)
+      .field("api_key", &"***")
+      .finish()
+  }
+}
+
+impl Clone for KimiProvider {
+  fn clone(&self) -> Self {
+    Self {
+      http_client: self.http_client.clone(),
+      base_url: self.base_url.clone(),
+      config: self.config.clone(),
+      tool_registry: self.tool_registry.clone(),
+      api_key: self.api_key.clone(),
+      coding_agent: self.coding_agent,
+    }
+  }
 }
 
 impl KimiProvider {
@@ -223,10 +249,22 @@ impl KimiProvider {
     let base_url = base_url.into();
     let api_key = api_key.into();
 
-    // Build Coding Agent headers
+    let http_client = Self::create_http_client(&api_key, coding_agent)?;
+
+    Ok(Self {
+      http_client,
+      base_url,
+      config,
+      tool_registry,
+      api_key,
+      coding_agent,
+    })
+  }
+
+  /// Build the HTTP client with the given API key and Coding Agent setting.
+  fn create_http_client(api_key: &str, coding_agent: bool) -> Result<reqwest::Client> {
     let mut custom_headers = HeaderMap::new();
 
-    // Add Authorization header
     custom_headers.insert(
       "Authorization",
       format!("Bearer {}", api_key)
@@ -243,25 +281,17 @@ impl KimiProvider {
     if coding_agent {
       log::info!("KimiProvider: Adding Coding Agent headers");
 
-      // Use constants for Coding Agent authentication
       let version = KIMI_CLI_VERSION;
       let user_agent = KIMI_USER_AGENT;
 
-      // Device name (hostname)
       let device_name = get()
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_else(|_| "unknown".to_string());
 
-      // Device model (OS + ARCH)
       let device_model = format!("{}-{}", OS, ARCH);
-
-      // OS version
       let os_version = OS.to_string();
-
-      // Device ID (hashed hostname)
       let device_id = generate_device_id(&device_name);
 
-      // Add all headers to the map
       custom_headers.insert(
         "User-Agent",
         user_agent
@@ -305,7 +335,6 @@ impl KimiProvider {
           .map_err(|_| LlmError::InvalidConfig("Invalid X-Msh-Device-Id".to_string()))?,
       );
 
-      // Log all configured headers
       log::info!("KimiProvider: Configured custom headers:");
       for (name, value) in &custom_headers {
         if let Ok(v) = value.to_str() {
@@ -320,18 +349,10 @@ impl KimiProvider {
       log::info!("KimiProvider: Not using Coding Agent headers");
     }
 
-    // Build reqwest client with default headers
-    let http_client = Client::builder()
+    Client::builder()
       .default_headers(custom_headers)
       .build()
-      .map_err(|e| LlmError::InvalidConfig(format!("Failed to build HTTP client: {}", e)))?;
-
-    Ok(Self {
-      http_client,
-      base_url,
-      config,
-      tool_registry,
-    })
+      .map_err(|e| LlmError::InvalidConfig(format!("Failed to build HTTP client: {}", e)).into())
   }
 
   /// Convert our Message type to ChatMessage
@@ -554,7 +575,7 @@ impl LLMProvider for KimiProvider {
             let llm_err = classify_eventsource_stream_error(&e);
             return Some((
               Err(OpenAIError::StreamError(Box::new(
-                async_openai::error::StreamError::EventStream(llm_err.to_string()),
+                StreamError::EventStream(llm_err.to_string()),
               ))),
               es,
             ));
@@ -576,6 +597,22 @@ impl LLMProvider for KimiProvider {
 
   fn name(&self) -> &str {
     "kimi"
+  }
+
+  async fn on_retryable_error(&mut self, error: &LlmError) {
+    log::info!(
+      "KimiProvider: Rebuilding HTTP client due to retryable error: {}",
+      error
+    );
+    match Self::create_http_client(&self.api_key, self.coding_agent) {
+      Ok(client) => {
+        self.http_client = client;
+        log::info!("KimiProvider: HTTP client rebuilt successfully");
+      }
+      Err(e) => {
+        log::error!("KimiProvider: Failed to rebuild HTTP client: {}", e);
+      }
+    }
   }
 }
 

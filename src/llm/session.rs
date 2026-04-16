@@ -9,15 +9,17 @@ use std::mem::take;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use async_openai::error::OpenAIError;
 use async_openai::types::chat::{
   ChatCompletionMessageToolCallChunk, ChatCompletionResponseStream, FunctionCallStream,
 };
 use chrono::{Datelike, Local, Timelike};
 use log::{debug, error, info, warn};
 use tokio::sync::mpsc;
+use tokio::time::sleep;
 
 use crate::config::{CompactionConfig, Config, DEFAULT_MAX_CONTEXT_SIZE, RetryConfig};
-use crate::error::{ConfigError, Result};
+use crate::error::{ConfigError, Error, LlmError, Result, StreamErrorCategory};
 use crate::llm::compaction::{Compaction, calculate_threshold, should_auto_compact};
 use crate::llm::provider::LLMProvider;
 use crate::llm::providers::KimiProvider;
@@ -86,6 +88,13 @@ pub enum SessionEvent {
   Completed,
   /// Error occurred during streaming
   Error(String),
+  /// Stream was interrupted mid-way; the actor may attempt to retry
+  StreamInterrupted {
+    /// Error message
+    error: String,
+    /// Whether the actor should attempt to retry
+    is_retryable: bool,
+  },
   /// Session has been shutdown
   Shutdown,
   /// Compaction is needed (token limit approaching)
@@ -171,6 +180,8 @@ struct SessionActor {
   is_streaming: bool,
   /// Event receiver for the current stream (if any)
   stream_rx: Option<mpsc::UnboundedReceiver<SessionEvent>>,
+  /// Current retry attempt counter for the active stream
+  stream_retry_attempt: u32,
   /// Tool call buffer for accumulating tool calls during streaming
   pending_tool_calls: Vec<ToolCall>,
   /// Executable tool registry for handling tool calls (shared)
@@ -220,6 +231,7 @@ impl SessionActor {
       current_thinking: String::new(),
       is_streaming: false,
       stream_rx: None,
+      stream_retry_attempt: 0,
       pending_tool_calls: Vec::new(),
       tool_registry,
       cwd: env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
@@ -516,18 +528,32 @@ impl SessionActor {
   /// If the initial request fails with a retryable error (network timeout,
   /// rate limit, server error), it will be retried with exponential backoff
   /// according to the retry configuration.
+  ///
+  /// Mirrors kimi-cli's two-layer retry: connection recovery (rebuild client)
+  /// followed by tenacity-style exponential backoff.
   async fn start_chat_stream(&mut self) {
-    let max_attempts = self.retry_config.max_attempts.max(1);
-    let mut last_error: Option<String> = None;
+    self.stream_retry_attempt = 0;
+    self.attempt_chat_stream("starting").await;
+  }
 
-    for attempt in 0..max_attempts {
-      match self.provider.chat_stream(self.messages.clone()).await {
+  /// Attempt to start (or resume) a chat stream, with retries.
+  ///
+  /// This is the inner retry loop shared by initial connection attempts and
+  /// mid-stream interruption recovery.  It respects `stream_retry_attempt`
+  /// so that the total number of retries for a single step never exceeds
+  /// `retry_config.max_attempts`.
+  async fn attempt_chat_stream(&mut self, context: &str) {
+    let max_attempts = self.retry_config.max_attempts.max(1);
+
+    while self.stream_retry_attempt < max_attempts {
+      match self.run_chat_stream_with_recovery().await {
         Ok(stream) => {
-          if attempt > 0 {
+          if self.stream_retry_attempt > 0 {
             info!(
-              "Session {}: stream started on attempt {}/{}",
+              "Session {}: stream {} on attempt {}/{}",
               self.id,
-              attempt + 1,
+              context,
+              self.stream_retry_attempt + 1,
               max_attempts
             );
           }
@@ -538,24 +564,21 @@ impl SessionActor {
           info!("Session {}: Started streaming for message", self.id);
           return;
         }
-        Err(e) => {
-          let err_string = e.to_string();
-          let is_retryable = is_error_retryable(&e);
-          let is_last = attempt + 1 >= max_attempts;
+        Err((err, recovery_exhausted)) => {
+          let err_string = err.to_string();
+          let is_retryable = !recovery_exhausted && is_error_retryable(&err);
+          self.stream_retry_attempt += 1;
 
           if !is_retryable {
             error!(
               "Session {}: non-retryable error on attempt {}/{}: {}",
-              self.id,
-              attempt + 1,
-              max_attempts,
-              err_string
+              self.id, self.stream_retry_attempt, max_attempts, err_string
             );
             let _ = self.event_tx.send(SessionEvent::Error(err_string));
             return;
           }
 
-          if is_last {
+          if self.stream_retry_attempt >= max_attempts {
             error!(
               "Session {}: all {} attempts exhausted, last error: {}",
               self.id, max_attempts, err_string
@@ -564,24 +587,79 @@ impl SessionActor {
             return;
           }
 
-          let delay = self.retry_config.delay_for_attempt(attempt);
+          let delay = self
+            .retry_config
+            .delay_for_attempt(self.stream_retry_attempt - 1);
           warn!(
             "Session {}: attempt {}/{} failed ({}), retrying in {:?}",
-            self.id,
-            attempt + 1,
-            max_attempts,
-            err_string,
-            delay
+            self.id, self.stream_retry_attempt, max_attempts, err_string, delay
           );
-          last_error = Some(err_string);
-          tokio::time::sleep(delay).await;
+          sleep(delay).await;
         }
       }
     }
+  }
 
-    // Unreachable, but safety net
-    if let Some(err) = last_error {
-      let _ = self.event_tx.send(SessionEvent::Error(err));
+  /// Attempt to start a chat stream once, with immediate connection recovery.
+  ///
+  /// If the error is a connection-level error (timeout, disconnect, transport),
+  /// calls `provider.on_retryable_error()` to refresh the connection and retries
+  /// exactly once immediately. If that retry also fails, `recovery_exhausted`
+  /// is returned as `true`, signaling the outer loop not to retry further.
+  async fn run_chat_stream_with_recovery(
+    &mut self,
+  ) -> std::result::Result<ChatCompletionResponseStream, (Error, bool)> {
+    match self.provider.chat_stream(self.messages.clone()).await {
+      Ok(stream) => Ok(stream),
+      Err(err) => {
+        let is_connection_error = matches!(
+          &err,
+          Error::Llm(LlmError::Stream {
+            category: StreamErrorCategory::Timeout
+              | StreamErrorCategory::Disconnected
+              | StreamErrorCategory::Transport,
+            ..
+          }) | Error::Llm(LlmError::EmptyResponse)
+        );
+
+        if is_connection_error {
+          info!(
+            "Session {}: connection error, attempting immediate recovery: {}",
+            self.id, err
+          );
+          if let Error::Llm(ref llm_err) = err {
+            self.provider.on_retryable_error(llm_err).await;
+          }
+
+          match self.provider.chat_stream(self.messages.clone()).await {
+            Ok(stream) => {
+              info!("Session {}: connection recovery succeeded", self.id);
+              Ok(stream)
+            }
+            Err(retry_err) => {
+              warn!(
+                "Session {}: connection recovery failed: {}",
+                self.id, retry_err
+              );
+              // Only mark recovery as exhausted if the retry error is also a
+              // connection-level error.  If it is now an HTTP status error
+              // (e.g. 503) the outer retry loop should still attempt backoff.
+              let is_still_connection = matches!(
+                &retry_err,
+                Error::Llm(LlmError::Stream {
+                  category: StreamErrorCategory::Timeout
+                    | StreamErrorCategory::Disconnected
+                    | StreamErrorCategory::Transport,
+                  ..
+                }) | Error::Llm(LlmError::EmptyResponse)
+              );
+              Err((retry_err, is_still_connection))
+            }
+          }
+        } else {
+          Err((err, false))
+        }
+      }
     }
   }
 
@@ -718,6 +796,24 @@ impl SessionActor {
           error!("Session {}: Failed to forward Completed event", self.id);
         }
         info!("Session {}: Stream completed", self.id);
+      }
+      SessionEvent::StreamInterrupted {
+        error,
+        is_retryable,
+      } => {
+        error!("Session {}: Stream interrupted: {}", self.id, error);
+        self.is_streaming = false;
+        self.stream_rx = None;
+        // Do NOT retain partial content — mirrors kimi-cli behaviour
+        self.current_response.clear();
+        self.current_thinking.clear();
+        self.pending_tool_calls.clear();
+
+        if *is_retryable {
+          self.attempt_chat_stream("resumed after interrupt").await;
+        } else {
+          let _ = self.event_tx.send(SessionEvent::Error(error.clone()));
+        }
       }
       SessionEvent::Error(err) => {
         error!("Session {}: Stream error: {}", self.id, err);
@@ -1387,7 +1483,11 @@ async fn handle_stream(
       }
       Err(e) => {
         log::error!("Session: Stream error: {}", e);
-        let _ = tx.send(SessionEvent::Error(e.to_string()));
+        let is_retryable = is_stream_error_retryable(&e);
+        let _ = tx.send(SessionEvent::StreamInterrupted {
+          error: e.to_string(),
+          is_retryable,
+        });
         return;
       }
     }
@@ -1441,9 +1541,28 @@ async fn handle_stream(
 ///
 /// - `Llm` errors → delegates to `LlmError::is_retryable()`
 /// - All other error types → not retryable
-fn is_error_retryable(err: &crate::error::Error) -> bool {
+fn is_error_retryable(err: &Error) -> bool {
   match err {
-    crate::error::Error::Llm(llm_err) => llm_err.is_retryable(),
+    Error::Llm(llm_err) => llm_err.is_retryable(),
+    _ => false,
+  }
+}
+
+/// Check if a mid-stream `OpenAIError` is retryable.
+///
+/// Used by `handle_stream` to decide whether a stream interruption should
+/// trigger a step-level retry.
+fn is_stream_error_retryable(err: &OpenAIError) -> bool {
+  match err {
+    OpenAIError::Reqwest(reqwest_err) => {
+      reqwest_err.is_timeout() || reqwest_err.is_connect() || reqwest_err.is_request()
+    }
+    OpenAIError::StreamError(stream_err) => {
+      // KimiProvider embeds LlmError::Stream messages here.
+      // Parse errors are NOT retryable.
+      let msg = stream_err.to_string();
+      !msg.contains("parse error") && !msg.contains("Parse error")
+    }
     _ => false,
   }
 }
@@ -1467,7 +1586,7 @@ mod tests {
     // --- Stream errors (→ kimi-cli APITimeoutError / APIConnectionError / APIStatusError) ---
 
     // Timeout — retryable (→ APITimeoutError)
-    let err = crate::error::Error::Llm(LlmError::Stream {
+    let err = Error::Llm(LlmError::Stream {
       category: StreamErrorCategory::Timeout,
       status_code: None,
       message: "stream timeout".to_string(),
@@ -1475,7 +1594,7 @@ mod tests {
     assert!(is_error_retryable(&err));
 
     // Disconnected — retryable (→ APIConnectionError)
-    let err = crate::error::Error::Llm(LlmError::Stream {
+    let err = Error::Llm(LlmError::Stream {
       category: StreamErrorCategory::Disconnected,
       status_code: None,
       message: "connection lost".to_string(),
@@ -1483,7 +1602,7 @@ mod tests {
     assert!(is_error_retryable(&err));
 
     // Transport — retryable
-    let err = crate::error::Error::Llm(LlmError::Stream {
+    let err = Error::Llm(LlmError::Stream {
       category: StreamErrorCategory::Transport,
       status_code: None,
       message: "transport error".to_string(),
@@ -1491,7 +1610,7 @@ mod tests {
     assert!(is_error_retryable(&err));
 
     // Http with 429 — retryable (→ APIStatusError)
-    let err = crate::error::Error::Llm(LlmError::Stream {
+    let err = Error::Llm(LlmError::Stream {
       category: StreamErrorCategory::Http,
       status_code: Some(429),
       message: "rate limited".to_string(),
@@ -1500,7 +1619,7 @@ mod tests {
 
     // Http with 500, 502, 503, 504 — retryable
     for code in [500, 502, 503, 504] {
-      let err = crate::error::Error::Llm(LlmError::Stream {
+      let err = Error::Llm(LlmError::Stream {
         category: StreamErrorCategory::Http,
         status_code: Some(code),
         message: "server error".to_string(),
@@ -1514,7 +1633,7 @@ mod tests {
 
     // Http with 400, 401, 403, 404 — NOT retryable
     for code in [400, 401, 403, 404] {
-      let err = crate::error::Error::Llm(LlmError::Stream {
+      let err = Error::Llm(LlmError::Stream {
         category: StreamErrorCategory::Http,
         status_code: Some(code),
         message: "client error".to_string(),
@@ -1527,7 +1646,7 @@ mod tests {
     }
 
     // Parse — NOT retryable
-    let err = crate::error::Error::Llm(LlmError::Stream {
+    let err = Error::Llm(LlmError::Stream {
       category: StreamErrorCategory::Parse,
       status_code: None,
       message: "invalid UTF-8".to_string(),
@@ -1535,16 +1654,16 @@ mod tests {
     assert!(!is_error_retryable(&err));
 
     // --- EmptyResponse (→ kimi-cli APIEmptyResponseError) ---
-    let err = crate::error::Error::Llm(LlmError::EmptyResponse);
+    let err = Error::Llm(LlmError::EmptyResponse);
     assert!(is_error_retryable(&err));
 
     // --- InvalidConfig — NOT retryable ---
-    let err = crate::error::Error::Llm(LlmError::InvalidConfig("bad config".to_string()));
+    let err = Error::Llm(LlmError::InvalidConfig("bad config".to_string()));
     assert!(!is_error_retryable(&err));
 
     // --- BuildRequest — NOT retryable ---
-    let err = crate::error::Error::Llm(LlmError::BuildRequest {
-      source: async_openai::error::OpenAIError::InvalidArgument("test".to_string()),
+    let err = Error::Llm(LlmError::BuildRequest {
+      source: OpenAIError::InvalidArgument("test".to_string()),
     });
     assert!(!is_error_retryable(&err));
   }

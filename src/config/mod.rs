@@ -6,8 +6,10 @@
 use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use tokio::time::Duration;
 
 /// Default value for history max_size (1MB).
 const DEFAULT_HISTORY_MAX_SIZE: usize = 1024 * 1024;
@@ -22,9 +24,11 @@ pub const DEFAULT_MAX_CONTEXT_SIZE: usize = 128_000;
 /// Default maximum retry attempts for LLM requests.
 const DEFAULT_RETRY_MAX_ATTEMPTS: u32 = 3;
 /// Default initial retry delay in milliseconds.
-const DEFAULT_RETRY_INITIAL_DELAY_MS: u64 = 1000;
+const DEFAULT_RETRY_INITIAL_DELAY_MS: u64 = 300;
 /// Default maximum retry delay in milliseconds.
-const DEFAULT_RETRY_MAX_DELAY_MS: u64 = 30_000;
+const DEFAULT_RETRY_MAX_DELAY_MS: u64 = 5_000;
+/// Default jitter in milliseconds.
+const DEFAULT_RETRY_JITTER_MS: u64 = 500;
 
 pub mod loader;
 
@@ -278,9 +282,14 @@ pub struct RetryConfig {
   pub initial_delay_ms: u64,
 
   /// Maximum delay in milliseconds between retries (caps exponential growth).
-  /// Default is 30000ms (30 seconds).
+  /// Default is 5000ms (5 seconds).
   #[serde(default = "default_retry_max_delay_ms")]
   pub max_delay_ms: u64,
+
+  /// Jitter in milliseconds added to each retry delay.
+  /// Default is 500ms.
+  #[serde(default = "default_retry_jitter_ms")]
+  pub jitter_ms: u64,
 }
 
 fn default_retry_max_attempts() -> u32 {
@@ -295,12 +304,17 @@ fn default_retry_max_delay_ms() -> u64 {
   DEFAULT_RETRY_MAX_DELAY_MS
 }
 
+fn default_retry_jitter_ms() -> u64 {
+  DEFAULT_RETRY_JITTER_MS
+}
+
 impl Default for RetryConfig {
   fn default() -> Self {
     Self {
       max_attempts: DEFAULT_RETRY_MAX_ATTEMPTS,
       initial_delay_ms: DEFAULT_RETRY_INITIAL_DELAY_MS,
       max_delay_ms: DEFAULT_RETRY_MAX_DELAY_MS,
+      jitter_ms: DEFAULT_RETRY_JITTER_MS,
     }
   }
 }
@@ -308,13 +322,25 @@ impl Default for RetryConfig {
 impl RetryConfig {
   /// Calculate the delay for a given attempt number (0-indexed).
   ///
-  /// Uses exponential backoff: `initial_delay_ms * 2^attempt`, capped at `max_delay_ms`.
-  pub fn delay_for_attempt(&self, attempt: u32) -> tokio::time::Duration {
-    let delay_ms = self
+  /// Uses exponential backoff: `initial_delay_ms * 2^attempt`, capped at `max_delay_ms`,
+  /// plus a random jitter up to `jitter_ms`.
+  pub fn delay_for_attempt(&self, attempt: u32) -> Duration {
+    let base_ms = self
       .initial_delay_ms
       .saturating_mul(2u64.saturating_pow(attempt))
       .min(self.max_delay_ms);
-    tokio::time::Duration::from_millis(delay_ms)
+
+    let jitter = if self.jitter_ms > 0 {
+      let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+      nanos % (self.jitter_ms + 1)
+    } else {
+      0
+    };
+
+    Duration::from_millis(base_ms.saturating_add(jitter))
   }
 
   /// Returns true if retries are enabled (max_attempts > 0).

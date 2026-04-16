@@ -307,6 +307,12 @@ impl App {
             self.data.streaming_response = Arc::new(Vec::new());
             self.current_chunks = Arc::new(Vec::new());
           }
+          SessionEvent::StreamInterrupted { .. } => {
+            // The actor is retrying; clear our partial streaming state so we
+            // stay consistent and don't concatenate old chunks with the retry.
+            self.current_chunks = Arc::new(Vec::new());
+            self.data.streaming_response = Arc::new(Vec::new());
+          }
           SessionEvent::Error(err) => {
             // Log error and clear any partial response
             error!("LLM stream error: {}", err);

@@ -107,6 +107,7 @@ mod tests {
       max_attempts: 3,
       initial_delay_ms: 10,
       max_delay_ms: 100,
+      jitter_ms: 0,
     };
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = counter.clone();
@@ -135,6 +136,7 @@ mod tests {
       max_attempts: 3,
       initial_delay_ms: 10,
       max_delay_ms: 100,
+      jitter_ms: 0,
     };
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = counter.clone();
@@ -167,6 +169,7 @@ mod tests {
       max_attempts: 2,
       initial_delay_ms: 10,
       max_delay_ms: 100,
+      jitter_ms: 0,
     };
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = counter.clone();
@@ -195,6 +198,7 @@ mod tests {
       max_attempts: 3,
       initial_delay_ms: 10,
       max_delay_ms: 100,
+      jitter_ms: 0,
     };
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = counter.clone();
@@ -224,6 +228,7 @@ mod tests {
       max_attempts: 5,
       initial_delay_ms: 1000,
       max_delay_ms: 30_000,
+      jitter_ms: 0,
     };
 
     assert_eq!(config.delay_for_attempt(0).as_millis(), 1000);
@@ -240,11 +245,13 @@ mod tests {
       max_attempts: 3,
       initial_delay_ms: 1000,
       max_delay_ms: 30_000,
+      jitter_ms: 0,
     };
     let disabled = RetryConfig {
       max_attempts: 0,
       initial_delay_ms: 1000,
       max_delay_ms: 30_000,
+      jitter_ms: 0,
     };
     assert!(enabled.is_enabled());
     assert!(!disabled.is_enabled());
