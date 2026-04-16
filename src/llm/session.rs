@@ -13,10 +13,10 @@ use async_openai::types::chat::{
   ChatCompletionMessageToolCallChunk, ChatCompletionResponseStream, FunctionCallStream,
 };
 use chrono::{Datelike, Local, Timelike};
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use tokio::sync::mpsc;
 
-use crate::config::{CompactionConfig, Config, DEFAULT_MAX_CONTEXT_SIZE};
+use crate::config::{CompactionConfig, Config, DEFAULT_MAX_CONTEXT_SIZE, RetryConfig};
 use crate::error::{ConfigError, Result};
 use crate::llm::compaction::{Compaction, calculate_threshold, should_auto_compact};
 use crate::llm::provider::LLMProvider;
@@ -191,6 +191,8 @@ struct SessionActor {
   compaction: Compaction,
   /// Whether compaction has been notified for current threshold
   compaction_notified: bool,
+  /// Retry configuration for LLM requests
+  retry_config: RetryConfig,
 }
 
 impl SessionActor {
@@ -206,6 +208,7 @@ impl SessionActor {
     meta: SessionMeta,
     compaction_config: CompactionConfig,
     max_context_size: usize,
+    retry_config: RetryConfig,
   ) -> Self {
     Self {
       id,
@@ -227,6 +230,7 @@ impl SessionActor {
       max_context_size,
       compaction: Compaction::default(),
       compaction_notified: false,
+      retry_config,
     }
   }
 
@@ -507,20 +511,77 @@ impl SessionActor {
     self.compaction_notified = false;
   }
 
-  /// Start a chat stream with the current messages
+  /// Start a chat stream with the current messages, with retry support.
+  ///
+  /// If the initial request fails with a retryable error (network timeout,
+  /// rate limit, server error), it will be retried with exponential backoff
+  /// according to the retry configuration.
   async fn start_chat_stream(&mut self) {
-    match self.provider.chat_stream(self.messages.clone()).await {
-      Ok(stream) => {
-        let (tx, rx) = mpsc::unbounded_channel();
-        self.stream_rx = Some(rx);
-        self.is_streaming = true;
-        tokio::spawn(handle_stream(stream, tx));
-        info!("Session {}: Started streaming for message", self.id);
+    let max_attempts = self.retry_config.max_attempts.max(1);
+    let mut last_error: Option<String> = None;
+
+    for attempt in 0..max_attempts {
+      match self.provider.chat_stream(self.messages.clone()).await {
+        Ok(stream) => {
+          if attempt > 0 {
+            info!(
+              "Session {}: stream started on attempt {}/{}",
+              self.id,
+              attempt + 1,
+              max_attempts
+            );
+          }
+          let (tx, rx) = mpsc::unbounded_channel();
+          self.stream_rx = Some(rx);
+          self.is_streaming = true;
+          tokio::spawn(handle_stream(stream, tx));
+          info!("Session {}: Started streaming for message", self.id);
+          return;
+        }
+        Err(e) => {
+          let err_string = e.to_string();
+          let is_retryable = is_error_retryable(&e);
+          let is_last = attempt + 1 >= max_attempts;
+
+          if !is_retryable {
+            error!(
+              "Session {}: non-retryable error on attempt {}/{}: {}",
+              self.id,
+              attempt + 1,
+              max_attempts,
+              err_string
+            );
+            let _ = self.event_tx.send(SessionEvent::Error(err_string));
+            return;
+          }
+
+          if is_last {
+            error!(
+              "Session {}: all {} attempts exhausted, last error: {}",
+              self.id, max_attempts, err_string
+            );
+            let _ = self.event_tx.send(SessionEvent::Error(err_string));
+            return;
+          }
+
+          let delay = self.retry_config.delay_for_attempt(attempt);
+          warn!(
+            "Session {}: attempt {}/{} failed ({}), retrying in {:?}",
+            self.id,
+            attempt + 1,
+            max_attempts,
+            err_string,
+            delay
+          );
+          last_error = Some(err_string);
+          tokio::time::sleep(delay).await;
+        }
       }
-      Err(e) => {
-        error!("Session {}: Failed to start streaming: {}", self.id, e);
-        let _ = self.event_tx.send(SessionEvent::Error(e.to_string()));
-      }
+    }
+
+    // Unreachable, but safety net
+    if let Some(err) = last_error {
+      let _ = self.event_tx.send(SessionEvent::Error(err));
     }
   }
 
@@ -878,6 +939,7 @@ impl ChatSession {
       meta,
       config.compaction.clone(),
       max_context_size,
+      config.retry.clone(),
     );
     Ok((session, messages))
   }
@@ -1033,6 +1095,7 @@ impl ChatSession {
       meta,
       config.compaction.clone(),
       max_context_size,
+      config.retry.clone(),
     );
     info!(
       "ChatSession {} created from config with store",
@@ -1052,6 +1115,7 @@ impl ChatSession {
     meta: SessionMeta,
     compaction_config: CompactionConfig,
     max_context_size: usize,
+    retry_config: RetryConfig,
   ) -> Self {
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
     let (event_tx, event_rx) = mpsc::unbounded_channel();
@@ -1072,6 +1136,7 @@ impl ChatSession {
       meta,
       compaction_config,
       max_context_size,
+      retry_config,
     );
     tokio::spawn(actor.run());
 
@@ -1372,9 +1437,26 @@ async fn handle_stream(
   let _ = tx.send(SessionEvent::Completed);
 }
 
+/// Check if an error from `chat_stream` is retryable.
+///
+/// Inspects the actual error enum variants rather than string matching:
+/// - `Llm` errors → delegates to `LlmError::is_retryable()`
+/// - `OpenAI` errors → delegates to `is_openai_error_retryable()`
+/// - All other error types → not retryable
+fn is_error_retryable(err: &crate::error::Error) -> bool {
+  use crate::error::{Error, is_openai_error_retryable};
+
+  match err {
+    Error::Llm(llm_err) => llm_err.is_retryable(),
+    Error::OpenAI(openai_err) => is_openai_error_retryable(openai_err),
+    _ => false,
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::error::LlmError;
 
   #[test]
   fn test_session_id_format() {
@@ -1383,5 +1465,49 @@ mod tests {
     assert!(id.contains('-'));
     // Should contain colons for time
     assert!(id.contains(':'));
+  }
+
+  #[test]
+  fn test_is_error_retryable() {
+    // LlmError::StreamError is always retryable (transient by nature)
+    let err = crate::error::Error::Llm(LlmError::StreamError("some stream error".to_string()));
+    assert!(is_error_retryable(&err));
+
+    // LlmError::InvalidConfig should NOT be retryable
+    let err = crate::error::Error::Llm(LlmError::InvalidConfig("bad config".to_string()));
+    assert!(!is_error_retryable(&err));
+
+    // LlmError::EmptyResponse should NOT be retryable
+    let err = crate::error::Error::Llm(LlmError::EmptyResponse);
+    assert!(!is_error_retryable(&err));
+
+    // LlmError::Retryable should be retryable
+    let err = crate::error::Error::Llm(LlmError::Retryable {
+      message: "transient".to_string(),
+    });
+    assert!(is_error_retryable(&err));
+  }
+
+  #[test]
+  fn test_is_api_error_type_retryable() {
+    use crate::error::is_api_error_type_retryable;
+
+    // Known retryable types
+    assert!(is_api_error_type_retryable(Some("server_error")));
+    assert!(is_api_error_type_retryable(Some("rate_limit_error")));
+    assert!(is_api_error_type_retryable(Some("timeout")));
+
+    // Known non-retryable types
+    assert!(!is_api_error_type_retryable(Some("invalid_request_error")));
+    assert!(!is_api_error_type_retryable(Some("authentication_error")));
+    assert!(!is_api_error_type_retryable(Some("permission_error")));
+    assert!(!is_api_error_type_retryable(Some("insufficient_quota")));
+    assert!(!is_api_error_type_retryable(Some("model_not_found")));
+
+    // None = typically 5xx, conservatively retryable
+    assert!(is_api_error_type_retryable(None));
+
+    // Unknown type — not retryable
+    assert!(!is_api_error_type_retryable(Some("unknown_error")));
   }
 }

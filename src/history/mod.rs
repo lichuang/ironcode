@@ -591,7 +591,7 @@ pub fn save_input(text: impl Into<String>, config: &Config) -> std::io::Result<(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::config::{CompactionConfig, HistoryConfig, LoggingConfig};
+  use crate::config::{CompactionConfig, HistoryConfig, LoggingConfig, RetryConfig};
   use std::collections::HashMap;
   use tempfile::TempDir;
 
@@ -608,6 +608,7 @@ mod tests {
         max_entries,
       },
       compaction: CompactionConfig::default(),
+      retry: RetryConfig::default(),
     }
   }
 

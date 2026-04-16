@@ -15,7 +15,7 @@ AI-powered terminal code assistant built with Rust.
 - ✅ **Thinking Mode** — Supports `<think>` reasoning content extraction
 - ✅ **OpenAI-Compatible Framework** — Extensible provider trait for adding new models
 - ✅ **Context Compaction** — Automatic context compression with rolling window strategy
-- ❌ **Auto-Retry with Backoff** — Exponential backoff for failed requests
+- ✅ **Auto-Retry with Backoff** — Exponential backoff for failed requests
 
 ### Tool System
 - ✅ **ReadFile** — Read file contents with line numbers and offset/limit
@@ -95,6 +95,12 @@ supports_streaming = true
 enabled = true
 trigger_ratio = 0.85
 reserved_context_size = 50000
+
+# Retry settings (exponential backoff for failed LLM requests)
+[retry]
+max_attempts = 3
+initial_delay_ms = 1000
+max_delay_ms = 30000
 ```
 
 ### Compaction Configuration

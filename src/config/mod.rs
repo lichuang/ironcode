@@ -19,6 +19,12 @@ const DEFAULT_COMPACTION_TRIGGER_RATIO: f32 = 0.85;
 const DEFAULT_RESERVED_CONTEXT_SIZE: usize = 50_000;
 /// Default maximum context size in tokens (128K).
 pub const DEFAULT_MAX_CONTEXT_SIZE: usize = 128_000;
+/// Default maximum retry attempts for LLM requests.
+const DEFAULT_RETRY_MAX_ATTEMPTS: u32 = 3;
+/// Default initial retry delay in milliseconds.
+const DEFAULT_RETRY_INITIAL_DELAY_MS: u64 = 1000;
+/// Default maximum retry delay in milliseconds.
+const DEFAULT_RETRY_MAX_DELAY_MS: u64 = 30_000;
 
 pub mod loader;
 
@@ -59,6 +65,10 @@ pub struct Config {
   /// Compaction configuration for context management
   #[serde(default)]
   pub compaction: CompactionConfig,
+
+  /// Retry configuration for LLM requests
+  #[serde(default)]
+  pub retry: RetryConfig,
 }
 
 impl Default for Config {
@@ -72,6 +82,7 @@ impl Default for Config {
       default_thinking: true,
       history: HistoryConfig::default(),
       compaction: CompactionConfig::default(),
+      retry: RetryConfig::default(),
     }
   }
 }
@@ -247,5 +258,68 @@ impl Default for CompactionConfig {
       trigger_ratio: DEFAULT_COMPACTION_TRIGGER_RATIO,
       enabled: true,
     }
+  }
+}
+
+/// Retry configuration for LLM API requests with exponential backoff.
+///
+/// Controls how failed requests are retried before giving up.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetryConfig {
+  /// Maximum number of retry attempts (0 = no retries).
+  /// Default is 3.
+  #[serde(default = "default_retry_max_attempts")]
+  pub max_attempts: u32,
+
+  /// Initial delay in milliseconds before the first retry.
+  /// Subsequent retries use exponential backoff: delay * 2^attempt.
+  /// Default is 1000ms (1 second).
+  #[serde(default = "default_retry_initial_delay_ms")]
+  pub initial_delay_ms: u64,
+
+  /// Maximum delay in milliseconds between retries (caps exponential growth).
+  /// Default is 30000ms (30 seconds).
+  #[serde(default = "default_retry_max_delay_ms")]
+  pub max_delay_ms: u64,
+}
+
+fn default_retry_max_attempts() -> u32 {
+  DEFAULT_RETRY_MAX_ATTEMPTS
+}
+
+fn default_retry_initial_delay_ms() -> u64 {
+  DEFAULT_RETRY_INITIAL_DELAY_MS
+}
+
+fn default_retry_max_delay_ms() -> u64 {
+  DEFAULT_RETRY_MAX_DELAY_MS
+}
+
+impl Default for RetryConfig {
+  fn default() -> Self {
+    Self {
+      max_attempts: DEFAULT_RETRY_MAX_ATTEMPTS,
+      initial_delay_ms: DEFAULT_RETRY_INITIAL_DELAY_MS,
+      max_delay_ms: DEFAULT_RETRY_MAX_DELAY_MS,
+    }
+  }
+}
+
+impl RetryConfig {
+  /// Calculate the delay for a given attempt number (0-indexed).
+  ///
+  /// Uses exponential backoff: `initial_delay_ms * 2^attempt`, capped at `max_delay_ms`.
+  pub fn delay_for_attempt(&self, attempt: u32) -> tokio::time::Duration {
+    let delay_ms = self
+      .initial_delay_ms
+      .saturating_mul(2u64.saturating_pow(attempt))
+      .min(self.max_delay_ms);
+    tokio::time::Duration::from_millis(delay_ms)
+  }
+
+  /// Returns true if retries are enabled (max_attempts > 0).
+  #[allow(dead_code)]
+  pub fn is_enabled(&self) -> bool {
+    self.max_attempts > 0
   }
 }

@@ -143,6 +143,7 @@ fn merge_configs(base: Config, override_: Config) -> Config {
     default_thinking: override_.default_thinking,
     history: override_.history,
     compaction: override_.compaction,
+    retry: override_.retry,
   }
 }
 
@@ -230,7 +231,7 @@ level = "info"
 
 #[cfg(test)]
 mod tests {
-  use super::super::{CompactionConfig, Config, HistoryConfig, LoggingConfig};
+  use super::super::{CompactionConfig, Config, HistoryConfig, LoggingConfig, RetryConfig};
   use super::*;
   use std::collections::HashMap;
   use std::env;
@@ -408,6 +409,7 @@ supports_streaming = true
       default_thinking: true,
       history: HistoryConfig::default(),
       compaction: CompactionConfig::default(),
+      retry: RetryConfig::default(),
     };
     let result = validate_config(&config);
     assert!(result.is_err());
