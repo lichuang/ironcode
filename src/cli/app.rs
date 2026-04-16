@@ -318,6 +318,11 @@ impl App {
             error!("LLM stream error: {}", err);
             self.current_chunks = Arc::new(Vec::new());
             self.data.streaming_response = Arc::new(Vec::new());
+            // Show a user-friendly system message in the chat history
+            self.data.chat_history.push(ChatMessage::System {
+              content: err,
+              level: SystemMessageLevel::Error,
+            });
           }
           SessionEvent::Shutdown => {
             // Session has been shutdown

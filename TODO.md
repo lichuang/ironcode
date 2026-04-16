@@ -59,8 +59,8 @@
 #### 3. Improved Error Handling and Retry (In Progress)
 - [✅] Integrate custom exponential backoff retry logic
 - [✅] Precise error classification for retry decisions (mirrors kimi-cli)
-- [×] LLM stream interruption recovery mechanism
-- [×] User-friendly network error messages
+- [✅] LLM stream interruption recovery mechanism
+- [✅] User-friendly network error messages
 - [✅] Configurable retry count and delay
 
 ---

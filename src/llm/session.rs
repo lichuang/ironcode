@@ -574,7 +574,9 @@ impl SessionActor {
               "Session {}: non-retryable error on attempt {}/{}: {}",
               self.id, self.stream_retry_attempt, max_attempts, err_string
             );
-            let _ = self.event_tx.send(SessionEvent::Error(err_string));
+            let _ = self
+              .event_tx
+              .send(SessionEvent::Error(format_user_friendly_error(&err_string)));
             return;
           }
 
@@ -583,7 +585,11 @@ impl SessionActor {
               "Session {}: all {} attempts exhausted, last error: {}",
               self.id, max_attempts, err_string
             );
-            let _ = self.event_tx.send(SessionEvent::Error(err_string));
+            let friendly = format_user_friendly_error(&err_string);
+            let _ = self.event_tx.send(SessionEvent::Error(format!(
+              "{} (tried {} times)",
+              friendly, max_attempts
+            )));
             return;
           }
 
@@ -812,7 +818,9 @@ impl SessionActor {
         if *is_retryable {
           self.attempt_chat_stream("resumed after interrupt").await;
         } else {
-          let _ = self.event_tx.send(SessionEvent::Error(error.clone()));
+          let _ = self
+            .event_tx
+            .send(SessionEvent::Error(format_user_friendly_error(error)));
         }
       }
       SessionEvent::Error(err) => {
@@ -1545,6 +1553,34 @@ fn is_error_retryable(err: &Error) -> bool {
   match err {
     Error::Llm(llm_err) => llm_err.is_retryable(),
     _ => false,
+  }
+}
+
+/// Convert a raw LLM error string into a user-friendly message.
+fn format_user_friendly_error(err: &str) -> String {
+  if err.contains("Stream timeout") || err.contains("timed out") {
+    "Connection timed out while waiting for the response. Please check your network and try again."
+      .to_string()
+  } else if err.contains("Connection lost") {
+    "The connection was interrupted. Please check your network and try again.".to_string()
+  } else if err.contains("Transport error") {
+    "A network error occurred. Please check your connection and try again.".to_string()
+  } else if err.contains("HTTP 429") {
+    "Rate limit exceeded. Please wait a moment and try again.".to_string()
+  } else if err.contains("HTTP 500")
+    || err.contains("HTTP 502")
+    || err.contains("HTTP 503")
+    || err.contains("HTTP 504")
+  {
+    "The server is temporarily unavailable. Please try again later.".to_string()
+  } else if err.contains("Parse error") {
+    "Received an invalid response from the server. Please try again.".to_string()
+  } else if err.contains("EmptyResponse") || err.contains("No response content") {
+    "The server returned an empty response. Please try again.".to_string()
+  } else if err.contains("non-retryable error") {
+    err.to_string()
+  } else {
+    format!("An error occurred: {}", err)
   }
 }
 
