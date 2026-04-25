@@ -33,6 +33,8 @@ pub struct AppData {
   pub(crate) precise_token_count: Option<u32>,
   /// Compaction warning state (token threshold approaching)
   pub(crate) compaction_warning: Option<CompactionWarning>,
+  /// Pending tool call awaiting user approval
+  pub(crate) pending_approval: Option<PendingApproval>,
 }
 
 /// Compaction warning information
@@ -47,6 +49,18 @@ pub struct CompactionWarning {
   pub max_context_size: usize,
 }
 
+/// Pending tool call awaiting user approval
+#[derive(Debug, Clone)]
+pub struct PendingApproval {
+  /// Tool call ID
+  pub tool_call_id: String,
+  /// Tool name
+  pub name: String,
+  /// Tool arguments
+  #[allow(dead_code)]
+  pub arguments: String,
+}
+
 impl AppData {
   /// Create a new app data instance
   pub fn new() -> Self {
@@ -57,6 +71,7 @@ impl AppData {
       config: None,
       precise_token_count: None,
       compaction_warning: None,
+      pending_approval: None,
     }
   }
 }
@@ -114,6 +129,9 @@ impl App {
     data.config = Some(config.clone());
 
     let system_prompt = runtime.render_system_prompt();
+
+    let mut config = config;
+    config.yolo = config.yolo || args.yolo;
 
     let mode = if let Some(id) = &args.session {
       SessionMode::ResumeById(id.clone())
@@ -312,6 +330,17 @@ impl App {
             // stay consistent and don't concatenate old chunks with the retry.
             self.current_chunks = Arc::new(Vec::new());
             self.data.streaming_response = Arc::new(Vec::new());
+          }
+          SessionEvent::ApprovalNeeded {
+            id,
+            name,
+            arguments,
+          } => {
+            self.data.pending_approval = Some(PendingApproval {
+              tool_call_id: id,
+              name,
+              arguments,
+            });
           }
           SessionEvent::Error(err) => {
             // Log error and clear any partial response

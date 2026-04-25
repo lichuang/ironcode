@@ -748,6 +748,33 @@ impl ChatView {
 
 impl View for ChatView {
   fn handle_key(&mut self, data: &mut AppData, key: KeyEvent) -> Option<Box<dyn View>> {
+    // Handle pending tool call approval first
+    if let Some(ref approval) = data.pending_approval {
+      match key.code {
+        KeyCode::Char('y') | KeyCode::Enter => {
+          self
+            .session_handle
+            .approve_tool_call(&approval.tool_call_id, true);
+          data.pending_approval = None;
+        }
+        KeyCode::Char('n') | KeyCode::Esc => {
+          self
+            .session_handle
+            .approve_tool_call(&approval.tool_call_id, false);
+          data.pending_approval = None;
+        }
+        KeyCode::Char('a') => {
+          self.session_handle.enable_session_yolo();
+          self
+            .session_handle
+            .approve_tool_call(&approval.tool_call_id, true);
+          data.pending_approval = None;
+        }
+        _ => {}
+      }
+      return None;
+    }
+
     match key.code {
       KeyCode::Esc => {
         // Exit the application
@@ -979,6 +1006,16 @@ impl View for ChatView {
       }
     }
 
+    // Approval prompt (if pending)
+    let approval_height = if data.pending_approval.is_some() {
+      3
+    } else {
+      0
+    };
+    if approval_height > 0 {
+      constraints.push(Constraint::Length(approval_height));
+    }
+
     // Waiting for user input: spinner line (1 line height)
     // Only shown in WaitingInput state
     if self.state == ChatDisplayState::WaitingInput {
@@ -1029,6 +1066,10 @@ impl View for ChatView {
         .map(|c| Self::calculate_line_count(c.content(), available_width))
         .sum();
       total_fixed_height += chunks_height;
+    }
+    // Add approval prompt height if pending
+    if data.pending_approval.is_some() {
+      total_fixed_height += 3;
     }
     // Add spinner line height if in WaitingInput state
     if self.state == ChatDisplayState::WaitingInput {
@@ -1176,6 +1217,45 @@ impl View for ChatView {
           chunk_idx += 1;
         }
       }
+    }
+
+    // Render approval prompt if pending
+    if let Some(ref approval) = data.pending_approval
+      && chunk_idx < chunks.len()
+    {
+      use ratatui::style::{Modifier, Style};
+      let text = Text::from(vec![
+        Line::from(vec![
+          Span::styled(
+            "⏸ ",
+            Style::default().fg(WARNING).add_modifier(Modifier::BOLD),
+          ),
+          Span::styled(
+            format!("{} requires approval", approval.name),
+            Style::default().fg(TEXT_COLOR).add_modifier(Modifier::BOLD),
+          ),
+        ]),
+        Line::from(vec![
+          Span::styled(
+            "[y] ",
+            Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+          ),
+          Span::styled("approve  ", Style::default().fg(TEXT_COLOR)),
+          Span::styled(
+            "[n] ",
+            Style::default().fg(CRITICAL).add_modifier(Modifier::BOLD),
+          ),
+          Span::styled("deny  ", Style::default().fg(TEXT_COLOR)),
+          Span::styled(
+            "[a] ",
+            Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
+          ),
+          Span::styled("allow session", Style::default().fg(TEXT_COLOR)),
+        ]),
+      ]);
+      let widget = Paragraph::new(text).alignment(ratatui::layout::Alignment::Center);
+      f.render_widget(widget, chunks[chunk_idx]);
+      chunk_idx += 1;
     }
 
     // Waiting for user input: prompt + spinner (no input box yet)

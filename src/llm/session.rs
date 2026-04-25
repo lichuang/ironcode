@@ -65,6 +65,15 @@ pub enum SessionCommand {
   Cancel,
   /// Clear conversation history
   ClearHistory,
+  /// Approve or deny a pending tool call
+  ApproveToolCall {
+    /// Tool call ID being approved
+    tool_call_id: String,
+    /// Whether the user approved the execution
+    approved: bool,
+  },
+  /// Enable YOLO mode for the current session (persisted to meta)
+  EnableSessionYolo,
   /// Shutdown the session actor
   Shutdown,
 }
@@ -94,6 +103,15 @@ pub enum SessionEvent {
     error: String,
     /// Whether the actor should attempt to retry
     is_retryable: bool,
+  },
+  /// A tool call requires user approval before execution
+  ApprovalNeeded {
+    /// Tool call ID
+    id: String,
+    /// Tool name
+    name: String,
+    /// Tool arguments
+    arguments: String,
   },
   /// Session has been shutdown
   Shutdown,
@@ -158,6 +176,19 @@ impl SessionHandle {
   pub fn shutdown(&self) {
     let _ = self.cmd_tx.send(SessionCommand::Shutdown);
   }
+
+  /// Approve or deny a pending tool call
+  pub fn approve_tool_call(&self, tool_call_id: impl Into<String>, approved: bool) {
+    let _ = self.cmd_tx.send(SessionCommand::ApproveToolCall {
+      tool_call_id: tool_call_id.into(),
+      approved,
+    });
+  }
+
+  /// Enable YOLO mode for the current session
+  pub fn enable_session_yolo(&self) {
+    let _ = self.cmd_tx.send(SessionCommand::EnableSessionYolo);
+  }
 }
 
 /// Internal state of the session actor
@@ -204,6 +235,21 @@ struct SessionActor {
   compaction_notified: bool,
   /// Retry configuration for LLM requests
   retry_config: RetryConfig,
+  /// YOLO mode: auto-approve all tool calls
+  yolo: bool,
+  /// List of tools to auto-approve when YOLO is off
+  auto_approve: Vec<String>,
+  /// State for resuming tool call execution after approval
+  tool_call_execution_state: Option<ToolCallExecutionState>,
+}
+
+/// State kept while executing a batch of tool calls so that execution can
+/// be paused for approval and resumed later.
+struct ToolCallExecutionState {
+  /// The tool calls to execute
+  tool_calls: Vec<ToolCall>,
+  /// Index of the next tool call to execute
+  current_index: usize,
 }
 
 impl SessionActor {
@@ -220,6 +266,8 @@ impl SessionActor {
     compaction_config: CompactionConfig,
     max_context_size: usize,
     retry_config: RetryConfig,
+    yolo: bool,
+    auto_approve: Vec<String>,
   ) -> Self {
     Self {
       id,
@@ -243,6 +291,9 @@ impl SessionActor {
       compaction: Compaction::default(),
       compaction_notified: false,
       retry_config,
+      yolo,
+      auto_approve,
+      tool_call_execution_state: None,
     }
   }
 
@@ -383,6 +434,27 @@ impl SessionActor {
         if self.is_streaming {
           self.stream_rx = None;
           self.is_streaming = false;
+        }
+        true
+      }
+
+      SessionCommand::ApproveToolCall {
+        tool_call_id,
+        approved,
+      } => {
+        self.handle_approval(tool_call_id, approved).await;
+        true
+      }
+
+      SessionCommand::EnableSessionYolo => {
+        info!("Session {}: Enabling YOLO mode for this session", self.id);
+        self.yolo = true;
+        self.meta.yolo = true;
+        if let Err(e) = self.session_store.update_meta(&self.meta) {
+          error!(
+            "Session {}: Failed to persist yolo mode to meta: {}",
+            self.id, e
+          );
         }
         true
       }
@@ -850,6 +922,10 @@ impl SessionActor {
           );
         }
       }
+      SessionEvent::ApprovalNeeded { .. } => {
+        // ApprovalNeeded is never emitted by the stream task,
+        // but the match must be exhaustive.
+      }
       SessionEvent::CompactionCompleted { .. } => {
         // Forward compaction completion to UI
         if self.event_tx.send(event).is_err() {
@@ -862,9 +938,16 @@ impl SessionActor {
     }
   }
 
-  /// Execute pending tool calls and continue the conversation
+  /// Check whether a tool call should be executed without user confirmation.
+  fn should_auto_approve(&self, tool_name: &str) -> bool {
+    self.yolo || self.auto_approve.iter().any(|n| n == tool_name)
+  }
+
+  /// Execute pending tool calls and continue the conversation.
+  ///
+  /// If YOLO mode is off and a tool is not in the auto-approve list,
+  /// execution pauses and an `ApprovalNeeded` event is sent to the UI.
   async fn execute_tool_calls(&mut self) {
-    // Get the last assistant message with tool calls
     let tool_calls = match self.messages.last() {
       Some(msg) => msg.tool_calls.clone().unwrap_or_default(),
       None => {
@@ -880,82 +963,59 @@ impl SessionActor {
       tool_calls.len()
     );
 
-    // Execute each tool call
-    for tool_call in &tool_calls {
-      // Notify UI about tool call
+    self.tool_call_execution_state = Some(ToolCallExecutionState {
+      tool_calls,
+      current_index: 0,
+    });
+    self.continue_tool_call_execution().await;
+  }
+
+  /// Resume tool call execution from the pending state.
+  async fn continue_tool_call_execution(&mut self) {
+    let state = match self.tool_call_execution_state.take() {
+      Some(s) => s,
+      None => {
+        error!(
+          "Session {}: continue_tool_call_execution called with no state",
+          self.id
+        );
+        return;
+      }
+    };
+
+    let tool_calls = state.tool_calls.clone();
+    for (i, tool_call) in tool_calls.iter().enumerate().skip(state.current_index) {
       let _ = self.event_tx.send(SessionEvent::ToolCallReceived {
         id: tool_call.id.clone(),
         name: tool_call.name.clone(),
         arguments: tool_call.arguments.clone(),
       });
 
-      // Create invocation
-      let invocation = ToolInvocation::new(
-        &tool_call.name,
-        &tool_call.id,
-        ToolPayload::Function {
+      if !self.should_auto_approve(&tool_call.name) {
+        info!(
+          "Session {}: Tool {} requires approval, pausing execution",
+          self.id, tool_call.name
+        );
+        self.tool_call_execution_state = Some(ToolCallExecutionState {
+          tool_calls: state.tool_calls.clone(),
+          current_index: i,
+        });
+        let _ = self.event_tx.send(SessionEvent::ApprovalNeeded {
+          id: tool_call.id.clone(),
+          name: tool_call.name.clone(),
           arguments: tool_call.arguments.clone(),
-        },
-        &self.cwd,
-      );
-
-      // Execute tool
-      match self.tool_registry.dispatch(invocation).await {
-        Ok(output) => {
-          let output_str = output.into_response();
-
-          // Notify UI about completion
-          let _ = self.event_tx.send(SessionEvent::ToolCallCompleted {
-            name: tool_call.name.clone(),
-            output: output_str.clone(),
-          });
-
-          // Add tool result to messages
-          let tool_msg = Message::tool(&output_str, &tool_call.id);
-          info!(
-            "Session {}: Adding tool result message: tool_call_id={}, output_preview={}...",
-            self.id,
-            tool_call.id,
-            output_str.chars().take(100).collect::<String>()
-          );
-          self.messages.push(tool_msg.clone());
-          let _ = self.session_store.append_message(&self.id, &tool_msg);
-          info!(
-            "Session {}: Tool {} executed successfully, output_len={}",
-            self.id,
-            tool_call.name,
-            output_str.len()
-          );
-        }
-        Err(e) => {
-          let error_msg = format!("Error: {}", e);
-
-          // Notify UI about completion (with error)
-          let _ = self.event_tx.send(SessionEvent::ToolCallCompleted {
-            name: tool_call.name.clone(),
-            output: error_msg.clone(),
-          });
-
-          // Add error result to messages
-          let tool_msg = Message::tool(&error_msg, &tool_call.id);
-          info!(
-            "Session {}: Adding tool error message: tool_call_id={}, error={}",
-            self.id, tool_call.id, error_msg
-          );
-          self.messages.push(tool_msg.clone());
-          let _ = self.session_store.append_message(&self.id, &tool_msg);
-          error!("Session {}: Tool {} failed: {}", self.id, tool_call.name, e);
-        }
+        });
+        return;
       }
+
+      self.execute_single_tool_call(tool_call).await;
     }
 
-    // Continue the conversation with the tool results
     info!(
       "Session {}: Continuing conversation after tool execution",
       self.id
     );
 
-    // Log updated message history
     info!(
       "Session {}: Updated message history for next request:",
       self.id
@@ -982,6 +1042,115 @@ impl SessionActor {
     self.current_thinking.clear();
     self.start_chat_stream().await;
   }
+
+  /// Execute a single tool call and store the result.
+  async fn execute_single_tool_call(&mut self, tool_call: &ToolCall) {
+    let invocation = ToolInvocation::new(
+      &tool_call.name,
+      &tool_call.id,
+      ToolPayload::Function {
+        arguments: tool_call.arguments.clone(),
+      },
+      &self.cwd,
+    );
+
+    match self.tool_registry.dispatch(invocation).await {
+      Ok(output) => {
+        let output_str = output.into_response();
+
+        let _ = self.event_tx.send(SessionEvent::ToolCallCompleted {
+          name: tool_call.name.clone(),
+          output: output_str.clone(),
+        });
+
+        let tool_msg = Message::tool(&output_str, &tool_call.id);
+        info!(
+          "Session {}: Adding tool result message: tool_call_id={}, output_preview={}...",
+          self.id,
+          tool_call.id,
+          output_str.chars().take(100).collect::<String>()
+        );
+        self.messages.push(tool_msg.clone());
+        let _ = self.session_store.append_message(&self.id, &tool_msg);
+        info!(
+          "Session {}: Tool {} executed successfully, output_len={}",
+          self.id,
+          tool_call.name,
+          output_str.len()
+        );
+      }
+      Err(e) => {
+        let error_msg = format!("Error: {}", e);
+
+        let _ = self.event_tx.send(SessionEvent::ToolCallCompleted {
+          name: tool_call.name.clone(),
+          output: error_msg.clone(),
+        });
+
+        let tool_msg = Message::tool(&error_msg, &tool_call.id);
+        info!(
+          "Session {}: Adding tool error message: tool_call_id={}, error={}",
+          self.id, tool_call.id, error_msg
+        );
+        self.messages.push(tool_msg.clone());
+        let _ = self.session_store.append_message(&self.id, &tool_msg);
+        error!("Session {}: Tool {} failed: {}", self.id, tool_call.name, e);
+      }
+    }
+  }
+
+  /// Handle user approval or denial of a pending tool call.
+  async fn handle_approval(&mut self, tool_call_id: String, approved: bool) {
+    let state = match self.tool_call_execution_state.take() {
+      Some(s) => s,
+      None => {
+        error!(
+          "Session {}: Received approval but no tool execution is pending",
+          self.id
+        );
+        return;
+      }
+    };
+
+    let current_index = state.current_index;
+    let tool_call = &state.tool_calls[current_index];
+
+    if tool_call.id != tool_call_id {
+      error!(
+        "Session {}: Approval tool_call_id mismatch: expected {}, got {}",
+        self.id, tool_call.id, tool_call_id
+      );
+      self.tool_call_execution_state = Some(state);
+      return;
+    }
+
+    if approved {
+      info!("Session {}: User approved tool {}", self.id, tool_call.name);
+      self.execute_single_tool_call(tool_call).await;
+    } else {
+      let denied_msg = format!("User declined to execute tool: {}", tool_call.name);
+      info!(
+        "Session {}: User denied tool {}: {}",
+        self.id, tool_call.name, denied_msg
+      );
+
+      let _ = self.event_tx.send(SessionEvent::ToolCallCompleted {
+        name: tool_call.name.clone(),
+        output: denied_msg.clone(),
+      });
+
+      let tool_msg = Message::tool(&denied_msg, &tool_call.id);
+      self.messages.push(tool_msg.clone());
+      let _ = self.session_store.append_message(&self.id, &tool_msg);
+    }
+
+    let next_index = current_index + 1;
+    self.tool_call_execution_state = Some(ToolCallExecutionState {
+      tool_calls: state.tool_calls,
+      current_index: next_index,
+    });
+    self.continue_tool_call_execution().await;
+  }
 }
 
 /// Handle to receive events from the session
@@ -1004,7 +1173,8 @@ impl ChatSession {
     executable_tool_registry: Arc<ExecutableToolRegistry>,
     session_store: Arc<SessionStore>,
   ) -> Result<(Self, Vec<Message>)> {
-    let meta = SessionMeta::new(generate_session_id(), &system_prompt);
+    let mut meta = SessionMeta::new(generate_session_id(), &system_prompt);
+    meta.yolo = config.yolo;
     session_store.create(&meta)?;
     let session = Self::create_with_store(
       config,
@@ -1034,6 +1204,7 @@ impl ChatSession {
       .and_then(|m| m.max_context_size)
       .unwrap_or(DEFAULT_MAX_CONTEXT_SIZE);
 
+    let yolo = meta.yolo;
     let session = Self::start_with_messages(
       id,
       provider,
@@ -1044,6 +1215,8 @@ impl ChatSession {
       config.compaction.clone(),
       max_context_size,
       config.retry.clone(),
+      yolo,
+      config.auto_approve.clone(),
     );
     Ok((session, messages))
   }
@@ -1190,6 +1363,7 @@ impl ChatSession {
       .and_then(|m| m.max_context_size)
       .unwrap_or(DEFAULT_MAX_CONTEXT_SIZE);
 
+    let yolo = meta.yolo;
     let session = Self::start_with_messages(
       meta.id.clone(),
       provider,
@@ -1200,6 +1374,8 @@ impl ChatSession {
       config.compaction.clone(),
       max_context_size,
       config.retry.clone(),
+      yolo,
+      config.auto_approve.clone(),
     );
     info!(
       "ChatSession {} created from config with store",
@@ -1220,6 +1396,8 @@ impl ChatSession {
     compaction_config: CompactionConfig,
     max_context_size: usize,
     retry_config: RetryConfig,
+    yolo: bool,
+    auto_approve: Vec<String>,
   ) -> Self {
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
     let (event_tx, event_rx) = mpsc::unbounded_channel();
@@ -1241,6 +1419,8 @@ impl ChatSession {
       compaction_config,
       max_context_size,
       retry_config,
+      yolo,
+      auto_approve,
     );
     tokio::spawn(actor.run());
 

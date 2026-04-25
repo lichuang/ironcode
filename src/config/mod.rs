@@ -73,6 +73,14 @@ pub struct Config {
   /// Retry configuration for LLM requests
   #[serde(default)]
   pub retry: RetryConfig,
+
+  /// YOLO mode: auto-approve all tool calls without confirmation
+  #[serde(default)]
+  pub yolo: bool,
+
+  /// List of tool names to auto-approve even when YOLO mode is off
+  #[serde(default)]
+  pub auto_approve: Vec<String>,
 }
 
 impl Default for Config {
@@ -87,6 +95,8 @@ impl Default for Config {
       history: HistoryConfig::default(),
       compaction: CompactionConfig::default(),
       retry: RetryConfig::default(),
+      yolo: false,
+      auto_approve: Vec::new(),
     }
   }
 }

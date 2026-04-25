@@ -30,6 +30,10 @@ pub struct Args {
   /// Continue the most recent session
   #[arg(long)]
   pub r#continue: bool,
+
+  /// Enable YOLO mode: auto-approve all tool calls without confirmation
+  #[arg(long)]
+  pub yolo: bool,
 }
 
 impl Args {

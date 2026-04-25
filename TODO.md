@@ -19,7 +19,7 @@
 ### Missing Features (kimi-cli has, ironcode lacks)
 
 1. **Persistent Sessions & Context** - Complete session persistence
-2. ~~**Context Compaction**~~ ✅ COMPLETED - Automatic context compression with rolling window strategy
+2. ~~**Context Compaction**~~ [x] COMPLETED - Automatic context compression with rolling window strategy
 3. **Subagent/Multi-agent System** - Task tool + LaborMarket
 4. **MCP Full Support** - `kimi mcp` management CLI
 5. **Web UI** - FastAPI + WebSocket backend
@@ -41,27 +41,27 @@
 ### Phase 1: Infrastructure Strengthening
 **Goal:** Build scalable foundation, address core pain points
 
-#### 1. Session Persistence System ✅ COMPLETED
-- [✅] Design session storage format (JSON/JSONL)
-- [✅] Implement `~/.ironcode/sessions/` directory management
-- [✅] Session saving (auto/manual trigger) - store layer integrated with ChatSession Actor
-- [✅] Session metadata (title, timestamps, message count)
-- [×] Session list UI (load historical sessions) - moved to Phase 2
+#### 1. Session Persistence System [x] COMPLETED
+- [x] Design session storage format (JSON/JSONL)
+- [x] Implement `~/.ironcode/sessions/` directory management
+- [x] Session saving (auto/manual trigger) - store layer integrated with ChatSession Actor
+- [x] Session metadata (title, timestamps, message count)
+- [ ] Session list UI (load historical sessions) - moved to Phase 2
 
-#### 2. Context Compaction ✅ COMPLETED
-- [✅] Token counting estimation (tiktoken-rs or approximate algorithm)
-- [✅] Compaction trigger threshold configuration
-- [✅] Rolling window strategy (keep recent N messages)
-- [✅] Compaction event notification UI
-- [✅] Automatic compaction execution
-- [×] Summary generation strategy (LLM-generated historical summary) - Future enhancement
+#### 2. Context Compaction [x] COMPLETED
+- [x] Token counting estimation (tiktoken-rs or approximate algorithm)
+- [x] Compaction trigger threshold configuration
+- [x] Rolling window strategy (keep recent N messages)
+- [x] Compaction event notification UI
+- [x] Automatic compaction execution
+- [ ] Summary generation strategy (LLM-generated historical summary) - Future enhancement
 
 #### 3. Improved Error Handling and Retry (In Progress)
-- [✅] Integrate custom exponential backoff retry logic
-- [✅] Precise error classification for retry decisions (mirrors kimi-cli)
-- [✅] LLM stream interruption recovery mechanism
-- [✅] User-friendly network error messages
-- [✅] Configurable retry count and delay
+- [x] Integrate custom exponential backoff retry logic
+- [x] Precise error classification for retry decisions (mirrors kimi-cli)
+- [x] LLM stream interruption recovery mechanism
+- [x] User-friendly network error messages
+- [x] Configurable retry count and delay
 
 ---
 
@@ -69,34 +69,34 @@
 **Goal:** Reach productive tool level
 
 #### 4. Session List UI
-- [×] TUI session list interface (browse historical sessions)
-- [×] Session search and filtering
-- [×] Session deletion functionality
+- [ ] TUI session list interface (browse historical sessions)
+- [ ] Session search and filtering
+- [ ] Session deletion functionality
 
 #### 5. Enhanced Approval System
-- [×] YOLO mode (`--yolo` / config option)
-- [×] File modification diff display
-- [×] Shell command preview confirmation
-- [×] Per-tool auto-approval configuration (e.g., only auto-approve ReadFile)
+- [x] YOLO mode (`--yolo` / config option)
+- [ ] File modification diff display
+- [ ] Shell command preview confirmation
+- [x] Per-tool auto-approval configuration (e.g., only auto-approve ReadFile)
 
 #### 6. Structured AskUser Tool
-- [×] Single-select/multi-select question types
-- [×] Confirmation dialogs (yes/no)
-- [×] Input validation and default values
-- [×] Rich text rendering (Markdown)
+- [ ] Single-select/multi-select question types
+- [ ] Confirmation dialogs (yes/no)
+- [ ] Input validation and default values
+- [ ] Rich text rendering (Markdown)
 
 #### 7. Full MCP Support
-- [×] MCP server configuration format design
-- [×] `ironcode mcp` subcommand framework
-- [×] `mcp add/remove/list` implementation
-- [×] MCP tool dynamic loading and registration
-- [×] MCP server lifecycle management
+- [ ] MCP server configuration format design
+- [ ] `ironcode mcp` subcommand framework
+- [ ] `mcp add/remove/list` implementation
+- [ ] MCP tool dynamic loading and registration
+- [ ] MCP server lifecycle management
 
 #### 8. OAuth Authentication Support
-- [×] Kimi OAuth device flow implementation
-- [×] Token refresh mechanism
-- [×] `ironcode login/logout` commands
-- [×] Secure token storage (keychain/keyring)
+- [ ] Kimi OAuth device flow implementation
+- [ ] Token refresh mechanism
+- [ ] `ironcode login/logout` commands
+- [ ] Secure token storage (keychain/keyring)
 
 ---
 
@@ -104,24 +104,24 @@
 **Goal:** Complex task processing capabilities
 
 #### 9. Subagent / Multi-Agent System
-- [×] Task tool design (create subtasks)
-- [×] Agent pool management (LaborMarket pattern)
-- [×] Parent-child session isolation and communication
-- [×] Sub-agent result aggregation
-- [×] Concurrent task execution limits
+- [ ] Task tool design (create subtasks)
+- [ ] Agent pool management (LaborMarket pattern)
+- [ ] Parent-child session isolation and communication
+- [ ] Sub-agent result aggregation
+- [ ] Concurrent task execution limits
 
 #### 10. Checkpoint / D-Mail System
-- [×] Context snapshot saving mechanism
-- [×] Checkpoint list and naming
-- [×] Rollback to specific checkpoint
-- [×] Branch session creation
-- [×] Checkpoint visualization (timeline UI)
+- [ ] Context snapshot saving mechanism
+- [ ] Checkpoint list and naming
+- [ ] Rollback to specific checkpoint
+- [ ] Branch session creation
+- [ ] Checkpoint visualization (timeline UI)
 
 #### 11. Skill System Foundation
-- [×] Skill file format design (YAML/JSON)
-- [×] Skill loading and parsing
-- [×] Skill variable substitution
-- [×] Flow skills foundation (simple workflows)
+- [ ] Skill file format design (YAML/JSON)
+- [ ] Skill loading and parsing
+- [ ] Skill variable substitution
+- [ ] Flow skills foundation (simple workflows)
 
 ---
 
@@ -129,27 +129,27 @@
 **Goal:** Diverse interactions and IDE integration
 
 #### 12. Print / Non-Interactive Mode
-- [×] `--print` command line argument
-- [×] Single-shot query mode (similar to `kimi "query"`)
-- [×] Pipe input support (`cat file.rs | ironcode`)
-- [×] JSON output mode (for scripting)
+- [ ] `--print` command line argument
+- [ ] Single-shot query mode (similar to `kimi "query"`)
+- [ ] Pipe input support (`cat file.rs | ironcode`)
+- [ ] JSON output mode (for scripting)
 
 #### 13. Web UI (Optional)
-- [×] FastAPI + WebSocket backend design
-- [×] Frontend framework selection (React/Vue/Svelte)
-- [×] Share core logic with TUI (Session, Tool)
-- [×] File upload support
+- [ ] FastAPI + WebSocket backend design
+- [ ] Frontend framework selection (React/Vue/Svelte)
+- [ ] Share core logic with TUI (Session, Tool)
+- [ ] File upload support
 
 #### 14. ACP Protocol Support (Optional)
-- [×] Agent Client Protocol specification research
-- [×] ACP server implementation
-- [×] VS Code extension compatibility testing
+- [ ] Agent Client Protocol specification research
+- [ ] ACP server implementation
+- [ ] VS Code extension compatibility testing
 
 #### 15. Enhanced Tool Set
-- [×] Image/vision support (image input)
-- [×] Code parsing tools (AST-aware)
-- [×] Git integration tools (diff, blame, log)
-- [×] LSP client integration (code completion, go-to-definition)
+- [ ] Image/vision support (image input)
+- [ ] Code parsing tools (AST-aware)
+- [ ] Git integration tools (diff, blame, log)
+- [ ] LSP client integration (code completion, go-to-definition)
 
 ---
 
@@ -171,7 +171,7 @@
 - Technical difficulty: Medium
 - User experience improvement: Huge
 
-### 3. ~~Context Compaction~~ ✅ COMPLETED
+### 3. ~~Context Compaction~~ [x] COMPLETED
 **Status:** Rolling window compaction implemented, LLM summary generation pending
 
 **Completed:**
@@ -187,7 +187,7 @@
 
 ## Completed Features (Archived)
 
-### ✅ Session Persistence System (Phase 1)
+### [x] Session Persistence System (Phase 1)
 - Storage layer (JSONL + `SessionStore`)
 - Integration with `ChatSession` Actor
 - `--session <ID>` and `--continue` argument support

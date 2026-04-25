@@ -144,6 +144,12 @@ fn merge_configs(base: Config, override_: Config) -> Config {
     history: override_.history,
     compaction: override_.compaction,
     retry: override_.retry,
+    yolo: override_.yolo || base.yolo,
+    auto_approve: if override_.auto_approve.is_empty() {
+      base.auto_approve
+    } else {
+      override_.auto_approve
+    },
   }
 }
 
@@ -410,6 +416,8 @@ supports_streaming = true
       history: HistoryConfig::default(),
       compaction: CompactionConfig::default(),
       retry: RetryConfig::default(),
+      yolo: false,
+      auto_approve: Vec::new(),
     };
     let result = validate_config(&config);
     assert!(result.is_err());

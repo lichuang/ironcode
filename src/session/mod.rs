@@ -31,6 +31,9 @@ pub struct SessionMeta {
   pub updated_at: DateTime<Local>,
   /// The system prompt used for this session
   pub system_prompt: String,
+  /// Whether YOLO mode is enabled for this session
+  #[serde(default)]
+  pub yolo: bool,
 }
 
 #[allow(dead_code)]
@@ -44,6 +47,7 @@ impl SessionMeta {
       created_at: now,
       updated_at: now,
       system_prompt: system_prompt.into(),
+      yolo: false,
     }
   }
 

@@ -609,6 +609,8 @@ mod tests {
       },
       compaction: CompactionConfig::default(),
       retry: RetryConfig::default(),
+      yolo: false,
+      auto_approve: Vec::new(),
     }
   }
 
