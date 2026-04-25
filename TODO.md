@@ -31,8 +31,17 @@
 11. **ACP Protocol** - IDE integration protocol
 12. **Approval System** - Rich text diff display
 13. **Print/Non-interactive Mode** - `--print` mode
-14. **Auto-retry with Backoff** - Exponential backoff retry (in progress)
-15. **YOLO Mode** - Auto-approve all operations
+14. ~~**Auto-retry with Backoff**~~ [x] COMPLETED - Exponential backoff retry
+15. ~~**YOLO Mode**~~ [x] COMPLETED - Auto-approve all operations with session-level persistence
+16. **Background Task & Notification System** - Async workers with heartbeat and LLM context delivery
+17. **Hook Engine** - Extensible PreToolUse/PostToolUse/UserPromptSubmit hooks
+18. **Plan Mode** - Structured planning with EnterPlanMode/ExitPlanMode tools
+19. **Git Context Integration** - Auto-inject git status/diff into system prompt
+20. **Think Tool** - Explicit reasoning tool for complex problem-solving
+21. **Wire Protocol Foundation** - Internal IPC for UI decoupling and multi-agent
+22. **Plugin System** - Dynamic external tool loading
+23. **Session Export** - Export conversations to markdown/JSON
+24. **Auto-update** - Version check and self-update mechanism
 
 ---
 
@@ -98,6 +107,28 @@
 - [ ] `ironcode login/logout` commands
 - [ ] Secure token storage (keychain/keyring)
 
+#### 16. Background Task & Notification System
+- [ ] Background task creation and dispatch (`TaskList`, `TaskOutput`, `TaskStop` tools)
+- [ ] Worker process with heartbeat and timeout monitoring
+- [ ] Task output storage and retrieval
+- [ ] Notification store and LLM context delivery
+
+#### 17. Hook Engine
+- [ ] Hook definition and registration framework
+- [ ] PreToolUse / PostToolUse hooks
+- [ ] UserPromptSubmit hook
+- [ ] Stop hook for graceful interruption
+
+#### 18. Plan Mode
+- [ ] `EnterPlanMode` / `ExitPlanMode` tools
+- [ ] Plan session isolation and state persistence
+- [ ] Plan slug tracking in session state
+
+#### 19. Git Context Integration
+- [ ] Auto-detect git repository
+- [ ] Inject git status/diff summary into system prompt
+- [ ] Git context for explore/codebase analysis
+
 ---
 
 ### Phase 3: Multi-Agent and Advanced Features
@@ -122,6 +153,15 @@
 - [ ] Skill loading and parsing
 - [ ] Skill variable substitution
 - [ ] Flow skills foundation (simple workflows)
+
+#### 20. Think Tool
+- [ ] `Think` tool handler for explicit reasoning
+- [ ] Integration with thinking mode streaming display
+
+#### 21. Wire Protocol Foundation
+- [ ] Define internal message types (TurnBegin, StepBegin, ToolCall, ApprovalRequest, etc.)
+- [ ] Message hub for decoupling UI from core session logic
+- [ ] Foundation for multi-agent communication and ACP
 
 ---
 
@@ -151,37 +191,21 @@
 - [ ] Git integration tools (diff, blame, log)
 - [ ] LSP client integration (code completion, go-to-definition)
 
----
+#### 22. Plugin System
+- [ ] Plugin discovery and loading mechanism
+- [ ] External tool registration API
+- [ ] Plugin manifest format and security isolation
 
-## Recommended Next Steps (Top 3)
+#### 23. Session Export
+- [ ] Export conversation to markdown/plaintext
+- [ ] Export to JSON/JSONL format
+- [ ] `ironcode export` CLI command
 
-### 1. YOLO Mode + Approval System [P0]
-**Status:** Pending implementation
+#### 24. Auto-update
+- [ ] Version check against GitHub releases
+- [ ] Self-update mechanism
+- [ ] Update notification in TUI startup
 
-**Why prioritize:**
-- Development efficiency: Reduce repetitive confirmation operations
-- Technical difficulty: Low
-- Security: Progressive trust (configurable by tool type)
-
-### 2. Session List UI [P0]
-**Status:** Storage layer complete, TUI interface pending
-
-**Why prioritize:**
-- User pain point: Hard to discover and load historical sessions (need to remember session ID)
-- Technical difficulty: Medium
-- User experience improvement: Huge
-
-### 3. ~~Context Compaction~~ [x] COMPLETED
-**Status:** Rolling window compaction implemented, LLM summary generation pending
-
-**Completed:**
-- Token counting and threshold detection
-- Rolling window strategy (keep recent N messages)
-- UI notifications and status bar warnings
-- Automatic compaction execution
-- Session store integration
-
-**Future:** LLM-generated summary for higher quality compaction
 
 ---
 
@@ -194,6 +218,17 @@
 - Automatic message and metadata saving
 
 ---
+
+## Summary
+
+| Metric | Count |
+|--------|-------|
+| **Total Tasks** | 93 |
+| **Completed** | 16 |
+| **Remaining** | 77 |
+| **Progress** | 17.2% |
+
+> **Note:** This summary must be updated whenever tasks are completed. After each batch of completions, recalculate the counts and percentage to keep the document accurate.
 
 ## Notes
 

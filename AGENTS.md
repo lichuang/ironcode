@@ -434,3 +434,22 @@ match registry.dispatch(invocation).await {
     Err(e) => eprintln!("Error: {}", e),
 }
 ```
+
+
+## Project Maintenance Rules
+
+### TODO.md Summary Updates
+
+Whenever you complete a batch of tasks from `TODO.md`, you **must** update the summary statistics at the bottom of that file.
+
+Run the following commands to recalculate:
+
+```bash
+total=$(grep -cE '^\s*- \[[x ]\]' TODO.md)
+undone=$(grep -cE '^\s*- \[ \]' TODO.md)
+done=$(grep -cE '^\s*- \[x\]' TODO.md)
+pct=$(awk "BEGIN {printf \"%.1f\", ($done/$total)*100}")
+echo "Total: $total, Done: $done, Remaining: $undone, Progress: $pct%"
+```
+
+Then update the **Summary** table in `TODO.md` with the new numbers.
