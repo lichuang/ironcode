@@ -358,39 +358,50 @@ pub fn render_diff_panel(f: &mut Frame, area: ratatui::layout::Rect, diff_text: 
   f.render_widget(table_with_block, area);
 }
 
-/// Calculate the height of a compact diff preview.
-pub fn diff_preview_compact_height(diff_text: &str) -> usize {
-  let diffs = parse_unified_diff(diff_text);
-  if diffs.is_empty() {
+/// Calculate the height of a compact preview for the approval panel.
+/// Handles both unified diffs and plain text (e.g. shell command previews).
+pub fn diff_preview_compact_height(preview_text: &str) -> usize {
+  let diffs = parse_unified_diff(preview_text);
+  if !diffs.is_empty() {
+    let diff = &diffs[0];
+    let changed: usize = diff
+      .hunks
+      .iter()
+      .map(|h| {
+        h.lines
+          .iter()
+          .filter(|l| l.kind != DiffLineKind::Context)
+          .count()
+      })
+      .sum();
+    if changed == 0 {
+      return 0;
+    }
+    return 1 + changed; // header line + changed lines
+  }
+
+  // Fallback: plain text preview (e.g. shell command)
+  let lines = preview_text.lines().count();
+  if lines == 0 {
     return 0;
   }
-  let diff = &diffs[0];
-  let changed: usize = diff
-    .hunks
-    .iter()
-    .map(|h| {
-      h.lines
-        .iter()
-        .filter(|l| l.kind != DiffLineKind::Context)
-        .count()
-    })
-    .sum();
-  if changed == 0 {
-    return 0;
-  }
-  1 + changed // header line + changed lines
+  1 + lines.min(8) // title line + up to 8 lines of content
 }
 
-/// Render a compact diff preview (only changed lines, no context) for approval panels.
-#[allow(dead_code)]
-pub fn render_diff_preview_compact(f: &mut Frame, area: ratatui::layout::Rect, diff_text: &str) {
-  let diffs = parse_unified_diff(diff_text);
-  if diffs.is_empty() {
+/// Render a compact preview for the approval panel.
+/// Handles both unified diffs and plain text (e.g. shell command previews).
+pub fn render_diff_preview_compact(f: &mut Frame, area: ratatui::layout::Rect, preview_text: &str) {
+  let diffs = parse_unified_diff(preview_text);
+  if !diffs.is_empty() {
+    render_diff_compact(f, area, &diffs[0]);
     return;
   }
 
-  let diff = &diffs[0];
+  // Fallback: render plain text preview as a code block (e.g. shell command)
+  render_plain_preview_compact(f, area, preview_text);
+}
 
+fn render_diff_compact(f: &mut Frame, area: ratatui::layout::Rect, diff: &ParsedDiff) {
   // Build header: +N -M path
   let mut header_spans = Vec::new();
   if diff.added > 0 {
@@ -457,5 +468,24 @@ pub fn render_diff_preview_compact(f: &mut Frame, area: ratatui::layout::Rect, d
   }
 
   let paragraph = ratatui::widgets::Paragraph::new(ratatui::text::Text::from(text_lines));
+  f.render_widget(paragraph, area);
+}
+
+fn render_plain_preview_compact(f: &mut Frame, area: ratatui::layout::Rect, text: &str) {
+  use ratatui::widgets::Block;
+
+  let mut lines = Vec::new();
+  for line in text.lines().take(8) {
+    lines.push(Line::from(vec![
+      Span::styled("$ ", Style::default().fg(Color::DarkGray)),
+      Span::styled(line, Style::default().fg(Color::White)),
+    ]));
+  }
+
+  let block = Block::default()
+    .borders(ratatui::widgets::Borders::LEFT)
+    .border_style(Style::default().fg(Color::DarkGray));
+
+  let paragraph = ratatui::widgets::Paragraph::new(ratatui::text::Text::from(lines)).block(block);
   f.render_widget(paragraph, area);
 }

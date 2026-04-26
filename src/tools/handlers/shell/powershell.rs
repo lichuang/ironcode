@@ -49,6 +49,15 @@ impl ToolHandler for PowerShellHandler {
     true
   }
 
+  async fn preview(&self, invocation: &ToolInvocation) -> Option<String> {
+    let args = self.parse_args(invocation).ok()?;
+    let cmd = args.command.trim();
+    if cmd.is_empty() {
+      return None;
+    }
+    Some(format!("powershell -Command '{}'", cmd))
+  }
+
   async fn handle(&self, invocation: ToolInvocation) -> Result<ToolOutput, ToolError> {
     let ToolInvocation { payload, cwd, .. } = invocation;
 
@@ -226,6 +235,18 @@ impl PowerShellHandler {
   /// Create a new PowerShellHandler
   pub fn new() -> Self {
     Self
+  }
+
+  fn parse_args(&self, invocation: &ToolInvocation) -> Result<PowerShellArgs, ToolError> {
+    let arguments = match &invocation.payload {
+      ToolPayload::Function { arguments } => arguments.clone(),
+      _ => {
+        return Err(ToolError::RespondToModel(
+          "PowerShell handler received unsupported payload".to_string(),
+        ));
+      }
+    };
+    parse_arguments(&arguments)
   }
 }
 

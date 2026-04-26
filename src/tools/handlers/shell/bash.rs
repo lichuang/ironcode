@@ -49,6 +49,15 @@ impl ToolHandler for BashHandler {
     true
   }
 
+  async fn preview(&self, invocation: &ToolInvocation) -> Option<String> {
+    let args = self.parse_args(invocation).ok()?;
+    let cmd = args.command.trim();
+    if cmd.is_empty() {
+      return None;
+    }
+    Some(format!("bash -c '{}'", cmd))
+  }
+
   async fn handle(&self, invocation: ToolInvocation) -> Result<ToolOutput, ToolError> {
     let ToolInvocation { payload, cwd, .. } = invocation;
 
@@ -226,6 +235,18 @@ impl BashHandler {
   /// Create a new BashHandler
   pub fn new() -> Self {
     Self
+  }
+
+  fn parse_args(&self, invocation: &ToolInvocation) -> Result<BashArgs, ToolError> {
+    let arguments = match &invocation.payload {
+      ToolPayload::Function { arguments } => arguments.clone(),
+      _ => {
+        return Err(ToolError::RespondToModel(
+          "Bash handler received unsupported payload".to_string(),
+        ));
+      }
+    };
+    parse_arguments(&arguments)
   }
 }
 

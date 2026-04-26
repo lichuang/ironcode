@@ -85,7 +85,7 @@
 #### 5. Enhanced Approval System
 - [x] YOLO mode (`--yolo` / config option)
 - [x] File modification diff display
-- [ ] Shell command preview confirmation
+- [x] Shell command preview confirmation
 - [x] Per-tool auto-approval configuration (e.g., only auto-approve ReadFile)
 
 #### 6. Structured AskUser Tool
@@ -224,9 +224,9 @@
 | Metric | Count |
 |--------|-------|
 | **Total Tasks** | 93 |
-| **Completed** | 17 |
-| **Remaining** | 76 |
-| **Progress** | 18.3% |
+| **Completed** | 18 |
+| **Remaining** | 75 |
+| **Progress** | 19.4% |
 
 > **Note:** This summary must be updated whenever tasks are completed. After each batch of completions, recalculate the counts and percentage to keep the document accurate.
 
