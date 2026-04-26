@@ -130,14 +130,8 @@ impl App {
       SessionMode::New
     };
 
-    let (chat_session, messages) = ChatSession::create_or_resume(
-      global_config(),
-      system_prompt,
-      runtime.tool_registry.clone(),
-      runtime.executable_tool_registry.clone(),
-      session_store,
-      mode,
-    )?;
+    let (chat_session, messages) =
+      ChatSession::create_or_resume(global_config(), system_prompt, session_store, mode)?;
 
     data.chat_history = llm_messages_to_chat_history(&messages);
     let session_handle = chat_session.handle.clone();

@@ -1,7 +1,6 @@
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use chrono::Local;
 use log::{debug, info, warn};
@@ -12,7 +11,10 @@ use crate::tools::handlers::{
   AskUserQuestionHandler, FetchURLHandler, GlobHandler, GrepHandler, ReadFileHandler,
   ReplaceFileHandler, SearchWebHandler, SetTodoListHandler, WriteFileHandler,
 };
-use crate::tools::{ExecutableToolRegistry, ToolRegistry};
+use crate::tools::{
+  ExecutableToolRegistry, ToolRegistry, init_global_executable_tool_registry,
+  init_global_tool_registry,
+};
 
 // Import platform-specific shell handlers
 #[cfg(not(target_os = "windows"))]
@@ -115,17 +117,15 @@ impl RuntimeArgs {
   }
 }
 
-/// Runtime holds the system prompt template, arguments for rendering, and tool registry
+/// Runtime holds the system prompt template and arguments for rendering.
+/// Tool registries are initialized globally via `init_global_*` and accessed
+/// through `global_tool_registry()` / `global_executable_tool_registry()`.
 #[derive(Debug, Clone)]
 pub(crate) struct Runtime {
   /// Template arguments for substitution
   pub args: RuntimeArgs,
   /// The raw system prompt template (before substitution)
   pub system_prompt_template: String,
-  /// Tool registry containing all loaded tools (shared with providers)
-  pub tool_registry: Arc<ToolRegistry>,
-  /// Executable tool registry for handling tool calls (shared across sessions)
-  pub executable_tool_registry: Arc<ExecutableToolRegistry>,
 }
 
 impl Runtime {
@@ -139,19 +139,21 @@ impl Runtime {
     let args = RuntimeArgs::new()?;
 
     // Load executable tool registry first (handlers must be registered before checking)
-    let executable_tool_registry = Arc::new(Self::load_executable_tools());
+    let executable_tool_registry = Self::load_executable_tools();
 
     // Load tool definitions from Markdown files
-    let tool_registry = Arc::new(Self::load_tools(data_dir)?);
+    let tool_registry = Self::load_tools(data_dir)?;
 
     // Check that all defined tools have corresponding handlers
     Self::validate_tool_handlers(&tool_registry, &executable_tool_registry)?;
 
+    // Initialize global registries for read-only access across the application
+    init_global_tool_registry(tool_registry);
+    init_global_executable_tool_registry(executable_tool_registry);
+
     Ok(Self {
       args,
       system_prompt_template,
-      tool_registry,
-      executable_tool_registry,
     })
   }
 

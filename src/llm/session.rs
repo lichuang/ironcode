@@ -18,14 +18,14 @@ use log::{debug, error, info, warn};
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
-use crate::config::{Config, DEFAULT_MAX_CONTEXT_SIZE, global_config};
+use crate::config::{Config, global_config};
 use crate::error::{ConfigError, Error, LlmError, Result, StreamErrorCategory};
 use crate::llm::compaction::{Compaction, calculate_threshold, should_auto_compact};
 use crate::llm::provider::LLMProvider;
 use crate::llm::providers::KimiProvider;
 use crate::llm::types::{ChatConfig, Message, Role, ToolCall};
 use crate::session::{SessionMeta, SessionMode, SessionStore};
-use crate::tools::{ExecutableToolRegistry, ToolInvocation, ToolPayload, ToolRegistry};
+use crate::tools::{ToolInvocation, ToolPayload, global_executable_tool_registry};
 use crate::utils::token_counter::estimate_llm_messages_tokens;
 
 /// Maximum characters to display in user input log preview
@@ -217,8 +217,6 @@ struct SessionActor {
   stream_retry_attempt: u32,
   /// Tool call buffer for accumulating tool calls during streaming
   pending_tool_calls: Vec<ToolCall>,
-  /// Executable tool registry for handling tool calls (shared)
-  tool_registry: Arc<ExecutableToolRegistry>,
   /// Working directory for tool execution
   cwd: PathBuf,
   /// Precise token count from API usage (if available)
@@ -227,7 +225,7 @@ struct SessionActor {
   session_store: Arc<SessionStore>,
   /// Session metadata for persistence
   meta: SessionMeta,
-  /// Maximum context size for the current model
+  /// Maximum context size for the current model (read from global config at creation)
   max_context_size: usize,
   /// Compaction handler (used for actual compaction)
   compaction: Compaction,
@@ -258,13 +256,12 @@ impl SessionActor {
     messages: Vec<Message>,
     event_tx: mpsc::UnboundedSender<SessionEvent>,
     cmd_rx: mpsc::UnboundedReceiver<SessionCommand>,
-    tool_registry: Arc<ExecutableToolRegistry>,
     session_store: Arc<SessionStore>,
     meta: SessionMeta,
-    max_context_size: usize,
     yolo: bool,
     auto_approve: Vec<String>,
   ) -> Self {
+    let max_context_size = provider.max_context_size();
     Self {
       id,
       provider,
@@ -277,7 +274,6 @@ impl SessionActor {
       stream_rx: None,
       stream_retry_attempt: 0,
       pending_tool_calls: Vec::new(),
-      tool_registry,
       cwd: env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
       session_store,
       meta,
@@ -998,7 +994,7 @@ impl SessionActor {
           },
           &self.cwd,
         );
-        let diff_preview = self.tool_registry.preview(&invocation).await;
+        let diff_preview = global_executable_tool_registry().preview(&invocation).await;
         self.tool_call_execution_state = Some(ToolCallExecutionState {
           tool_calls: state.tool_calls.clone(),
           current_index: i,
@@ -1058,7 +1054,7 @@ impl SessionActor {
       &self.cwd,
     );
 
-    match self.tool_registry.dispatch(invocation).await {
+    match global_executable_tool_registry().dispatch(invocation).await {
       Ok(output) => {
         let output_str = output.into_response();
 
@@ -1173,50 +1169,31 @@ impl ChatSession {
   fn new_session(
     config: &Config,
     system_prompt: String,
-    tool_registry: Arc<crate::tools::ToolRegistry>,
-    executable_tool_registry: Arc<ExecutableToolRegistry>,
     session_store: Arc<SessionStore>,
   ) -> Result<(Self, Vec<Message>)> {
     let mut meta = SessionMeta::new(generate_session_id(), &system_prompt);
     meta.yolo = config.yolo;
     session_store.create(&meta)?;
-    let session = Self::create_with_store(
-      config,
-      system_prompt,
-      tool_registry,
-      executable_tool_registry,
-      session_store,
-      meta,
-    )?;
+    let session = Self::create_with_store(config, system_prompt, session_store, meta)?;
     Ok((session, Vec::new()))
   }
 
   fn resume(
     id: String,
     config: &Config,
-    tool_registry: Arc<ToolRegistry>,
-    executable_tool_registry: Arc<ExecutableToolRegistry>,
     session_store: Arc<SessionStore>,
     meta: SessionMeta,
     messages: Vec<Message>,
   ) -> Result<(Self, Vec<Message>)> {
-    let provider = Self::create_provider(config, tool_registry)?;
-
-    // Get max context size from default model config
-    let max_context_size = config
-      .default_model_config()
-      .and_then(|m| m.max_context_size)
-      .unwrap_or(DEFAULT_MAX_CONTEXT_SIZE);
+    let provider = Self::create_provider(config)?;
 
     let yolo = meta.yolo;
     let session = Self::start_with_messages(
       id,
       provider,
       messages.clone(),
-      executable_tool_registry,
       session_store,
       meta,
-      max_context_size,
       yolo,
       config.auto_approve.clone(),
     );
@@ -1229,51 +1206,21 @@ impl ChatSession {
   pub fn create_or_resume(
     config: &Config,
     system_prompt: String,
-    tool_registry: Arc<ToolRegistry>,
-    executable_tool_registry: Arc<ExecutableToolRegistry>,
     session_store: Arc<SessionStore>,
     mode: SessionMode,
   ) -> Result<(Self, Vec<Message>)> {
     match mode {
-      SessionMode::New => Self::new_session(
-        config,
-        system_prompt,
-        tool_registry,
-        executable_tool_registry,
-        session_store,
-      ),
+      SessionMode::New => Self::new_session(config, system_prompt, session_store),
       SessionMode::ResumeById(id) => {
         let (meta, messages) = session_store.load(&id)?;
-        Self::resume(
-          id,
-          config,
-          tool_registry,
-          executable_tool_registry,
-          session_store,
-          meta,
-          messages,
-        )
+        Self::resume(id, config, session_store, meta, messages)
       }
       SessionMode::ResumeLatest => match session_store.latest_id()? {
         Some(id) => {
           let (meta, messages) = session_store.load(&id)?;
-          Self::resume(
-            id,
-            config,
-            tool_registry,
-            executable_tool_registry,
-            session_store,
-            meta,
-            messages,
-          )
+          Self::resume(id, config, session_store, meta, messages)
         }
-        None => Self::new_session(
-          config,
-          system_prompt,
-          tool_registry,
-          executable_tool_registry,
-          session_store,
-        ),
+        None => Self::new_session(config, system_prompt, session_store),
       },
     }
   }
@@ -1282,11 +1229,7 @@ impl ChatSession {
   ///
   /// # Arguments
   /// * `config` - The application configuration
-  /// * `tool_registry` - Shared tool registry for function calling
-  pub(crate) fn create_provider(
-    config: &Config,
-    tool_registry: Arc<ToolRegistry>,
-  ) -> Result<Box<dyn LLMProvider>> {
+  pub(crate) fn create_provider(config: &Config) -> Result<Box<dyn LLMProvider>> {
     // Get default model configuration
     let model_config = config
       .default_model_config()
@@ -1323,6 +1266,11 @@ impl ChatSession {
     // Currently only enable for kimi-for-coding model
     let coding_agent = model_config.model == "kimi-for-coding";
 
+    // Get max context size from default model config
+    let max_context_size = model_config
+      .max_context_size
+      .unwrap_or(crate::config::DEFAULT_MAX_CONTEXT_SIZE);
+
     // Create provider based on type
     let provider: Box<dyn LLMProvider> = match provider.provider_type.as_str() {
       "kimi" => Box::new(KimiProvider::new(
@@ -1330,7 +1278,7 @@ impl ChatSession {
         api_key,
         chat_config,
         coding_agent,
-        tool_registry,
+        max_context_size,
       )?),
       _ => {
         return Err(
@@ -1350,30 +1298,20 @@ impl ChatSession {
   fn create_with_store(
     config: &Config,
     system_prompt: impl Into<String>,
-    tool_registry: Arc<ToolRegistry>,
-    executable_tool_registry: Arc<ExecutableToolRegistry>,
     session_store: Arc<SessionStore>,
     meta: SessionMeta,
   ) -> Result<Self> {
-    let provider = Self::create_provider(config, tool_registry)?;
+    let provider = Self::create_provider(config)?;
     let system_prompt = system_prompt.into();
     let messages = vec![Message::system(system_prompt.clone())];
-
-    // Get max context size from default model config
-    let max_context_size = config
-      .default_model_config()
-      .and_then(|m| m.max_context_size)
-      .unwrap_or(DEFAULT_MAX_CONTEXT_SIZE);
 
     let yolo = meta.yolo;
     let session = Self::start_with_messages(
       meta.id.clone(),
       provider,
       messages,
-      executable_tool_registry,
       session_store,
       meta,
-      max_context_size,
       yolo,
       config.auto_approve.clone(),
     );
@@ -1390,10 +1328,8 @@ impl ChatSession {
     id: String,
     provider: Box<dyn LLMProvider>,
     messages: Vec<Message>,
-    tool_registry: Arc<ExecutableToolRegistry>,
     session_store: Arc<SessionStore>,
     meta: SessionMeta,
-    max_context_size: usize,
     yolo: bool,
     auto_approve: Vec<String>,
   ) -> Self {
@@ -1411,10 +1347,8 @@ impl ChatSession {
       messages,
       event_tx,
       cmd_rx,
-      tool_registry,
       session_store,
       meta,
-      max_context_size,
       yolo,
       auto_approve,
     );

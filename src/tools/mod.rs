@@ -27,6 +27,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use anyhow::Result;
 use async_openai::types::chat::{ChatCompletionTool, ChatCompletionTools, FunctionObject};
@@ -386,4 +387,39 @@ where
 {
   from_str(arguments)
     .map_err(|err| ToolError::RespondToModel(format!("Failed to parse arguments: {}", err)))
+}
+
+// ============================================================================
+// Global Tool Registry Access
+// ============================================================================
+
+static GLOBAL_TOOL_REGISTRY: OnceLock<ToolRegistry> = OnceLock::new();
+static GLOBAL_EXECUTABLE_TOOL_REGISTRY: OnceLock<ExecutableToolRegistry> = OnceLock::new();
+
+/// Initialize the global tool registry.
+/// Should be called once during application startup (in Runtime::new).
+pub fn init_global_tool_registry(registry: ToolRegistry) {
+  let _ = GLOBAL_TOOL_REGISTRY.set(registry);
+}
+
+/// Initialize the global executable tool registry.
+/// Should be called once during application startup (in Runtime::new).
+pub fn init_global_executable_tool_registry(registry: ExecutableToolRegistry) {
+  let _ = GLOBAL_EXECUTABLE_TOOL_REGISTRY.set(registry);
+}
+
+/// Access the global tool registry.
+/// Panics if called before `init_global_tool_registry`.
+pub fn global_tool_registry() -> &'static ToolRegistry {
+  GLOBAL_TOOL_REGISTRY
+    .get()
+    .expect("global tool registry not initialized")
+}
+
+/// Access the global executable tool registry.
+/// Panics if called before `init_global_executable_tool_registry`.
+pub fn global_executable_tool_registry() -> &'static ExecutableToolRegistry {
+  GLOBAL_EXECUTABLE_TOOL_REGISTRY
+    .get()
+    .expect("global executable tool registry not initialized")
 }

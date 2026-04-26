@@ -5,7 +5,6 @@
 use std::collections::hash_map::DefaultHasher;
 use std::env::consts::{ARCH, OS};
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
 
 use async_openai::error::{OpenAIError, StreamError};
 use async_openai::types::chat::{
@@ -28,7 +27,7 @@ use std::result::Result as StdResult;
 use crate::error::{LlmError, Result, StreamErrorCategory};
 use crate::llm::provider::LLMProvider;
 use crate::llm::types::{ChatConfig, Message, Role};
-use crate::tools::{Tool, ToolRegistry};
+use crate::tools::{Tool, global_tool_registry};
 
 /// Custom delta that includes reasoning_content for Kimi API
 #[derive(Debug, Clone, Deserialize)]
@@ -200,9 +199,9 @@ pub struct KimiProvider {
   http_client: reqwest::Client,
   base_url: String,
   config: ChatConfig,
-  tool_registry: Arc<ToolRegistry>,
   api_key: String,
   coding_agent: bool,
+  max_context_size: usize,
 }
 
 impl std::fmt::Debug for KimiProvider {
@@ -210,8 +209,8 @@ impl std::fmt::Debug for KimiProvider {
     f.debug_struct("KimiProvider")
       .field("base_url", &self.base_url)
       .field("config", &self.config)
-      .field("tool_registry", &self.tool_registry)
       .field("coding_agent", &self.coding_agent)
+      .field("max_context_size", &self.max_context_size)
       .field("api_key", &"***")
       .finish()
   }
@@ -223,9 +222,9 @@ impl Clone for KimiProvider {
       http_client: self.http_client.clone(),
       base_url: self.base_url.clone(),
       config: self.config.clone(),
-      tool_registry: self.tool_registry.clone(),
       api_key: self.api_key.clone(),
       coding_agent: self.coding_agent,
+      max_context_size: self.max_context_size,
     }
   }
 }
@@ -238,13 +237,13 @@ impl KimiProvider {
   /// * `api_key` - API key
   /// * `config` - Chat configuration (includes enable_thinking)
   /// * `coding_agent` - Whether to use Coding Agent headers for kimi-for-coding model
-  /// * `tool_registry` - Tool registry for function calling (shared with Runtime)
+  /// * `max_context_size` - Maximum context size for the model
   pub fn new(
     base_url: impl Into<String>,
     api_key: impl Into<String>,
     config: ChatConfig,
     coding_agent: bool,
-    tool_registry: Arc<ToolRegistry>,
+    max_context_size: usize,
   ) -> Result<Self> {
     let base_url = base_url.into();
     let api_key = api_key.into();
@@ -255,9 +254,9 @@ impl KimiProvider {
       http_client,
       base_url,
       config,
-      tool_registry,
       api_key,
       coding_agent,
+      max_context_size,
     })
   }
 
@@ -494,8 +493,9 @@ impl LLMProvider for KimiProvider {
     }
 
     // Add tools if any
-    if !self.tool_registry.is_empty() {
-      let tools = self.tool_registry.all();
+    let tool_registry = global_tool_registry();
+    if !tool_registry.is_empty() {
+      let tools = tool_registry.all();
       request.tools = Some(Self::convert_tools(&tools));
       log::info!("KimiProvider: Added {} tools to request", tools.len());
     }
@@ -597,6 +597,10 @@ impl LLMProvider for KimiProvider {
 
   fn name(&self) -> &str {
     "kimi"
+  }
+
+  fn max_context_size(&self) -> usize {
+    self.max_context_size
   }
 
   async fn on_retryable_error(&mut self, error: &LlmError) {

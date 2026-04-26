@@ -21,4 +21,7 @@ pub trait LLMProvider: Send + Sync {
   /// Called when a retryable error occurs to allow the provider to
   /// refresh its connection state (e.g. rebuild HTTP client).
   async fn on_retryable_error(&mut self, _error: &LlmError) {}
+
+  /// Maximum context size (token limit) for the model this provider uses.
+  fn max_context_size(&self) -> usize;
 }
