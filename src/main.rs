@@ -102,7 +102,13 @@ async fn main() -> Result<()> {
   // Load configuration
   // First, get the config file directory (either from -c arg or default ~/.ironcode/)
   let config_file_dir = args.config_dir();
-  let config = load_config_from_dir(&config_file_dir)?;
+  let mut config = load_config_from_dir(&config_file_dir)?;
+
+  // Apply CLI overrides before making config globally available
+  config.yolo = config.yolo || args.yolo;
+
+  // Initialize global configuration for read-only access across the application
+  config::init_global_config(config.clone());
 
   // Get the data directory from config (defaults to ~/.ironcode/ if not specified)
   let data_dir = data_dir(&config);
@@ -124,9 +130,9 @@ async fn main() -> Result<()> {
   // Create session store
   let session_store = Arc::new(SessionStore::new(&data_dir));
 
-  // Create app state with configuration
+  // Create app state
   // Pass data_dir for loading system prompt from data_dir/prompts/system.md
-  let mut app = App::new(config, &data_dir, &args, session_store)?;
+  let mut app = App::new(&data_dir, &args, session_store)?;
 
   // Give the view a frame requester for animations
   app.set_frame_requester(tui.frame_requester());

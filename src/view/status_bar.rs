@@ -100,21 +100,13 @@ impl StatusBarInfo {
     // Get short session ID (first 8 characters)
     let short_id = session_id.chars().take(8).collect();
 
-    // Get model name and max context size from config
-    let (model_name, max_context_size) = data
-      .config
-      .as_ref()
-      .map(|c| {
-        let model = c.default_model.clone();
-        // Try to get max_context_size from model config, default to 128k
-        let max_size = c
-          .models
-          .get(&c.default_model)
-          .and_then(|m| m.max_context_size)
-          .unwrap_or(DEFAULT_MAX_CONTEXT_SIZE);
-        (model, max_size)
-      })
-      .unwrap_or_else(|| ("unknown".to_string(), DEFAULT_MAX_CONTEXT_SIZE));
+    // Get model name and max context size from global config
+    let config = crate::config::global_config();
+    let model_name = config.default_model.clone();
+    let max_context_size = config
+      .default_model_config()
+      .and_then(|m| m.max_context_size)
+      .unwrap_or(DEFAULT_MAX_CONTEXT_SIZE);
 
     // Calculate estimated token count from all messages
     let token_count = estimate_chat_messages_tokens(&data.chat_history);

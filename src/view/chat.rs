@@ -12,7 +12,7 @@ use ratatui::{
 };
 
 use crate::cli::AppData;
-use crate::config::Config;
+use crate::config::global_config;
 use crate::history::InputHistoryManager;
 use crate::llm::SessionHandle;
 use crate::llm::types::Message;
@@ -279,8 +279,7 @@ impl ChatView {
   /// # Arguments
   /// * `data` - Application data for determining initial state
   /// * `session_handle` - Handle to the chat session (must be valid)
-  /// * `config` - Application configuration for history persistence
-  pub fn new(data: &AppData, session_handle: SessionHandle, config: &Config) -> Self {
+  pub fn new(data: &AppData, session_handle: SessionHandle) -> Self {
     let prompt = Self::build_prompt();
 
     // Check if waiting for AI response (last message is from user)
@@ -321,7 +320,7 @@ impl ChatView {
       moon_frame: 0,
       state,
       session_handle,
-      history: InputHistoryManager::with_config(config),
+      history: InputHistoryManager::with_config(global_config()),
       status_bar_info,
     }
   }

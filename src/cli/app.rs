@@ -7,7 +7,7 @@ use ratatui::Frame;
 
 use crate::cli::Args;
 use crate::cli::runtime::Runtime;
-use crate::config::Config;
+use crate::config::global_config;
 use crate::error::Result;
 use crate::llm::{ChatSession, SessionEvent};
 use crate::session::{SessionMode, SessionStore};
@@ -27,8 +27,7 @@ pub struct AppData {
   /// Contains both normal and thinking content. Empty when not streaming.
   /// Uses Arc for cheap cloning when sharing between App and ChatView.
   pub(crate) streaming_response: Arc<Vec<StreamingChunk>>,
-  /// Application configuration (shared with views)
-  pub(crate) config: Option<Config>,
+
   /// Precise token count from API usage (if available)
   pub(crate) precise_token_count: Option<u32>,
   /// Compaction warning state (token threshold approaching)
@@ -70,7 +69,7 @@ impl AppData {
       should_exit: false,
       chat_history: Vec::new(),
       streaming_response: Arc::new(Vec::new()),
-      config: None,
+
       precise_token_count: None,
       compaction_warning: None,
       pending_approval: None,
@@ -102,9 +101,7 @@ pub struct App {
   /// Runtime data loaded at startup
   #[allow(dead_code)]
   pub(crate) runtime: Runtime,
-  /// Application configuration
-  #[allow(dead_code)]
-  pub(crate) config: Config,
+
   /// Chat session for LLM communication (initialized when first chat starts)
   chat_session: Option<ChatSession>,
   /// Current LLM response chunks being accumulated (for streaming display)
@@ -113,27 +110,17 @@ pub struct App {
 }
 
 impl App {
-  /// Create a new app instance with the given configuration
+  /// Create a new app instance
   ///
   /// # Arguments
-  /// * `config` - The loaded configuration
   /// * `data_dir` - The data directory for loading system prompt (data_dir/prompts/system.md)
   /// * `args` - Command line arguments for session control
   /// * `session_store` - Persistent session storage
-  pub fn new(
-    config: Config,
-    data_dir: &Path,
-    args: &Args,
-    session_store: Arc<SessionStore>,
-  ) -> Result<Self> {
+  pub fn new(data_dir: &Path, args: &Args, session_store: Arc<SessionStore>) -> Result<Self> {
     let runtime = Runtime::new(data_dir)?;
     let mut data = AppData::new();
-    data.config = Some(config.clone());
 
     let system_prompt = runtime.render_system_prompt();
-
-    let mut config = config;
-    config.yolo = config.yolo || args.yolo;
 
     let mode = if let Some(id) = &args.session {
       SessionMode::ResumeById(id.clone())
@@ -144,7 +131,7 @@ impl App {
     };
 
     let (chat_session, messages) = ChatSession::create_or_resume(
-      &config,
+      global_config(),
       system_prompt,
       runtime.tool_registry.clone(),
       runtime.executable_tool_registry.clone(),
@@ -156,14 +143,13 @@ impl App {
     let session_handle = chat_session.handle.clone();
 
     // Create ChatView directly
-    let chat_view = ChatView::new(&data, session_handle, &config);
+    let chat_view = ChatView::new(&data, session_handle);
 
     Ok(Self {
       data,
       view: Box::new(chat_view),
       frame_requester: None,
       runtime,
-      config,
       chat_session: Some(chat_session),
       current_chunks: Arc::new(Vec::new()),
     })

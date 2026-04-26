@@ -359,3 +359,29 @@ impl RetryConfig {
     self.max_attempts > 0
   }
 }
+
+// ---------------------------------------------------------------------------
+// Global configuration
+// ---------------------------------------------------------------------------
+
+use std::sync::OnceLock;
+
+static GLOBAL_CONFIG: OnceLock<Config> = OnceLock::new();
+
+/// Initialize the global configuration.
+///
+/// Must be called exactly once at program startup, after loading the
+/// configuration from file.
+pub fn init_global_config(config: Config) {
+  if GLOBAL_CONFIG.set(config).is_err() {
+    panic!("global config already initialized");
+  }
+}
+
+/// Access the global configuration.
+///
+/// # Panics
+/// Panics if called before `init_global_config`.
+pub fn global_config() -> &'static Config {
+  GLOBAL_CONFIG.get().expect("global config not initialized")
+}

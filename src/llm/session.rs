@@ -18,7 +18,7 @@ use log::{debug, error, info, warn};
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
-use crate::config::{CompactionConfig, Config, DEFAULT_MAX_CONTEXT_SIZE, RetryConfig};
+use crate::config::{Config, DEFAULT_MAX_CONTEXT_SIZE, global_config};
 use crate::error::{ConfigError, Error, LlmError, Result, StreamErrorCategory};
 use crate::llm::compaction::{Compaction, calculate_threshold, should_auto_compact};
 use crate::llm::provider::LLMProvider;
@@ -227,16 +227,12 @@ struct SessionActor {
   session_store: Arc<SessionStore>,
   /// Session metadata for persistence
   meta: SessionMeta,
-  /// Compaction configuration
-  compaction_config: CompactionConfig,
   /// Maximum context size for the current model
   max_context_size: usize,
   /// Compaction handler (used for actual compaction)
   compaction: Compaction,
   /// Whether compaction has been notified for current threshold
   compaction_notified: bool,
-  /// Retry configuration for LLM requests
-  retry_config: RetryConfig,
   /// YOLO mode: auto-approve all tool calls
   yolo: bool,
   /// List of tools to auto-approve when YOLO is off
@@ -265,9 +261,7 @@ impl SessionActor {
     tool_registry: Arc<ExecutableToolRegistry>,
     session_store: Arc<SessionStore>,
     meta: SessionMeta,
-    compaction_config: CompactionConfig,
     max_context_size: usize,
-    retry_config: RetryConfig,
     yolo: bool,
     auto_approve: Vec<String>,
   ) -> Self {
@@ -288,11 +282,9 @@ impl SessionActor {
       session_store,
       meta,
       precise_token_count: None,
-      compaction_config,
       max_context_size,
       compaction: Compaction::default(),
       compaction_notified: false,
-      retry_config,
       yolo,
       auto_approve,
       tool_call_execution_state: None,
@@ -500,14 +492,14 @@ impl SessionActor {
       "check_and_notify_compaction: current_tokens={}, max_context_size={}, compaction_config.enabled={}",
       current_tokens,
       self.max_context_size,
-      self.compaction_config.enabled
+      global_config().compaction.enabled
     );
 
     // Check if we should trigger compaction
     let should_compact = should_auto_compact(
       current_tokens,
       self.max_context_size,
-      &self.compaction_config,
+      &global_config().compaction,
     );
     log::info!(
       "check_and_notify_compaction: should_auto_compact={}",
@@ -516,7 +508,7 @@ impl SessionActor {
 
     if should_compact {
       if !self.compaction_notified {
-        let threshold = calculate_threshold(self.max_context_size, &self.compaction_config);
+        let threshold = calculate_threshold(self.max_context_size, &global_config().compaction);
         info!(
           "Session {}: Compaction needed - {} tokens (threshold: {})",
           self.id, current_tokens, threshold
@@ -617,7 +609,7 @@ impl SessionActor {
   /// so that the total number of retries for a single step never exceeds
   /// `retry_config.max_attempts`.
   async fn attempt_chat_stream(&mut self, context: &str) {
-    let max_attempts = self.retry_config.max_attempts.max(1);
+    let max_attempts = global_config().retry.max_attempts.max(1);
 
     while self.stream_retry_attempt < max_attempts {
       match self.run_chat_stream_with_recovery().await {
@@ -667,8 +659,8 @@ impl SessionActor {
             return;
           }
 
-          let delay = self
-            .retry_config
+          let delay = global_config()
+            .retry
             .delay_for_attempt(self.stream_retry_attempt - 1);
           warn!(
             "Session {}: attempt {}/{} failed ({}), retrying in {:?}",
@@ -1224,9 +1216,7 @@ impl ChatSession {
       executable_tool_registry,
       session_store,
       meta,
-      config.compaction.clone(),
       max_context_size,
-      config.retry.clone(),
       yolo,
       config.auto_approve.clone(),
     );
@@ -1383,9 +1373,7 @@ impl ChatSession {
       executable_tool_registry,
       session_store,
       meta,
-      config.compaction.clone(),
       max_context_size,
-      config.retry.clone(),
       yolo,
       config.auto_approve.clone(),
     );
@@ -1405,9 +1393,7 @@ impl ChatSession {
     tool_registry: Arc<ExecutableToolRegistry>,
     session_store: Arc<SessionStore>,
     meta: SessionMeta,
-    compaction_config: CompactionConfig,
     max_context_size: usize,
-    retry_config: RetryConfig,
     yolo: bool,
     auto_approve: Vec<String>,
   ) -> Self {
@@ -1428,9 +1414,7 @@ impl ChatSession {
       tool_registry,
       session_store,
       meta,
-      compaction_config,
       max_context_size,
-      retry_config,
       yolo,
       auto_approve,
     );
