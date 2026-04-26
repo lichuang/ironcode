@@ -1,5 +1,9 @@
 # AGENTS.md
 
+## Project Goal
+
+This project is a Rust re-implementation of **kimi-cli** (https://github.com/moonshot-ai/kimi-cli). When implementing features, aim to match kimi-cli's behavior, architecture, and user experience as closely as possible. Reference the Python implementation for design decisions, feature parity, and interaction patterns. Adaptations should only be made where Rust's ownership model, type system, or ecosystem constraints require a different approach.
+
 ## Code Quality Requirements
 
 ### Formatting

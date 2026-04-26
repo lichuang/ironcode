@@ -5,6 +5,7 @@ use crate::cli::AppData;
 use crate::tui::FrameRequester;
 
 pub mod chat;
+pub mod diff;
 pub mod status_bar;
 
 pub use chat::ChatView;

@@ -1,5 +1,6 @@
 pub mod animation;
 pub mod colors;
+pub mod diff;
 pub mod retry;
 pub mod string;
 pub mod style;

@@ -289,6 +289,12 @@ pub trait ToolHandler: Send + Sync {
     false
   }
 
+  /// Compute a preview (e.g., diff) for the tool invocation without executing it.
+  /// Used by the approval system to show what the tool will do.
+  async fn preview(&self, _invocation: &ToolInvocation) -> Option<String> {
+    None
+  }
+
   /// Check if this handler can handle the given payload
   fn matches_kind(&self, payload: &ToolPayload) -> bool {
     matches!(
@@ -334,6 +340,12 @@ impl ExecutableToolRegistry {
   /// Get a handler by name
   pub fn get(&self, name: &str) -> Option<&dyn ToolHandler> {
     self.handlers.get(name).map(|b| b.as_ref())
+  }
+
+  /// Compute a preview for a tool invocation without executing it.
+  pub async fn preview(&self, invocation: &ToolInvocation) -> Option<String> {
+    let handler = self.handlers.get(&invocation.tool_name)?;
+    handler.preview(invocation).await
   }
 
   /// Dispatch a tool invocation to the appropriate handler

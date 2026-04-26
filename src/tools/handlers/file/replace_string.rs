@@ -11,6 +11,7 @@ use tokio::fs;
 use crate::tools::{
   ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, ToolPayload, parse_arguments,
 };
+use crate::utils::diff::preview_replace_file;
 
 /// Handler for the ReplaceFile tool
 pub struct ReplaceFileHandler;
@@ -76,6 +77,14 @@ impl ToolHandler for ReplaceFileHandler {
 
   async fn is_mutating(&self, _invocation: &ToolInvocation) -> bool {
     true
+  }
+
+  async fn preview(&self, invocation: &ToolInvocation) -> Option<String> {
+    let args = self.parse_args(invocation).ok()?;
+    let resolved_path = self.resolve_path(&args, invocation);
+    let old = fs::read_to_string(&resolved_path).await.ok()?;
+    let new = self.apply_edits(&old, &args.edit).ok()?;
+    preview_replace_file(&args.path, &old, &new)
   }
 
   async fn handle(&self, invocation: ToolInvocation) -> Result<ToolOutput, ToolError> {
@@ -154,17 +163,29 @@ impl ToolHandler for ReplaceFileHandler {
     }
 
     // Write the modified content back to the file
-    fs::write(&resolved_path, modified_content)
+    fs::write(&resolved_path, &modified_content)
       .await
       .map_err(|e| {
         ToolError::RespondToModel(format!("Failed to write file '{}': {}", args.path, e))
       })?;
 
-    let message = format!(
-      "File successfully edited. Applied {} edit(s) with {} total replacement(s).",
-      args.edit.len(),
-      total_replacements
-    );
+    // Build result with diff
+    let diff = preview_replace_file(&args.path, &original_content, &modified_content);
+
+    let message = if let Some(diff) = diff {
+      format!(
+        "File successfully edited. Applied {} edit(s) with {} total replacement(s).\n\n{}",
+        args.edit.len(),
+        total_replacements,
+        diff
+      )
+    } else {
+      format!(
+        "File successfully edited. Applied {} edit(s) with {} total replacement(s).",
+        args.edit.len(),
+        total_replacements
+      )
+    };
 
     Ok(ToolOutput::success(message))
   }
@@ -174,6 +195,44 @@ impl ReplaceFileHandler {
   /// Create a new ReplaceFileHandler
   pub fn new() -> Self {
     Self
+  }
+
+  fn parse_args(&self, invocation: &ToolInvocation) -> Result<ReplaceFileArgs, ToolError> {
+    let arguments = match &invocation.payload {
+      ToolPayload::Function { arguments } => arguments.clone(),
+      _ => {
+        return Err(ToolError::RespondToModel(
+          "ReplaceFile handler received unsupported payload".to_string(),
+        ));
+      }
+    };
+    parse_arguments(&arguments)
+  }
+
+  fn resolve_path(&self, args: &ReplaceFileArgs, invocation: &ToolInvocation) -> PathBuf {
+    let path = PathBuf::from(&args.path);
+    if path.is_absolute() {
+      path
+    } else {
+      invocation.cwd.join(&path)
+    }
+  }
+
+  fn apply_edits(&self, content: &str, edits: &[Edit]) -> Result<String, ToolError> {
+    let mut modified = content.to_string();
+    for edit in edits {
+      if edit.replace_all {
+        modified = modified.replace(&edit.old, &edit.new);
+      } else if modified.contains(&edit.old) {
+        modified = modified.replacen(&edit.old, &edit.new, 1);
+      }
+    }
+    if modified == content {
+      return Err(ToolError::RespondToModel(
+        "No replacements were made.".to_string(),
+      ));
+    }
+    Ok(modified)
   }
 }
 

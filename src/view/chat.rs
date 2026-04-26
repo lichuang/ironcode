@@ -24,6 +24,9 @@ use crate::utils::{
   HIGHLIGHT, MOON_FRAMES, PRIMARY, PRIMARY_BORDER, SPINNER_FRAMES, THINKING, char_display_width,
   string_display_width,
 };
+use crate::view::diff::{
+  diff_preview_compact_height, diff_render_height, render_diff_panel, render_diff_preview_compact,
+};
 use crate::view::{STATUS_BAR_HEIGHT, StatusBarInfo, View, render_status_bar};
 
 /// Error when creating ChatView without a valid session
@@ -102,6 +105,8 @@ pub enum ChatMessage {
     name: String,
     /// Tool arguments (JSON)
     arguments: String,
+    /// Tool execution output (e.g., diff or success message)
+    output: Option<String>,
   },
   /// System notification (e.g., compaction warning)
   System {
@@ -173,7 +178,7 @@ impl ChatMessage {
     match self {
       ChatMessage::User { content } => content,
       ChatMessage::Assistant { content, .. } => content,
-      ChatMessage::ToolCall { .. } => "",
+      ChatMessage::ToolCall { output, .. } => output.as_deref().unwrap_or(""),
       ChatMessage::System { content, .. } => content,
     }
   }
@@ -969,10 +974,17 @@ impl View for ChatView {
           let content_lines = Self::calculate_line_count(content, available_width);
           constraints.push(Constraint::Length(content_lines as u16));
         }
-        ChatMessage::ToolCall { name, arguments } => {
-          // Tool call: single line showing "Used Toolname(Params)"
+        ChatMessage::ToolCall {
+          name,
+          arguments,
+          output,
+        } => {
+          // Tool call: showing tool name, arguments, and optional diff panel
           let tool_text = format!("• Used {}({})", name, arguments);
-          let lines = Self::calculate_line_count(&tool_text, available_width);
+          let mut lines = Self::calculate_line_count(&tool_text, available_width);
+          if let Some(out) = output {
+            lines += diff_render_height(out);
+          }
           constraints.push(Constraint::Length(lines.max(1) as u16));
         }
         ChatMessage::System { content, .. } => {
@@ -1007,8 +1019,13 @@ impl View for ChatView {
     }
 
     // Approval prompt (if pending)
-    let approval_height = if data.pending_approval.is_some() {
-      3
+    let approval_height = if let Some(ref approval) = data.pending_approval {
+      let diff_lines = approval
+        .diff_preview
+        .as_ref()
+        .map(|d| diff_preview_compact_height(d))
+        .unwrap_or(0);
+      (2 + diff_lines).min(20) as u16
     } else {
       0
     };
@@ -1041,9 +1058,14 @@ impl View for ChatView {
         ChatMessage::Assistant { content, .. } => {
           Self::calculate_line_count(content, available_width)
         }
-        ChatMessage::ToolCall { name, arguments } => {
+        ChatMessage::ToolCall {
+          name,
+          arguments,
+          output,
+        } => {
           let tool_text = format!("• Used {}({})", name, arguments);
-          Self::calculate_line_count(&tool_text, available_width)
+          let output_lines = output.as_ref().map(|o| o.lines().count()).unwrap_or(0);
+          Self::calculate_line_count(&tool_text, available_width) + output_lines
         }
         ChatMessage::System { content, .. } => Self::calculate_line_count(content, available_width),
       })
@@ -1068,8 +1090,13 @@ impl View for ChatView {
       total_fixed_height += chunks_height;
     }
     // Add approval prompt height if pending
-    if data.pending_approval.is_some() {
-      total_fixed_height += 3;
+    if let Some(ref approval) = data.pending_approval {
+      let diff_lines = approval
+        .diff_preview
+        .as_ref()
+        .map(|d| diff_preview_compact_height(d))
+        .unwrap_or(0);
+      total_fixed_height += 2 + diff_lines;
     }
     // Add spinner line height if in WaitingInput state
     if self.state == ChatDisplayState::WaitingInput {
@@ -1121,24 +1148,54 @@ impl View for ChatView {
             chunk_idx += 1;
           }
         }
-        ChatMessage::ToolCall { name, arguments } => {
+        ChatMessage::ToolCall {
+          name,
+          arguments,
+          output,
+        } => {
           // Tool call message: render as "• Used ToolName(Params)" with colors:
           // • - green, Used - white, ToolName - blue, Params - yellow
+          // If output contains a diff, render it as a bordered panel with line numbers.
           if chunk_idx < chunks.len() {
             use ratatui::style::{Modifier, Style};
-            let text = Text::from(vec![Line::from(vec![
-              Span::styled(
-                "• ",
-                Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
-              ),
-              Span::styled("Used ", Style::default().fg(TEXT_COLOR)),
-              Span::styled(name, Style::default().fg(BLUE).add_modifier(Modifier::BOLD)),
-              Span::styled("(", Style::default().fg(TEXT_COLOR)),
-              Span::styled(arguments, Style::default().fg(HIGHLIGHT_COLOR)),
-              Span::styled(")", Style::default().fg(TEXT_COLOR)),
-            ])]);
-            let widget = Paragraph::new(text);
-            f.render_widget(widget, chunks[chunk_idx]);
+            let area = chunks[chunk_idx];
+            if let Some(out) = output {
+              let layout = ratatui::layout::Layout::default()
+                .direction(ratatui::layout::Direction::Vertical)
+                .constraints([Constraint::Length(1), Constraint::Min(0)])
+                .split(area);
+
+              // Render title line
+              let title_text = Text::from(vec![Line::from(vec![
+                Span::styled(
+                  "• ",
+                  Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("Used ", Style::default().fg(TEXT_COLOR)),
+                Span::styled(name, Style::default().fg(BLUE).add_modifier(Modifier::BOLD)),
+                Span::styled("(", Style::default().fg(TEXT_COLOR)),
+                Span::styled(arguments, Style::default().fg(HIGHLIGHT_COLOR)),
+                Span::styled(")", Style::default().fg(TEXT_COLOR)),
+              ])]);
+              f.render_widget(Paragraph::new(title_text), layout[0]);
+
+              // Render diff panel
+              render_diff_panel(f, layout[1], out);
+            } else {
+              let text = Text::from(vec![Line::from(vec![
+                Span::styled(
+                  "• ",
+                  Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("Used ", Style::default().fg(TEXT_COLOR)),
+                Span::styled(name, Style::default().fg(BLUE).add_modifier(Modifier::BOLD)),
+                Span::styled("(", Style::default().fg(TEXT_COLOR)),
+                Span::styled(arguments, Style::default().fg(HIGHLIGHT_COLOR)),
+                Span::styled(")", Style::default().fg(TEXT_COLOR)),
+              ])]);
+              let widget = Paragraph::new(text);
+              f.render_widget(widget, area);
+            }
             chunk_idx += 1;
           }
         }
@@ -1224,37 +1281,84 @@ impl View for ChatView {
       && chunk_idx < chunks.len()
     {
       use ratatui::style::{Modifier, Style};
-      let text = Text::from(vec![
-        Line::from(vec![
-          Span::styled(
-            "⏸ ",
-            Style::default().fg(WARNING).add_modifier(Modifier::BOLD),
-          ),
-          Span::styled(
-            format!("{} requires approval", approval.name),
-            Style::default().fg(TEXT_COLOR).add_modifier(Modifier::BOLD),
-          ),
-        ]),
-        Line::from(vec![
-          Span::styled(
-            "[y] ",
-            Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
-          ),
-          Span::styled("approve  ", Style::default().fg(TEXT_COLOR)),
-          Span::styled(
-            "[n] ",
-            Style::default().fg(CRITICAL).add_modifier(Modifier::BOLD),
-          ),
-          Span::styled("deny  ", Style::default().fg(TEXT_COLOR)),
-          Span::styled(
-            "[a] ",
-            Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
-          ),
-          Span::styled("allow session", Style::default().fg(TEXT_COLOR)),
-        ]),
-      ]);
-      let widget = Paragraph::new(text).alignment(ratatui::layout::Alignment::Center);
-      f.render_widget(widget, chunks[chunk_idx]);
+      let area = chunks[chunk_idx];
+
+      if let Some(ref diff) = approval.diff_preview {
+        let layout = ratatui::layout::Layout::default()
+          .direction(ratatui::layout::Direction::Vertical)
+          .constraints([Constraint::Length(2), Constraint::Min(0)])
+          .split(area);
+
+        // Render approval header
+        let header_lines = vec![
+          Line::from(vec![
+            Span::styled(
+              "⏸ ",
+              Style::default().fg(WARNING).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+              format!("{} requires approval", approval.name),
+              Style::default().fg(TEXT_COLOR).add_modifier(Modifier::BOLD),
+            ),
+          ]),
+          Line::from(vec![
+            Span::styled(
+              "[y] ",
+              Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("approve  ", Style::default().fg(TEXT_COLOR)),
+            Span::styled(
+              "[n] ",
+              Style::default().fg(CRITICAL).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("deny  ", Style::default().fg(TEXT_COLOR)),
+            Span::styled(
+              "[a] ",
+              Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("allow session", Style::default().fg(TEXT_COLOR)),
+          ]),
+        ];
+        let text = Text::from(header_lines);
+        let widget = Paragraph::new(text).alignment(ratatui::layout::Alignment::Center);
+        f.render_widget(widget, layout[0]);
+
+        // Render compact diff preview
+        render_diff_preview_compact(f, layout[1], diff);
+      } else {
+        let lines = vec![
+          Line::from(vec![
+            Span::styled(
+              "⏸ ",
+              Style::default().fg(WARNING).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+              format!("{} requires approval", approval.name),
+              Style::default().fg(TEXT_COLOR).add_modifier(Modifier::BOLD),
+            ),
+          ]),
+          Line::from(vec![
+            Span::styled(
+              "[y] ",
+              Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("approve  ", Style::default().fg(TEXT_COLOR)),
+            Span::styled(
+              "[n] ",
+              Style::default().fg(CRITICAL).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("deny  ", Style::default().fg(TEXT_COLOR)),
+            Span::styled(
+              "[a] ",
+              Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("allow session", Style::default().fg(TEXT_COLOR)),
+          ]),
+        ];
+        let text = Text::from(lines);
+        let widget = Paragraph::new(text).alignment(ratatui::layout::Alignment::Center);
+        f.render_widget(widget, area);
+      }
       chunk_idx += 1;
     }
 

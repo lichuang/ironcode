@@ -11,6 +11,7 @@ use tokio::fs;
 use crate::tools::{
   ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, ToolPayload, parse_arguments,
 };
+use crate::utils::diff::preview_write_file;
 
 /// Handler for the WriteFile tool
 pub struct WriteFileHandler;
@@ -41,8 +42,23 @@ impl ToolHandler for WriteFileHandler {
     true
   }
 
+  async fn preview(&self, invocation: &ToolInvocation) -> Option<String> {
+    let args = self.parse_args(invocation).ok()?;
+    let resolved_path = self.resolve_path(&args, invocation);
+    let old = fs::read_to_string(&resolved_path).await.ok();
+    let new_content = if args.mode == "append" {
+      match &old {
+        Some(o) => format!("{o}{}", args.content),
+        None => args.content,
+      }
+    } else {
+      args.content
+    };
+    preview_write_file(&args.path, old.as_deref(), &new_content)
+  }
+
   async fn handle(&self, invocation: ToolInvocation) -> Result<ToolOutput, ToolError> {
-    let ToolInvocation { payload, cwd, .. } = invocation;
+    let ToolInvocation { payload, cwd, .. } = invocation.clone();
 
     // Extract arguments from payload
     let arguments = match payload {
@@ -99,6 +115,9 @@ impl ToolHandler for WriteFileHandler {
       }
     }
 
+    // Read old content for diff before writing
+    let old = fs::read_to_string(&resolved_path).await.ok();
+
     // Perform write operation
     let write_result = match args.mode.as_str() {
       "overwrite" => fs::write(&resolved_path, &args.content).await,
@@ -137,10 +156,28 @@ impl ToolHandler for WriteFileHandler {
       "appended to"
     };
 
-    let message = format!(
-      "File successfully {}. Current size: {} bytes.",
-      action, file_size
-    );
+    // Build result with diff
+    let new_content = if args.mode == "append" {
+      match &old {
+        Some(o) => format!("{o}{}", args.content),
+        None => args.content.clone(),
+      }
+    } else {
+      args.content.clone()
+    };
+    let diff = preview_write_file(&args.path, old.as_deref(), &new_content);
+
+    let message = if let Some(diff) = diff {
+      format!(
+        "File successfully {}. Current size: {} bytes.\n\n{}",
+        action, file_size, diff
+      )
+    } else {
+      format!(
+        "File successfully {}. Current size: {} bytes.",
+        action, file_size
+      )
+    };
 
     Ok(ToolOutput::success(message))
   }
@@ -150,6 +187,27 @@ impl WriteFileHandler {
   /// Create a new WriteFileHandler
   pub fn new() -> Self {
     Self
+  }
+
+  fn parse_args(&self, invocation: &ToolInvocation) -> Result<WriteFileArgs, ToolError> {
+    let arguments = match &invocation.payload {
+      ToolPayload::Function { arguments } => arguments.clone(),
+      _ => {
+        return Err(ToolError::RespondToModel(
+          "WriteFile handler received unsupported payload".to_string(),
+        ));
+      }
+    };
+    parse_arguments(&arguments)
+  }
+
+  fn resolve_path(&self, args: &WriteFileArgs, invocation: &ToolInvocation) -> PathBuf {
+    let path = PathBuf::from(&args.path);
+    if path.is_absolute() {
+      path
+    } else {
+      invocation.cwd.join(&path)
+    }
   }
 }
 

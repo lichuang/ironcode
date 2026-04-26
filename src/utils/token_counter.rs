@@ -149,10 +149,17 @@ pub fn estimate_chat_messages_tokens(messages: &[ChatMessage]) -> usize {
           total += estimate_tokens(thinking);
         }
       }
-      ChatMessage::ToolCall { name, arguments } => {
-        // Tool calls: count name + arguments
+      ChatMessage::ToolCall {
+        name,
+        arguments,
+        output,
+      } => {
+        // Tool calls: count name + arguments + output
         total += estimate_tokens(name);
         total += estimate_tokens(arguments);
+        if let Some(out) = output {
+          total += estimate_tokens(out);
+        }
       }
       ChatMessage::System { .. } => {
         // System messages are UI notifications, not part of LLM context

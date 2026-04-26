@@ -112,6 +112,8 @@ pub enum SessionEvent {
     name: String,
     /// Tool arguments
     arguments: String,
+    /// Optional diff preview for file-modifying tools
+    diff_preview: Option<String>,
   },
   /// Session has been shutdown
   Shutdown,
@@ -996,6 +998,15 @@ impl SessionActor {
           "Session {}: Tool {} requires approval, pausing execution",
           self.id, tool_call.name
         );
+        let invocation = ToolInvocation::new(
+          &tool_call.name,
+          &tool_call.id,
+          ToolPayload::Function {
+            arguments: tool_call.arguments.clone(),
+          },
+          &self.cwd,
+        );
+        let diff_preview = self.tool_registry.preview(&invocation).await;
         self.tool_call_execution_state = Some(ToolCallExecutionState {
           tool_calls: state.tool_calls.clone(),
           current_index: i,
@@ -1004,6 +1015,7 @@ impl SessionActor {
           id: tool_call.id.clone(),
           name: tool_call.name.clone(),
           arguments: tool_call.arguments.clone(),
+          diff_preview,
         });
         return;
       }

@@ -59,6 +59,8 @@ pub struct PendingApproval {
   /// Tool arguments
   #[allow(dead_code)]
   pub arguments: String,
+  /// Optional diff preview for file-modifying tools
+  pub diff_preview: Option<String>,
 }
 
 impl AppData {
@@ -279,9 +281,15 @@ impl App {
             }
             // Add completed tool call to chat history so it persists
             if let Some(args) = tool_args {
+              // Only show diff/output for file-modifying tools in chat history
+              let display_output = match name.as_str() {
+                "WriteFile" | "ReplaceFile" => Some(output.clone()),
+                _ => None,
+              };
               self.data.chat_history.push(ChatMessage::ToolCall {
                 name: name.clone(),
                 arguments: args,
+                output: display_output,
               });
             }
             self.data.streaming_response = self.current_chunks.clone();
@@ -335,11 +343,13 @@ impl App {
             id,
             name,
             arguments,
+            diff_preview,
           } => {
             self.data.pending_approval = Some(PendingApproval {
               tool_call_id: id,
               name,
               arguments,
+              diff_preview,
             });
           }
           SessionEvent::Error(err) => {
