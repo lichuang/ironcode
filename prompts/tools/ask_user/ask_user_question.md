@@ -51,9 +51,14 @@ description: Use this tool when you need to ask the user questions with structur
             "type": "boolean",
             "description": "Whether the user can select multiple options.",
             "default": false
+          },
+          "confirmation": {
+            "type": "boolean",
+            "description": "Whether this is a yes/no confirmation dialog. When true, options default to Yes/No and are rendered as a compact confirmation.",
+            "default": false
           }
         },
-        "required": ["question", "options"]
+        "required": ["question"]
       }
     }
   },

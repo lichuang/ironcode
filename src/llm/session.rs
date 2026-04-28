@@ -75,6 +75,8 @@ pub struct Question {
   pub options: Vec<QuestionOption>,
   /// Whether multiple options can be selected
   pub multi_select: bool,
+  /// Whether this is a yes/no confirmation dialog
+  pub confirmation: bool,
 }
 
 /// Commands sent to the session actor
@@ -1406,9 +1408,12 @@ struct AskUserQuestionArgQuestion {
   question: String,
   #[serde(default)]
   header: String,
+  #[serde(default)]
   options: Vec<AskUserQuestionArgOption>,
   #[serde(default)]
   multi_select: bool,
+  #[serde(default)]
+  confirmation: bool,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1437,24 +1442,26 @@ fn parse_ask_user_questions(arguments: &str) -> std::result::Result<Vec<Question
       ));
     }
 
-    if q.options.len() < 2 {
-      return Err(format!(
-        "Question {}: at least 2 options are required.",
-        idx + 1
-      ));
-    }
-
-    if q.options.len() > 4 {
-      return Err(format!("Question {}: maximum 4 options allowed.", idx + 1));
-    }
-
-    for (opt_idx, opt) in q.options.iter().enumerate() {
-      if opt.label.trim().is_empty() {
+    if !q.confirmation {
+      if q.options.len() < 2 {
         return Err(format!(
-          "Question {}: option {} label cannot be empty.",
-          idx + 1,
-          opt_idx + 1
+          "Question {}: at least 2 options are required.",
+          idx + 1
         ));
+      }
+
+      if q.options.len() > 4 {
+        return Err(format!("Question {}: maximum 4 options allowed.", idx + 1));
+      }
+
+      for (opt_idx, opt) in q.options.iter().enumerate() {
+        if opt.label.trim().is_empty() {
+          return Err(format!(
+            "Question {}: option {} label cannot be empty.",
+            idx + 1,
+            opt_idx + 1
+          ));
+        }
       }
     }
   }
@@ -1462,18 +1469,34 @@ fn parse_ask_user_questions(arguments: &str) -> std::result::Result<Vec<Question
   let questions = args
     .questions
     .into_iter()
-    .map(|q| Question {
-      question: q.question,
-      header: q.header,
-      options: q
-        .options
-        .into_iter()
-        .map(|o| QuestionOption {
-          label: o.label,
-          description: o.description,
-        })
-        .collect(),
-      multi_select: q.multi_select,
+    .map(|q| {
+      let options = if q.confirmation {
+        vec![
+          QuestionOption {
+            label: "Yes".to_string(),
+            description: String::new(),
+          },
+          QuestionOption {
+            label: "No".to_string(),
+            description: String::new(),
+          },
+        ]
+      } else {
+        q.options
+          .into_iter()
+          .map(|o| QuestionOption {
+            label: o.label,
+            description: o.description,
+          })
+          .collect()
+      };
+      Question {
+        question: q.question,
+        header: q.header,
+        options,
+        multi_select: q.multi_select,
+        confirmation: q.confirmation,
+      }
     })
     .collect();
 
@@ -2253,5 +2276,41 @@ mod tests {
     let args = parse_ask_user_question_args(json).unwrap();
     assert_eq!(args.questions.len(), 1);
     assert_eq!(args.questions[0].question, "Q?");
+  }
+
+  #[test]
+  fn test_parse_ask_user_questions_confirmation_defaults_to_yes_no() {
+    let json = r#"{
+      "questions": [
+        {
+          "question": "Are you sure?",
+          "confirmation": true
+        }
+      ]
+    }"#;
+    let questions = parse_ask_user_questions(json).unwrap();
+    assert_eq!(questions.len(), 1);
+    assert!(questions[0].confirmation);
+    assert_eq!(questions[0].options.len(), 2);
+    assert_eq!(questions[0].options[0].label, "Yes");
+    assert_eq!(questions[0].options[1].label, "No");
+  }
+
+  #[test]
+  fn test_parse_ask_user_questions_confirmation_ignores_provided_options() {
+    let json = r#"{
+      "questions": [
+        {
+          "question": "Proceed?",
+          "confirmation": true,
+          "options": [{"label": "Maybe"}]
+        }
+      ]
+    }"#;
+    let questions = parse_ask_user_questions(json).unwrap();
+    assert!(questions[0].confirmation);
+    // Provided options are ignored, replaced with Yes/No
+    assert_eq!(questions[0].options[0].label, "Yes");
+    assert_eq!(questions[0].options[1].label, "No");
   }
 }

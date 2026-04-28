@@ -90,7 +90,7 @@
 
 #### 6. Structured AskUser Tool
 - [x] Single-select/multi-select question types
-- [ ] Confirmation dialogs (yes/no)
+- [x] Confirmation dialogs (yes/no)
 - [ ] Input validation and default values
 - [ ] Rich text rendering (Markdown)
 
@@ -224,9 +224,9 @@
 | Metric | Count |
 |--------|-------|
 | **Total Tasks** | 93 |
-| **Completed** | 19 |
-| **Remaining** | 74 |
-| **Progress** | 20.4% |
+| **Completed** | 20 |
+| **Remaining** | 73 |
+| **Progress** | 21.5% |
 
 > **Note:** This summary must be updated whenever tasks are completed. After each batch of completions, recalculate the counts and percentage to keep the document accurate.
 

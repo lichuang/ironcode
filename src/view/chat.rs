@@ -767,43 +767,63 @@ impl ChatView {
       )]));
 
       // Options
-      for (opt_idx, opt) in q.options.iter().enumerate() {
-        let is_selected = is_current && pq.selected_option_idx == opt_idx;
-        let is_checked = if q_idx < pq.answers.len() {
-          pq.answers[q_idx].contains(&opt_idx)
-        } else {
-          false
-        };
-
-        let prefix = if q.multi_select {
-          if is_checked { "[x] " } else { "[ ] " }
-        } else if is_selected {
-          "> "
-        } else {
-          "  "
-        };
-
-        let label_style = if is_selected && is_current {
-          Style::default().fg(BLUE).add_modifier(Modifier::BOLD)
-        } else if is_checked {
-          Style::default().fg(GREEN)
+      if q.confirmation {
+        // Compact confirmation dialog: [y] Yes  [n] No
+        let yes_style = if is_current {
+          Style::default().fg(GREEN).add_modifier(Modifier::BOLD)
         } else {
           Style::default().fg(TEXT_COLOR)
         };
+        let no_style = if is_current {
+          Style::default().fg(CRITICAL).add_modifier(Modifier::BOLD)
+        } else {
+          Style::default().fg(TEXT_COLOR)
+        };
+        lines.push(Line::from(vec![
+          Span::styled("[y] ", yes_style),
+          Span::styled("Yes  ", yes_style),
+          Span::styled("[n] ", no_style),
+          Span::styled("No", no_style),
+        ]));
+      } else {
+        for (opt_idx, opt) in q.options.iter().enumerate() {
+          let is_selected = is_current && pq.selected_option_idx == opt_idx;
+          let is_checked = if q_idx < pq.answers.len() {
+            pq.answers[q_idx].contains(&opt_idx)
+          } else {
+            false
+          };
 
-        let mut spans = vec![
-          Span::styled(prefix, label_style),
-          Span::styled(&opt.label, label_style),
-        ];
+          let prefix = if q.multi_select {
+            if is_checked { "[x] " } else { "[ ] " }
+          } else if is_selected {
+            "> "
+          } else {
+            "  "
+          };
 
-        if !opt.description.is_empty() {
-          spans.push(Span::styled(
-            format!(" - {}", opt.description),
-            Style::default().fg(TEXT_COLOR),
-          ));
+          let label_style = if is_selected && is_current {
+            Style::default().fg(BLUE).add_modifier(Modifier::BOLD)
+          } else if is_checked {
+            Style::default().fg(GREEN)
+          } else {
+            Style::default().fg(TEXT_COLOR)
+          };
+
+          let mut spans = vec![
+            Span::styled(prefix, label_style),
+            Span::styled(&opt.label, label_style),
+          ];
+
+          if !opt.description.is_empty() {
+            spans.push(Span::styled(
+              format!(" - {}", opt.description),
+              Style::default().fg(TEXT_COLOR),
+            ));
+          }
+
+          lines.push(Line::from(spans));
         }
-
-        lines.push(Line::from(spans));
       }
 
       // Spacing between questions
@@ -814,7 +834,9 @@ impl ChatView {
 
     // Hint line
     if let Some(q) = pq.questions.get(pq.current_question_idx) {
-      let hint = if q.multi_select {
+      let hint = if q.confirmation {
+        "[y] yes  [n] no  [q] dismiss"
+      } else if q.multi_select {
         "[Space] toggle  [Enter] confirm  [q] dismiss"
       } else {
         "[Enter] confirm  [1-4] quick select  [q] dismiss"
@@ -882,6 +904,13 @@ impl View for ChatView {
 
     // Handle pending structured questions
     if let Some(ref mut questions) = data.pending_questions {
+      // Check if current question is a confirmation dialog
+      let is_confirmation = questions
+        .questions
+        .get(questions.current_question_idx)
+        .map(|q| q.confirmation)
+        .unwrap_or(false);
+
       match key.code {
         KeyCode::Char('q') | KeyCode::Esc => {
           self
@@ -889,13 +918,48 @@ impl View for ChatView {
             .answer_questions(&questions.tool_call_id, Vec::new(), true);
           data.pending_questions = None;
         }
+        KeyCode::Char('y') if is_confirmation => {
+          let q_idx = questions.current_question_idx;
+          while questions.answers.len() <= q_idx {
+            questions.answers.push(Vec::new());
+          }
+          questions.answers[q_idx] = vec![0]; // Yes = index 0
+          questions.current_question_idx += 1;
+          questions.selected_option_idx = 0;
+          if questions.current_question_idx >= questions.questions.len() {
+            let answers = std::mem::take(&mut questions.answers);
+            let tool_call_id = questions.tool_call_id.clone();
+            self
+              .session_handle
+              .answer_questions(tool_call_id, answers, false);
+            data.pending_questions = None;
+          }
+        }
+        KeyCode::Char('n') if is_confirmation => {
+          let q_idx = questions.current_question_idx;
+          while questions.answers.len() <= q_idx {
+            questions.answers.push(Vec::new());
+          }
+          questions.answers[q_idx] = vec![1]; // No = index 1
+          questions.current_question_idx += 1;
+          questions.selected_option_idx = 0;
+          if questions.current_question_idx >= questions.questions.len() {
+            let answers = std::mem::take(&mut questions.answers);
+            let tool_call_id = questions.tool_call_id.clone();
+            self
+              .session_handle
+              .answer_questions(tool_call_id, answers, false);
+            data.pending_questions = None;
+          }
+        }
         KeyCode::Up => {
-          if questions.selected_option_idx > 0 {
+          if !is_confirmation && questions.selected_option_idx > 0 {
             questions.selected_option_idx -= 1;
           }
         }
         KeyCode::Down => {
-          if let Some(q) = questions.questions.get(questions.current_question_idx)
+          if !is_confirmation
+            && let Some(q) = questions.questions.get(questions.current_question_idx)
             && questions.selected_option_idx + 1 < q.options.len()
           {
             questions.selected_option_idx += 1;
@@ -1694,6 +1758,7 @@ mod tests {
             },
           ],
           multi_select: false,
+          confirmation: false,
         },
         Question {
           question: "Pick sizes".to_string(),
@@ -1709,6 +1774,7 @@ mod tests {
             },
           ],
           multi_select: true,
+          confirmation: false,
         },
       ],
       current_question_idx: 0,
@@ -1889,5 +1955,82 @@ mod tests {
     let pq = data.pending_questions.as_ref().unwrap();
     assert_eq!(pq.current_question_idx, 1); // moved to next question
     assert_eq!(pq.answers[0], vec![1]); // Blue selected
+  }
+
+  fn make_confirmation_question() -> PendingQuestions {
+    PendingQuestions {
+      tool_call_id: "call-confirm".to_string(),
+      questions: vec![Question {
+        question: "Are you sure?".to_string(),
+        header: "Confirm".to_string(),
+        options: vec![
+          crate::llm::session::QuestionOption {
+            label: "Yes".to_string(),
+            description: String::new(),
+          },
+          crate::llm::session::QuestionOption {
+            label: "No".to_string(),
+            description: String::new(),
+          },
+        ],
+        multi_select: false,
+        confirmation: true,
+      }],
+      current_question_idx: 0,
+      answers: Vec::new(),
+      selected_option_idx: 0,
+    }
+  }
+
+  #[test]
+  fn test_question_confirmation_yes() {
+    init_test_config();
+    let (session_handle, mut cmd_rx) = make_session_handle();
+    let mut data = AppData::new();
+    let mut view = ChatView::new(&data, session_handle);
+    data.pending_questions = Some(make_confirmation_question());
+
+    view.handle_key(&mut data, KeyEvent::from(KeyCode::Char('y')));
+
+    assert!(data.pending_questions.is_none());
+    let cmd = cmd_rx.try_recv().expect("Expected AnswerQuestions command");
+    match cmd {
+      SessionCommand::AnswerQuestions {
+        tool_call_id,
+        answers,
+        dismissed,
+      } => {
+        assert_eq!(tool_call_id, "call-confirm");
+        assert!(!dismissed);
+        assert_eq!(answers, vec![vec![0]]); // Yes = index 0
+      }
+      other => panic!("Expected AnswerQuestions, got {:?}", other),
+    }
+  }
+
+  #[test]
+  fn test_question_confirmation_no() {
+    init_test_config();
+    let (session_handle, mut cmd_rx) = make_session_handle();
+    let mut data = AppData::new();
+    let mut view = ChatView::new(&data, session_handle);
+    data.pending_questions = Some(make_confirmation_question());
+
+    view.handle_key(&mut data, KeyEvent::from(KeyCode::Char('n')));
+
+    assert!(data.pending_questions.is_none());
+    let cmd = cmd_rx.try_recv().expect("Expected AnswerQuestions command");
+    match cmd {
+      SessionCommand::AnswerQuestions {
+        tool_call_id,
+        answers,
+        dismissed,
+      } => {
+        assert_eq!(tool_call_id, "call-confirm");
+        assert!(!dismissed);
+        assert_eq!(answers, vec![vec![1]]); // No = index 1
+      }
+      other => panic!("Expected AnswerQuestions, got {:?}", other),
+    }
   }
 }

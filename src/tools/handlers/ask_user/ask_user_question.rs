@@ -33,11 +33,16 @@ struct Question {
   #[serde(default)]
   header: String,
   /// Available options (2-4 items)
+  #[serde(default)]
   options: Vec<QuestionOption>,
   /// Whether multiple options can be selected
   #[allow(dead_code)]
   #[serde(default)]
   multi_select: bool,
+  /// Whether this is a yes/no confirmation dialog
+  #[allow(dead_code)]
+  #[serde(default)]
+  confirmation: bool,
 }
 
 /// Arguments for the AskUserQuestion tool
