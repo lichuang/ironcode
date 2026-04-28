@@ -9,7 +9,7 @@ use crate::cli::Args;
 use crate::cli::runtime::Runtime;
 use crate::config::global_config;
 use crate::error::Result;
-use crate::llm::{ChatSession, SessionEvent};
+use crate::llm::{ChatSession, Question, SessionEvent};
 use crate::session::{SessionMode, SessionStore};
 use crate::tui::FrameRequester;
 use crate::view::chat::{
@@ -34,6 +34,8 @@ pub struct AppData {
   pub(crate) compaction_warning: Option<CompactionWarning>,
   /// Pending tool call awaiting user approval
   pub(crate) pending_approval: Option<PendingApproval>,
+  /// Pending structured questions awaiting user answers
+  pub(crate) pending_questions: Option<PendingQuestions>,
 }
 
 /// Compaction warning information
@@ -62,6 +64,21 @@ pub struct PendingApproval {
   pub diff_preview: Option<String>,
 }
 
+/// Pending structured questions from AskUserQuestion
+#[derive(Debug, Clone)]
+pub struct PendingQuestions {
+  /// Tool call ID
+  pub tool_call_id: String,
+  /// Questions to present
+  pub questions: Vec<Question>,
+  /// Index of the currently focused question
+  pub current_question_idx: usize,
+  /// Selected option indices for each question answered so far
+  pub answers: Vec<Vec<usize>>,
+  /// Currently selected option index within the focused question
+  pub selected_option_idx: usize,
+}
+
 impl AppData {
   /// Create a new app data instance
   pub fn new() -> Self {
@@ -73,6 +90,7 @@ impl AppData {
       precise_token_count: None,
       compaction_warning: None,
       pending_approval: None,
+      pending_questions: None,
     }
   }
 }
@@ -199,10 +217,11 @@ impl App {
         updated = true;
         match event {
           SessionEvent::ContentChunk(chunk) => {
+            let preview: String = chunk.chars().take(100).collect();
             log::debug!(
               "App: Received ContentChunk, len={}, content={}",
               chunk.len(),
-              &chunk[..chunk.len().min(100)]
+              preview
             );
             // Add normal content chunk - make_mut to clone only if needed
             Arc::make_mut(&mut self.current_chunks).push(StreamingChunk::Normal(chunk));
@@ -210,10 +229,11 @@ impl App {
             self.data.streaming_response = self.current_chunks.clone();
           }
           SessionEvent::ThinkingChunk(chunk) => {
+            let preview: String = chunk.chars().take(100).collect();
             log::info!(
               "App: Received ThinkingChunk, len={}, content={}",
               chunk.len(),
-              &chunk[..chunk.len().min(100)]
+              preview
             );
             // Add thinking content chunk - make_mut to clone only if needed
             Arc::make_mut(&mut self.current_chunks).push(StreamingChunk::Thinking(chunk));
@@ -387,6 +407,23 @@ impl App {
             self.data.chat_history.push(ChatMessage::System {
               content: message,
               level: SystemMessageLevel::Warning,
+            });
+          }
+          SessionEvent::QuestionsAsked {
+            tool_call_id,
+            questions,
+          } => {
+            log::info!(
+              "App: Questions asked - {} questions from tool_call_id={}",
+              questions.len(),
+              tool_call_id
+            );
+            self.data.pending_questions = Some(PendingQuestions {
+              tool_call_id,
+              questions,
+              current_question_idx: 0,
+              answers: Vec::new(),
+              selected_option_idx: 0,
             });
           }
           SessionEvent::CompactionCompleted {

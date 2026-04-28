@@ -12,6 +12,7 @@ use ratatui::{
 };
 
 use crate::cli::AppData;
+use crate::cli::app::PendingQuestions;
 use crate::config::global_config;
 use crate::history::InputHistoryManager;
 use crate::llm::SessionHandle;
@@ -499,10 +500,8 @@ impl ChatView {
       self.cursor_position = 0;
 
       // Send message directly to LLM via SessionHandle
-      log::debug!(
-        "Sending message to LLM: {}",
-        &message[..message.len().min(50)]
-      );
+      let preview: String = message.chars().take(50).collect();
+      log::debug!("Sending message to LLM: {}", preview);
       self.session_handle.send_message(message);
 
       // Enter Animating state (show moon animation)
@@ -729,6 +728,108 @@ impl ChatView {
     f.render_widget(text, area);
   }
 
+  /// Render the structured questions panel for AskUserQuestion
+  fn render_questions_panel(&self, f: &mut Frame, area: Rect, pq: &PendingQuestions) {
+    use ratatui::style::{Modifier, Style};
+
+    let block = Block::default()
+      .title("❓ Questions")
+      .borders(Borders::ALL)
+      .border_style(Style::default().fg(BLUE));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    for (q_idx, q) in pq.questions.iter().enumerate() {
+      let is_current = q_idx == pq.current_question_idx;
+      let _is_answered = q_idx < pq.answers.len() && !pq.answers[q_idx].is_empty();
+
+      // Header
+      if !q.header.is_empty() {
+        lines.push(Line::from(vec![Span::styled(
+          format!("[{}]", q.header),
+          Style::default()
+            .fg(HIGHLIGHT_COLOR)
+            .add_modifier(Modifier::BOLD),
+        )]));
+      }
+
+      // Question text
+      let q_style = if is_current {
+        Style::default().fg(TEXT_COLOR).add_modifier(Modifier::BOLD)
+      } else {
+        Style::default().fg(TEXT_COLOR)
+      };
+      lines.push(Line::from(vec![Span::styled(
+        format!("{}.", q.question),
+        q_style,
+      )]));
+
+      // Options
+      for (opt_idx, opt) in q.options.iter().enumerate() {
+        let is_selected = is_current && pq.selected_option_idx == opt_idx;
+        let is_checked = if q_idx < pq.answers.len() {
+          pq.answers[q_idx].contains(&opt_idx)
+        } else {
+          false
+        };
+
+        let prefix = if q.multi_select {
+          if is_checked { "[x] " } else { "[ ] " }
+        } else if is_selected {
+          "> "
+        } else {
+          "  "
+        };
+
+        let label_style = if is_selected && is_current {
+          Style::default().fg(BLUE).add_modifier(Modifier::BOLD)
+        } else if is_checked {
+          Style::default().fg(GREEN)
+        } else {
+          Style::default().fg(TEXT_COLOR)
+        };
+
+        let mut spans = vec![
+          Span::styled(prefix, label_style),
+          Span::styled(&opt.label, label_style),
+        ];
+
+        if !opt.description.is_empty() {
+          spans.push(Span::styled(
+            format!(" - {}", opt.description),
+            Style::default().fg(TEXT_COLOR),
+          ));
+        }
+
+        lines.push(Line::from(spans));
+      }
+
+      // Spacing between questions
+      if q_idx + 1 < pq.questions.len() {
+        lines.push(Line::from(""));
+      }
+    }
+
+    // Hint line
+    if let Some(q) = pq.questions.get(pq.current_question_idx) {
+      let hint = if q.multi_select {
+        "[Space] toggle  [Enter] confirm  [q] dismiss"
+      } else {
+        "[Enter] confirm  [1-4] quick select  [q] dismiss"
+      };
+      lines.push(Line::from(vec![Span::styled(
+        hint,
+        Style::default().fg(TEXT_COLOR),
+      )]));
+    }
+
+    let text = Text::from(lines);
+    let paragraph = Paragraph::new(text).wrap(Wrap { trim: true });
+    f.render_widget(paragraph, inner);
+  }
+
   /// Update status bar info with current state
   ///
   /// This method updates the mutable fields of status_bar_info.
@@ -773,6 +874,102 @@ impl View for ChatView {
             .session_handle
             .approve_tool_call(&approval.tool_call_id, true);
           data.pending_approval = None;
+        }
+        _ => {}
+      }
+      return None;
+    }
+
+    // Handle pending structured questions
+    if let Some(ref mut questions) = data.pending_questions {
+      match key.code {
+        KeyCode::Char('q') | KeyCode::Esc => {
+          self
+            .session_handle
+            .answer_questions(&questions.tool_call_id, Vec::new(), true);
+          data.pending_questions = None;
+        }
+        KeyCode::Up => {
+          if questions.selected_option_idx > 0 {
+            questions.selected_option_idx -= 1;
+          }
+        }
+        KeyCode::Down => {
+          if let Some(q) = questions.questions.get(questions.current_question_idx)
+            && questions.selected_option_idx + 1 < q.options.len()
+          {
+            questions.selected_option_idx += 1;
+          }
+        }
+        KeyCode::Char(' ') => {
+          if let Some(q) = questions.questions.get(questions.current_question_idx)
+            && q.multi_select
+          {
+            let q_idx = questions.current_question_idx;
+            while questions.answers.len() <= q_idx {
+              questions.answers.push(Vec::new());
+            }
+            let selected = questions.selected_option_idx;
+            let ans = &mut questions.answers[q_idx];
+            if let Some(pos) = ans.iter().position(|&x| x == selected) {
+              ans.remove(pos);
+            } else {
+              ans.push(selected);
+            }
+          }
+        }
+        KeyCode::Enter => {
+          if let Some(q) = questions.questions.get(questions.current_question_idx) {
+            let q_idx = questions.current_question_idx;
+            while questions.answers.len() <= q_idx {
+              questions.answers.push(Vec::new());
+            }
+            if !q.multi_select {
+              questions.answers[q_idx] = vec![questions.selected_option_idx];
+            }
+            questions.current_question_idx += 1;
+            questions.selected_option_idx = 0;
+            if questions.current_question_idx >= questions.questions.len() {
+              let answers = std::mem::take(&mut questions.answers);
+              let tool_call_id = questions.tool_call_id.clone();
+              self
+                .session_handle
+                .answer_questions(tool_call_id, answers, false);
+              data.pending_questions = None;
+            }
+          }
+        }
+        KeyCode::Char(c) if c.is_ascii_digit() => {
+          let digit = (c as usize).saturating_sub('1' as usize);
+          if let Some(q) = questions.questions.get(questions.current_question_idx)
+            && digit < q.options.len()
+          {
+            questions.selected_option_idx = digit;
+            let q_idx = questions.current_question_idx;
+            while questions.answers.len() <= q_idx {
+              questions.answers.push(Vec::new());
+            }
+            if q.multi_select {
+              let ans = &mut questions.answers[q_idx];
+              if let Some(pos) = ans.iter().position(|&x| x == digit) {
+                ans.remove(pos);
+              } else {
+                ans.push(digit);
+              }
+            } else {
+              questions.answers[q_idx] = vec![digit];
+              questions.current_question_idx += 1;
+              questions.selected_option_idx = 0;
+              if questions.current_question_idx >= questions.questions.len() {
+                let answers = std::mem::take(&mut questions.answers);
+                let tool_call_id = questions.tool_call_id.clone();
+                self
+                  .session_handle
+                  .answer_questions(tool_call_id, answers, false);
+                data.pending_questions = None;
+              }
+            }
+          }
         }
         _ => {}
       }
@@ -1032,6 +1229,26 @@ impl View for ChatView {
       constraints.push(Constraint::Length(approval_height));
     }
 
+    // Structured questions panel (if pending)
+    let question_height = if let Some(ref pq) = data.pending_questions {
+      let mut h = 3; // border + title + padding
+      for q in &pq.questions {
+        if !q.header.is_empty() {
+          h += 1;
+        }
+        h += Self::calculate_line_count(&q.question, available_width.saturating_sub(4));
+        h += q.options.len();
+        h += 1; // spacing between questions
+      }
+      h += 1; // hint line
+      h.min(30) as u16
+    } else {
+      0
+    };
+    if question_height > 0 {
+      constraints.push(Constraint::Length(question_height));
+    }
+
     // Waiting for user input: spinner line (1 line height)
     // Only shown in WaitingInput state
     if self.state == ChatDisplayState::WaitingInput {
@@ -1096,6 +1313,20 @@ impl View for ChatView {
         .map(|d| diff_preview_compact_height(d))
         .unwrap_or(0);
       total_fixed_height += 2 + diff_lines;
+    }
+    // Add question panel height if pending
+    if let Some(ref pq) = data.pending_questions {
+      let mut h = 3;
+      for q in &pq.questions {
+        if !q.header.is_empty() {
+          h += 1;
+        }
+        h += Self::calculate_line_count(&q.question, available_width.saturating_sub(4));
+        h += q.options.len();
+        h += 1;
+      }
+      h += 1;
+      total_fixed_height += h.min(30);
     }
     // Add spinner line height if in WaitingInput state
     if self.state == ChatDisplayState::WaitingInput {
@@ -1275,6 +1506,14 @@ impl View for ChatView {
       }
     }
 
+    // Render questions panel if pending
+    if let Some(ref pq) = data.pending_questions
+      && chunk_idx < chunks.len()
+    {
+      self.render_questions_panel(f, chunks[chunk_idx], pq);
+      chunk_idx += 1;
+    }
+
     // Render approval prompt if pending
     if let Some(ref approval) = data.pending_approval
       && chunk_idx < chunks.len()
@@ -1406,3 +1645,249 @@ impl View for ChatView {
 
 // Note: ChatView cannot implement Default because it requires a SessionHandle.
 // Use ChatView::new(data, session_handle) to create an instance.
+
+#[cfg(test)]
+mod tests {
+  use std::sync::Once;
+
+  use crossterm::event::{KeyCode, KeyEvent};
+  use tokio::sync::mpsc;
+
+  use crate::cli::app::PendingQuestions;
+  use crate::config::{Config, init_global_config};
+  use crate::llm::Question;
+  use crate::llm::session::SessionCommand;
+
+  use super::*;
+
+  static INIT_CONFIG: Once = Once::new();
+
+  fn init_test_config() {
+    INIT_CONFIG.call_once(|| {
+      init_global_config(Config::default());
+    });
+  }
+
+  fn make_session_handle() -> (SessionHandle, mpsc::UnboundedReceiver<SessionCommand>) {
+    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+    (
+      SessionHandle::test_new("test-session".to_string(), cmd_tx),
+      cmd_rx,
+    )
+  }
+
+  fn make_pending_questions() -> PendingQuestions {
+    PendingQuestions {
+      tool_call_id: "call-123".to_string(),
+      questions: vec![
+        Question {
+          question: "Which color?".to_string(),
+          header: "Style".to_string(),
+          options: vec![
+            crate::llm::session::QuestionOption {
+              label: "Red".to_string(),
+              description: "Bold".to_string(),
+            },
+            crate::llm::session::QuestionOption {
+              label: "Blue".to_string(),
+              description: "Calm".to_string(),
+            },
+          ],
+          multi_select: false,
+        },
+        Question {
+          question: "Pick sizes".to_string(),
+          header: "".to_string(),
+          options: vec![
+            crate::llm::session::QuestionOption {
+              label: "Small".to_string(),
+              description: "".to_string(),
+            },
+            crate::llm::session::QuestionOption {
+              label: "Large".to_string(),
+              description: "".to_string(),
+            },
+          ],
+          multi_select: true,
+        },
+      ],
+      current_question_idx: 0,
+      answers: Vec::new(),
+      selected_option_idx: 0,
+    }
+  }
+
+  #[test]
+  fn test_question_keyboard_down_navigation() {
+    init_test_config();
+    let (session_handle, mut cmd_rx) = make_session_handle();
+    let mut data = AppData::new();
+    let mut view = ChatView::new(&data, session_handle);
+    data.pending_questions = Some(make_pending_questions());
+
+    // Press Down to move from option 0 to option 1
+    view.handle_key(&mut data, KeyEvent::from(KeyCode::Down));
+
+    let pq = data.pending_questions.as_ref().unwrap();
+    assert_eq!(pq.selected_option_idx, 1);
+    assert!(cmd_rx.try_recv().is_err()); // no command sent yet
+  }
+
+  #[test]
+  fn test_question_single_select_enter() {
+    init_test_config();
+    let (session_handle, _cmd_rx) = make_session_handle();
+    let mut data = AppData::new();
+    let mut view = ChatView::new(&data, session_handle);
+    data.pending_questions = Some(make_pending_questions());
+
+    // Press Enter to confirm first question (single-select)
+    view.handle_key(&mut data, KeyEvent::from(KeyCode::Enter));
+
+    // Should move to next question
+    let pq = data.pending_questions.as_ref().unwrap();
+    assert_eq!(pq.current_question_idx, 1);
+    assert_eq!(pq.answers.len(), 1);
+    assert_eq!(pq.answers[0], vec![0]); // first option selected
+  }
+
+  #[test]
+  fn test_question_multi_select_toggle() {
+    init_test_config();
+    let (session_handle, _cmd_rx) = make_session_handle();
+    let mut data = AppData::new();
+    let mut view = ChatView::new(&data, session_handle);
+    data.pending_questions = Some(make_pending_questions());
+
+    // Move to second question (multi-select)
+    view.handle_key(&mut data, KeyEvent::from(KeyCode::Enter));
+    assert_eq!(
+      data
+        .pending_questions
+        .as_ref()
+        .unwrap()
+        .current_question_idx,
+      1
+    );
+
+    // Toggle option 0 with Space
+    view.handle_key(&mut data, KeyEvent::from(KeyCode::Char(' ')));
+    let pq = data.pending_questions.as_ref().unwrap();
+    assert_eq!(pq.answers[1], vec![0]);
+
+    // Move down and toggle option 1
+    view.handle_key(&mut data, KeyEvent::from(KeyCode::Down));
+    view.handle_key(&mut data, KeyEvent::from(KeyCode::Char(' ')));
+    let pq = data.pending_questions.as_ref().unwrap();
+    assert_eq!(pq.answers[1], vec![0, 1]);
+
+    // Toggle option 0 off
+    view.handle_key(&mut data, KeyEvent::from(KeyCode::Up));
+    view.handle_key(&mut data, KeyEvent::from(KeyCode::Char(' ')));
+    let pq = data.pending_questions.as_ref().unwrap();
+    assert_eq!(pq.answers[1], vec![1]);
+  }
+
+  #[test]
+  fn test_question_complete_all_and_submit() {
+    init_test_config();
+    let (session_handle, mut cmd_rx) = make_session_handle();
+    let mut data = AppData::new();
+    let mut view = ChatView::new(&data, session_handle);
+    data.pending_questions = Some(make_pending_questions());
+
+    // Answer first question (single-select, option 1)
+    view.handle_key(&mut data, KeyEvent::from(KeyCode::Down));
+    view.handle_key(&mut data, KeyEvent::from(KeyCode::Enter));
+
+    // Answer second question (multi-select, toggle option 0)
+    view.handle_key(&mut data, KeyEvent::from(KeyCode::Char(' ')));
+    view.handle_key(&mut data, KeyEvent::from(KeyCode::Enter));
+
+    // pending_questions should be cleared and command sent
+    assert!(data.pending_questions.is_none());
+    let cmd = cmd_rx.try_recv().expect("Expected AnswerQuestions command");
+    match cmd {
+      SessionCommand::AnswerQuestions {
+        tool_call_id,
+        answers,
+        dismissed,
+      } => {
+        assert_eq!(tool_call_id, "call-123");
+        assert!(!dismissed);
+        assert_eq!(answers.len(), 2);
+        assert_eq!(answers[0], vec![1]); // Blue
+        assert_eq!(answers[1], vec![0]); // Small
+      }
+      other => panic!("Expected AnswerQuestions, got {:?}", other),
+    }
+  }
+
+  #[test]
+  fn test_question_dismiss_with_q() {
+    init_test_config();
+    let (session_handle, mut cmd_rx) = make_session_handle();
+    let mut data = AppData::new();
+    let mut view = ChatView::new(&data, session_handle);
+    data.pending_questions = Some(make_pending_questions());
+
+    view.handle_key(&mut data, KeyEvent::from(KeyCode::Char('q')));
+
+    assert!(data.pending_questions.is_none());
+    let cmd = cmd_rx.try_recv().expect("Expected AnswerQuestions command");
+    match cmd {
+      SessionCommand::AnswerQuestions {
+        tool_call_id,
+        answers,
+        dismissed,
+      } => {
+        assert_eq!(tool_call_id, "call-123");
+        assert!(dismissed);
+        assert!(answers.is_empty());
+      }
+      other => panic!("Expected AnswerQuestions, got {:?}", other),
+    }
+  }
+
+  #[test]
+  fn test_question_dismiss_with_esc() {
+    init_test_config();
+    let (session_handle, mut cmd_rx) = make_session_handle();
+    let mut data = AppData::new();
+    let mut view = ChatView::new(&data, session_handle);
+    data.pending_questions = Some(make_pending_questions());
+
+    view.handle_key(&mut data, KeyEvent::from(KeyCode::Esc));
+
+    assert!(data.pending_questions.is_none());
+    let cmd = cmd_rx.try_recv().expect("Expected AnswerQuestions command");
+    match cmd {
+      SessionCommand::AnswerQuestions {
+        tool_call_id,
+        answers,
+        dismissed,
+      } => {
+        assert_eq!(tool_call_id, "call-123");
+        assert!(dismissed);
+        assert!(answers.is_empty());
+      }
+      other => panic!("Expected AnswerQuestions, got {:?}", other),
+    }
+  }
+
+  #[test]
+  fn test_question_digit_quick_select() {
+    init_test_config();
+    let (session_handle, _cmd_rx) = make_session_handle();
+    let mut data = AppData::new();
+    let mut view = ChatView::new(&data, session_handle);
+    data.pending_questions = Some(make_pending_questions());
+
+    // Press '2' to select option 1 (0-indexed) and auto-confirm single-select
+    view.handle_key(&mut data, KeyEvent::from(KeyCode::Char('2')));
+
+    let pq = data.pending_questions.as_ref().unwrap();
+    assert_eq!(pq.current_question_idx, 1); // moved to next question
+    assert_eq!(pq.answers[0], vec![1]); // Blue selected
+  }
+}

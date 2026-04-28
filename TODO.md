@@ -89,7 +89,7 @@
 - [x] Per-tool auto-approval configuration (e.g., only auto-approve ReadFile)
 
 #### 6. Structured AskUser Tool
-- [ ] Single-select/multi-select question types
+- [x] Single-select/multi-select question types
 - [ ] Confirmation dialogs (yes/no)
 - [ ] Input validation and default values
 - [ ] Rich text rendering (Markdown)
@@ -224,9 +224,9 @@
 | Metric | Count |
 |--------|-------|
 | **Total Tasks** | 93 |
-| **Completed** | 18 |
-| **Remaining** | 75 |
-| **Progress** | 19.4% |
+| **Completed** | 19 |
+| **Remaining** | 74 |
+| **Progress** | 20.4% |
 
 > **Note:** This summary must be updated whenever tasks are completed. After each batch of completions, recalculate the counts and percentage to keep the document accurate.
 

@@ -55,6 +55,28 @@ pub(crate) fn generate_session_id() -> String {
   )
 }
 
+/// An option for a structured user question
+#[derive(Debug, Clone)]
+pub struct QuestionOption {
+  /// Concise display text
+  pub label: String,
+  /// Brief explanation of trade-offs
+  pub description: String,
+}
+
+/// A structured question to ask the user
+#[derive(Debug, Clone)]
+pub struct Question {
+  /// The question text
+  pub question: String,
+  /// Short category tag
+  pub header: String,
+  /// Available options
+  pub options: Vec<QuestionOption>,
+  /// Whether multiple options can be selected
+  pub multi_select: bool,
+}
+
 /// Commands sent to the session actor
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -71,6 +93,15 @@ pub enum SessionCommand {
     tool_call_id: String,
     /// Whether the user approved the execution
     approved: bool,
+  },
+  /// Answer pending structured questions
+  AnswerQuestions {
+    /// Tool call ID that asked the questions
+    tool_call_id: String,
+    /// Selected option indices for each question
+    answers: Vec<Vec<usize>>,
+    /// Whether the user dismissed without answering
+    dismissed: bool,
   },
   /// Enable YOLO mode for the current session (persisted to meta)
   EnableSessionYolo,
@@ -135,6 +166,13 @@ pub enum SessionEvent {
     /// New estimated token count
     new_token_count: usize,
   },
+  /// Structured questions need to be presented to the user
+  QuestionsAsked {
+    /// Tool call ID
+    tool_call_id: String,
+    /// Questions to present
+    questions: Vec<Question>,
+  },
   /// Token usage information from the API (sent when stream finishes)
   Usage {
     /// Total tokens in the conversation (prompt + completion)
@@ -191,6 +229,20 @@ impl SessionHandle {
   pub fn enable_session_yolo(&self) {
     let _ = self.cmd_tx.send(SessionCommand::EnableSessionYolo);
   }
+
+  /// Send answers to pending structured questions
+  pub fn answer_questions(
+    &self,
+    tool_call_id: impl Into<String>,
+    answers: Vec<Vec<usize>>,
+    dismissed: bool,
+  ) {
+    let _ = self.cmd_tx.send(SessionCommand::AnswerQuestions {
+      tool_call_id: tool_call_id.into(),
+      answers,
+      dismissed,
+    });
+  }
 }
 
 /// Internal state of the session actor
@@ -237,6 +289,15 @@ struct SessionActor {
   auto_approve: Vec<String>,
   /// State for resuming tool call execution after approval
   tool_call_execution_state: Option<ToolCallExecutionState>,
+  /// State for resuming after user answers structured questions
+  pending_answers_state: Option<PendingAnswersState>,
+}
+
+/// State kept while waiting for user answers to structured questions.
+#[derive(Debug, Clone)]
+struct PendingAnswersState {
+  /// The tool call ID that asked the questions
+  tool_call_id: String,
 }
 
 /// State kept while executing a batch of tool calls so that execution can
@@ -284,6 +345,7 @@ impl SessionActor {
       yolo,
       auto_approve,
       tool_call_execution_state: None,
+      pending_answers_state: None,
     }
   }
 
@@ -433,6 +495,17 @@ impl SessionActor {
         approved,
       } => {
         self.handle_approval(tool_call_id, approved).await;
+        true
+      }
+
+      SessionCommand::AnswerQuestions {
+        tool_call_id,
+        answers,
+        dismissed,
+      } => {
+        self
+          .handle_question_answers(tool_call_id, answers, dismissed)
+          .await;
         true
       }
 
@@ -735,11 +808,12 @@ impl SessionActor {
   async fn handle_stream_event(&mut self, event: SessionEvent) {
     match &event {
       SessionEvent::ContentChunk(chunk) => {
+        let preview: String = chunk.chars().take(100).collect();
         debug!(
           "Session {}: Stream content: len={}, content={}",
           self.id,
           chunk.len(),
-          &chunk[..chunk.len().min(100)]
+          preview
         );
         self.current_response.push_str(chunk);
         // Forward to caller
@@ -748,11 +822,12 @@ impl SessionActor {
         }
       }
       SessionEvent::ThinkingChunk(chunk) => {
+        let preview: String = chunk.chars().take(100).collect();
         info!(
           "Session {}: Stream thinking received: len={}, content={}",
           self.id,
           chunk.len(),
-          &chunk[..chunk.len().min(100)]
+          preview
         );
         self.current_thinking.push_str(chunk);
         // Forward to caller without storing in session messages
@@ -916,6 +991,15 @@ impl SessionActor {
         // ApprovalNeeded is never emitted by the stream task,
         // but the match must be exhaustive.
       }
+      SessionEvent::QuestionsAsked { .. } => {
+        // Forward to UI
+        if self.event_tx.send(event).is_err() {
+          error!(
+            "Session {}: Failed to forward QuestionsAsked event",
+            self.id
+          );
+        }
+      }
       SessionEvent::CompactionCompleted { .. } => {
         // Forward compaction completion to UI
         if self.event_tx.send(event).is_err() {
@@ -980,6 +1064,61 @@ impl SessionActor {
         name: tool_call.name.clone(),
         arguments: tool_call.arguments.clone(),
       });
+
+      // Special handling for AskUserQuestion: pause execution and wait for answers
+      if tool_call.name == "AskUserQuestion" {
+        if self.yolo {
+          info!(
+            "Session {}: AskUserQuestion in YOLO mode, auto-dismissing",
+            self.id
+          );
+          let output = r#"{"answers": {}, "note": "Running in non-interactive (yolo) mode. Make your own decision."}"#.to_string();
+          let _ = self.event_tx.send(SessionEvent::ToolCallCompleted {
+            name: tool_call.name.clone(),
+            output: output.clone(),
+          });
+          let tool_msg = Message::tool(&output, &tool_call.id);
+          self.messages.push(tool_msg.clone());
+          let _ = self.session_store.append_message(&self.id, &tool_msg);
+          continue;
+        }
+
+        match parse_ask_user_questions(&tool_call.arguments) {
+          Ok(questions) => {
+            info!(
+              "Session {}: AskUserQuestion paused, waiting for user answers",
+              self.id
+            );
+            self.pending_answers_state = Some(PendingAnswersState {
+              tool_call_id: tool_call.id.clone(),
+            });
+            self.tool_call_execution_state = Some(ToolCallExecutionState {
+              tool_calls: state.tool_calls.clone(),
+              current_index: i,
+            });
+            let _ = self.event_tx.send(SessionEvent::QuestionsAsked {
+              tool_call_id: tool_call.id.clone(),
+              questions,
+            });
+            return;
+          }
+          Err(e) => {
+            error!(
+              "Session {}: Failed to parse AskUserQuestion arguments: {}",
+              self.id, e
+            );
+            let error_msg = format!("Error: Invalid AskUserQuestion arguments: {}", e);
+            let _ = self.event_tx.send(SessionEvent::ToolCallCompleted {
+              name: tool_call.name.clone(),
+              output: error_msg.clone(),
+            });
+            let tool_msg = Message::tool(&error_msg, &tool_call.id);
+            self.messages.push(tool_msg.clone());
+            let _ = self.session_store.append_message(&self.id, &tool_msg);
+            continue;
+          }
+        }
+      }
 
       if !self.should_auto_approve(&tool_call.name) {
         info!(
@@ -1151,6 +1290,200 @@ impl SessionActor {
     });
     self.continue_tool_call_execution().await;
   }
+
+  /// Handle user answers to structured questions from AskUserQuestion.
+  async fn handle_question_answers(
+    &mut self,
+    tool_call_id: String,
+    answers: Vec<Vec<usize>>,
+    dismissed: bool,
+  ) {
+    let state = match self.tool_call_execution_state.take() {
+      Some(s) => s,
+      None => {
+        error!(
+          "Session {}: Received question answers but no tool execution is pending",
+          self.id
+        );
+        return;
+      }
+    };
+
+    let pending = match self.pending_answers_state.take() {
+      Some(p) => p,
+      None => {
+        error!(
+          "Session {}: Received question answers but no questions are pending",
+          self.id
+        );
+        self.tool_call_execution_state = Some(state);
+        return;
+      }
+    };
+
+    if pending.tool_call_id != tool_call_id {
+      error!(
+        "Session {}: Question answer tool_call_id mismatch: expected {}, got {}",
+        self.id, pending.tool_call_id, tool_call_id
+      );
+      self.tool_call_execution_state = Some(state);
+      self.pending_answers_state = Some(pending);
+      return;
+    }
+
+    let current_index = state.current_index;
+    let tool_call = &state.tool_calls[current_index];
+
+    let output = if dismissed || answers.is_empty() {
+      info!("Session {}: User dismissed AskUserQuestion", self.id);
+      r#"{"answers": {}, "note": "User dismissed the question without answering."}"#.to_string()
+    } else {
+      // Build the answers JSON matching kimi-cli format:
+      // {"answers": {"Question text": "Selected label"}} for single-select
+      // {"answers": {"Question text": ["Label A", "Label B"]}} for multi-select
+      let mut answers_map = serde_json::Map::new();
+      // We need the original questions to map indices to labels.
+      // Re-parse the arguments to get the question texts and option labels.
+      if let Ok(args) = parse_ask_user_question_args(&tool_call.arguments) {
+        for (q_idx, selected) in answers.iter().enumerate() {
+          if let Some(q) = args.questions.get(q_idx) {
+            let key = &q.question;
+            if q.multi_select {
+              let labels: Vec<String> = selected
+                .iter()
+                .filter_map(|&idx| q.options.get(idx).map(|o| o.label.clone()))
+                .collect();
+              answers_map.insert(key.clone(), serde_json::json!(labels));
+            } else if let Some(&idx) = selected.first()
+              && let Some(opt) = q.options.get(idx)
+            {
+              answers_map.insert(key.clone(), serde_json::json!(opt.label));
+            }
+          }
+        }
+      }
+      let obj = serde_json::json!({"answers": answers_map});
+      obj.to_string()
+    };
+
+    info!(
+      "Session {}: AskUserQuestion answered, output_len={}",
+      self.id,
+      output.len()
+    );
+
+    let _ = self.event_tx.send(SessionEvent::ToolCallCompleted {
+      name: tool_call.name.clone(),
+      output: output.clone(),
+    });
+
+    let tool_msg = Message::tool(&output, &tool_call.id);
+    self.messages.push(tool_msg.clone());
+    let _ = self.session_store.append_message(&self.id, &tool_msg);
+
+    let next_index = current_index + 1;
+    self.tool_call_execution_state = Some(ToolCallExecutionState {
+      tool_calls: state.tool_calls,
+      current_index: next_index,
+    });
+    self.continue_tool_call_execution().await;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// AskUserQuestion argument parsing (used by SessionActor)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, serde::Deserialize)]
+struct AskUserQuestionArgOption {
+  label: String,
+  #[serde(default)]
+  description: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct AskUserQuestionArgQuestion {
+  question: String,
+  #[serde(default)]
+  header: String,
+  options: Vec<AskUserQuestionArgOption>,
+  #[serde(default)]
+  multi_select: bool,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct AskUserQuestionArgs {
+  questions: Vec<AskUserQuestionArgQuestion>,
+}
+
+/// Parse AskUserQuestion arguments from JSON.
+fn parse_ask_user_questions(arguments: &str) -> std::result::Result<Vec<Question>, String> {
+  let args: AskUserQuestionArgs =
+    serde_json::from_str(arguments).map_err(|e| format!("JSON parse error: {}", e))?;
+
+  if args.questions.is_empty() {
+    return Err("At least one question is required.".to_string());
+  }
+
+  if args.questions.len() > 4 {
+    return Err("Maximum 4 questions allowed per call.".to_string());
+  }
+
+  for (idx, q) in args.questions.iter().enumerate() {
+    if q.question.trim().is_empty() {
+      return Err(format!(
+        "Question {}: question text cannot be empty.",
+        idx + 1
+      ));
+    }
+
+    if q.options.len() < 2 {
+      return Err(format!(
+        "Question {}: at least 2 options are required.",
+        idx + 1
+      ));
+    }
+
+    if q.options.len() > 4 {
+      return Err(format!("Question {}: maximum 4 options allowed.", idx + 1));
+    }
+
+    for (opt_idx, opt) in q.options.iter().enumerate() {
+      if opt.label.trim().is_empty() {
+        return Err(format!(
+          "Question {}: option {} label cannot be empty.",
+          idx + 1,
+          opt_idx + 1
+        ));
+      }
+    }
+  }
+
+  let questions = args
+    .questions
+    .into_iter()
+    .map(|q| Question {
+      question: q.question,
+      header: q.header,
+      options: q
+        .options
+        .into_iter()
+        .map(|o| QuestionOption {
+          label: o.label,
+          description: o.description,
+        })
+        .collect(),
+      multi_select: q.multi_select,
+    })
+    .collect();
+
+  Ok(questions)
+}
+
+fn parse_ask_user_question_args(
+  arguments: &str,
+) -> std::result::Result<AskUserQuestionArgs, String> {
+  serde_json::from_str(arguments).map_err(|e| format!("JSON parse error: {}", e))
 }
 
 /// Handle to receive events from the session
@@ -1497,10 +1830,11 @@ async fn handle_stream(
           if let Some(content) = &choice.delta.content
             && !content.is_empty()
           {
+            let preview: String = content.chars().take(100).collect();
             log::debug!(
               "Session: Received content chunk: len={}, content={}",
               content.len(),
-              &content[..content.len().min(100)]
+              preview
             );
 
             // Parse content for <think> tags (Kimi thinking mode)
@@ -1714,6 +2048,14 @@ fn is_stream_error_retryable(err: &OpenAIError) -> bool {
 }
 
 #[cfg(test)]
+impl SessionHandle {
+  /// Create a test session handle with a given command sender.
+  pub fn test_new(id: String, cmd_tx: mpsc::UnboundedSender<SessionCommand>) -> Self {
+    Self { id, cmd_tx }
+  }
+}
+
+#[cfg(test)]
 mod tests {
   use super::*;
   use crate::error::LlmError;
@@ -1812,5 +2154,104 @@ mod tests {
       source: OpenAIError::InvalidArgument("test".to_string()),
     });
     assert!(!is_error_retryable(&err));
+  }
+
+  #[test]
+  fn test_parse_ask_user_questions_valid() {
+    let json = r#"{
+      "questions": [
+        {
+          "question": "Which option?",
+          "header": "Test",
+          "options": [
+            {"label": "A", "description": "First"},
+            {"label": "B"}
+          ],
+          "multi_select": false
+        }
+      ]
+    }"#;
+    let questions = parse_ask_user_questions(json).unwrap();
+    assert_eq!(questions.len(), 1);
+    assert_eq!(questions[0].question, "Which option?");
+    assert_eq!(questions[0].header, "Test");
+    assert!(!questions[0].multi_select);
+    assert_eq!(questions[0].options.len(), 2);
+    assert_eq!(questions[0].options[0].label, "A");
+    assert_eq!(questions[0].options[0].description, "First");
+    assert_eq!(questions[0].options[1].label, "B");
+  }
+
+  #[test]
+  fn test_parse_ask_user_questions_multi_select() {
+    let json = r#"{
+      "questions": [
+        {
+          "question": "Pick colors",
+          "options": [
+            {"label": "Red"},
+            {"label": "Green"},
+            {"label": "Blue"}
+          ],
+          "multi_select": true
+        }
+      ]
+    }"#;
+    let questions = parse_ask_user_questions(json).unwrap();
+    assert_eq!(questions.len(), 1);
+    assert!(questions[0].multi_select);
+    assert_eq!(questions[0].options.len(), 3);
+  }
+
+  #[test]
+  fn test_parse_ask_user_questions_empty_questions() {
+    let json = r#"{"questions": []}"#;
+    let err = parse_ask_user_questions(json).unwrap_err();
+    assert!(err.contains("At least one question"));
+  }
+
+  #[test]
+  fn test_parse_ask_user_questions_too_many_questions() {
+    let json = r#"{
+      "questions": [
+        {"question": "Q1?", "options": [{"label": "A"}, {"label": "B"}]},
+        {"question": "Q2?", "options": [{"label": "A"}, {"label": "B"}]},
+        {"question": "Q3?", "options": [{"label": "A"}, {"label": "B"}]},
+        {"question": "Q4?", "options": [{"label": "A"}, {"label": "B"}]},
+        {"question": "Q5?", "options": [{"label": "A"}, {"label": "B"}]}
+      ]
+    }"#;
+    let err = parse_ask_user_questions(json).unwrap_err();
+    assert!(err.contains("Maximum 4 questions"));
+  }
+
+  #[test]
+  fn test_parse_ask_user_questions_too_few_options() {
+    let json = r#"{
+      "questions": [
+        {"question": "Q?", "options": [{"label": "Only"}]}
+      ]
+    }"#;
+    let err = parse_ask_user_questions(json).unwrap_err();
+    assert!(err.contains("at least 2 options"));
+  }
+
+  #[test]
+  fn test_parse_ask_user_questions_empty_option_label() {
+    let json = r#"{
+      "questions": [
+        {"question": "Q?", "options": [{"label": ""}, {"label": "B"}]}
+      ]
+    }"#;
+    let err = parse_ask_user_questions(json).unwrap_err();
+    assert!(err.contains("label cannot be empty"));
+  }
+
+  #[test]
+  fn test_parse_ask_user_question_args_roundtrip() {
+    let json = r#"{"questions": [{"question": "Q?", "options": [{"label": "A"}]}]}"#;
+    let args = parse_ask_user_question_args(json).unwrap();
+    assert_eq!(args.questions.len(), 1);
+    assert_eq!(args.questions[0].question, "Q?");
   }
 }
