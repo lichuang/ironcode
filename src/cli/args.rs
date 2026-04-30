@@ -34,6 +34,13 @@ pub struct Args {
   /// Enable YOLO mode: auto-approve all tool calls without confirmation
   #[arg(long)]
   pub yolo: bool,
+
+  /// Path to an MCP server configuration JSON file
+  ///
+  /// The file should follow the standard MCP client format:
+  /// { "mcpServers": { "name": { "command": "...", "args": [...] } } }
+  #[arg(long, value_name = "PATH")]
+  pub mcp_config_file: Option<PathBuf>,
 }
 
 impl Args {

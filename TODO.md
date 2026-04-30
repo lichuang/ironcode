@@ -95,7 +95,7 @@
 - [ ] Rich text rendering (Markdown)
 
 #### 7. Full MCP Support
-- [ ] MCP server configuration format design
+- [x] MCP server configuration format design
 - [ ] `ironcode mcp` subcommand framework
 - [ ] `mcp add/remove/list` implementation
 - [ ] MCP tool dynamic loading and registration
@@ -224,9 +224,9 @@
 | Metric | Count |
 |--------|-------|
 | **Total Tasks** | 93 |
-| **Completed** | 21 |
-| **Remaining** | 72 |
-| **Progress** | 22.6% |
+| **Completed** | 22 |
+| **Remaining** | 71 |
+| **Progress** | 23.7% |
 
 > **Note:** This summary must be updated whenever tasks are completed. After each batch of completions, recalculate the counts and percentage to keep the document accurate.
 

@@ -157,6 +157,37 @@ level = "info"        # Options: "trace", "debug", "info", "warn", "error"
 
 # Logs are always written to ${dir}/logs/ironcode.log
 # where ${dir} is the data directory specified above (defaults to ~/.ironcode/)
-# 
+#
 # To output logs to stderr instead of file, set the RUST_LOG environment variable:
 #   RUST_LOG=debug ironcode
+
+# =============================================================================
+# MCP (Model Context Protocol) Servers
+# =============================================================================
+#
+# MCP allows ironcode to connect to external tool servers.
+# Configuration is compatible with kimi-cli's MCP format.
+#
+# You can define servers inline in this TOML file, or reference an external
+# JSON config file (e.g., one shared with kimi-cli or Claude Desktop).
+
+[mcp]
+# Optional: load servers from an external JSON file (kimi-cli compatible format)
+# config_file = "~/.ironcode/mcp.json"
+
+# Example: HTTP-based MCP server
+# [mcp.servers.context7]
+# transport = "http"
+# url = "https://mcp.context7.com/mcp"
+# headers = { CONTEXT7_API_KEY = "${CONTEXT7_API_KEY}" }
+
+# Example: stdio-based MCP server (spawns a subprocess)
+# [mcp.servers.chrome-devtools]
+# transport = "stdio"
+# command = "npx"
+# args = ["-y", "chrome-devtools-mcp@latest"]
+# env = { SOME_VAR = "value" }
+
+# Per-server options:
+# - disabled = false         # Temporarily disable this server
+# - auto_approve = []        # List of tool names to auto-approve

@@ -93,6 +93,9 @@ pub enum ConfigError {
 
   #[error("API key is required for provider '{provider}' but not provided")]
   MissingApiKey { provider: String },
+
+  #[error("Failed to parse MCP JSON config: {message}")]
+  ParseMcpJson { message: String },
 }
 
 /// TUI/Terminal errors

@@ -24,7 +24,7 @@ use log::{info, warn};
 
 use cli::{App, Args};
 use config::Config;
-use config::loader::{data_dir, load_config_from_dir};
+use config::loader::{data_dir, load_config_from_dir, resolve_mcp_config};
 use session::SessionStore;
 use tui::{Tui, TuiEvent, TuiEventStream, init_terminal, restore_terminal};
 
@@ -106,6 +106,9 @@ async fn main() -> Result<()> {
 
   // Apply CLI overrides before making config globally available
   config.yolo = config.yolo || args.yolo;
+
+  // Resolve MCP configuration (inline TOML + external JSON + CLI override)
+  config.mcp = resolve_mcp_config(&config.mcp, args.mcp_config_file.as_deref())?;
 
   // Initialize global configuration for read-only access across the application
   config::init_global_config(config.clone());

@@ -81,6 +81,10 @@ pub struct Config {
   /// List of tool names to auto-approve even when YOLO mode is off
   #[serde(default)]
   pub auto_approve: Vec<String>,
+
+  /// MCP (Model Context Protocol) server configurations
+  #[serde(default)]
+  pub mcp: McpConfig,
 }
 
 impl Default for Config {
@@ -97,6 +101,7 @@ impl Default for Config {
       retry: RetryConfig::default(),
       yolo: false,
       auto_approve: Vec::new(),
+      mcp: McpConfig::default(),
     }
   }
 }
@@ -358,6 +363,67 @@ impl RetryConfig {
   pub fn is_enabled(&self) -> bool {
     self.max_attempts > 0
   }
+}
+
+// ---------------------------------------------------------------------------
+// MCP (Model Context Protocol) configuration
+// ---------------------------------------------------------------------------
+
+/// MCP server configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct McpConfig {
+  /// Optional path to an external MCP JSON config file
+  /// If set, this file will be loaded in addition to inline servers
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub config_file: Option<PathBuf>,
+
+  /// MCP server definitions keyed by server name
+  #[serde(default)]
+  pub servers: HashMap<String, McpServerConfig>,
+}
+
+/// Individual MCP server configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerConfig {
+  /// Transport type for the MCP server
+  pub transport: McpTransport,
+
+  // HTTP-specific fields
+  /// URL for HTTP-based MCP servers
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub url: Option<String>,
+  /// Headers to send with HTTP requests
+  #[serde(default)]
+  pub headers: HashMap<String, String>,
+
+  // stdio-specific fields
+  /// Command to execute for stdio-based MCP servers
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub command: Option<String>,
+  /// Arguments to pass to the command
+  #[serde(default)]
+  pub args: Vec<String>,
+  /// Environment variables for the command
+  #[serde(default)]
+  pub env: HashMap<String, String>,
+
+  // Common fields
+  /// Whether this server is temporarily disabled
+  #[serde(default)]
+  pub disabled: bool,
+  /// List of tool names to auto-approve from this server
+  #[serde(default)]
+  pub auto_approve: Vec<String>,
+}
+
+/// Transport type for MCP servers
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpTransport {
+  /// Standard I/O transport (spawn a subprocess)
+  Stdio,
+  /// HTTP/SSE transport (connect to a remote server)
+  Http,
 }
 
 // ---------------------------------------------------------------------------

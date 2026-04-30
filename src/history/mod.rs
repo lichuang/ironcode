@@ -611,6 +611,7 @@ mod tests {
       retry: RetryConfig::default(),
       yolo: false,
       auto_approve: Vec::new(),
+      mcp: crate::config::McpConfig::default(),
     }
   }
 

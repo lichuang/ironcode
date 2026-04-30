@@ -1,5 +1,7 @@
 //! Configuration file loader
 
+use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -8,7 +10,7 @@ use toml::from_str;
 
 use crate::error::{ConfigError, Result};
 
-use super::{Config, LoggingConfig};
+use super::{Config, LoggingConfig, McpConfig};
 
 /// Default configuration directory name (in home directory)
 const DEFAULT_DIR: &str = ".ironcode";
@@ -150,6 +152,19 @@ fn merge_configs(base: Config, override_: Config) -> Config {
     } else {
       override_.auto_approve
     },
+    mcp: merge_mcp_configs(base.mcp, override_.mcp),
+  }
+}
+
+/// Merge two MCP configurations
+fn merge_mcp_configs(base: McpConfig, override_: McpConfig) -> McpConfig {
+  McpConfig {
+    config_file: override_.config_file.or(base.config_file),
+    servers: {
+      let mut merged = base.servers;
+      merged.extend(override_.servers);
+      merged
+    },
   }
 }
 
@@ -170,6 +185,131 @@ fn validate_config(config: &Config) -> Result<()> {
   }
 
   Ok(())
+}
+
+/// JSON root structure for external MCP config files (kimi-cli compatible)
+#[derive(Debug, serde::Deserialize)]
+struct McpJsonRoot {
+  #[serde(default, rename = "mcpServers")]
+  mcp_servers: HashMap<String, McpJsonServer>,
+}
+
+/// JSON structure for a single MCP server in external config files
+#[derive(Debug, serde::Deserialize)]
+struct McpJsonServer {
+  #[serde(skip_serializing_if = "Option::is_none")]
+  url: Option<String>,
+  #[serde(default)]
+  headers: HashMap<String, String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  command: Option<String>,
+  #[serde(default)]
+  args: Vec<String>,
+  #[serde(default)]
+  env: HashMap<String, String>,
+}
+
+/// Load MCP configuration from an external JSON file.
+///
+/// The JSON file follows the standard MCP client format:
+/// ```json
+/// { "mcpServers": { "server-name": { "command": "...", "args": [...] } } }
+/// ```
+pub fn load_mcp_json_config(path: &Path) -> Result<HashMap<String, super::McpServerConfig>> {
+  let content = fs::read_to_string(path).map_err(|e| ConfigError::read_file(path, e))?;
+  let json: McpJsonRoot =
+    serde_json::from_str(&content).map_err(|e| ConfigError::ParseMcpJson {
+      message: format!("Invalid MCP JSON config: {}", e),
+    })?;
+
+  let mut servers = HashMap::new();
+  for (name, server) in json.mcp_servers {
+    let transport = if server.url.is_some() {
+      super::McpTransport::Http
+    } else {
+      super::McpTransport::Stdio
+    };
+
+    // Expand environment variables in headers and env values
+    let headers = server
+      .headers
+      .into_iter()
+      .map(|(k, v)| {
+        (
+          k,
+          shellexpand::env(&v)
+            .unwrap_or_else(|_| Cow::Borrowed(&v))
+            .to_string(),
+        )
+      })
+      .collect();
+    let env = server
+      .env
+      .into_iter()
+      .map(|(k, v)| {
+        (
+          k,
+          shellexpand::env(&v)
+            .unwrap_or(Cow::Borrowed(&v))
+            .to_string(),
+        )
+      })
+      .collect();
+
+    servers.insert(
+      name,
+      super::McpServerConfig {
+        transport,
+        url: server.url,
+        headers,
+        command: server.command,
+        args: server.args,
+        env,
+        disabled: false,
+        auto_approve: Vec::new(),
+      },
+    );
+  }
+
+  Ok(servers)
+}
+
+/// Resolve the final MCP configuration by combining inline TOML, external JSON, and CLI overrides.
+///
+/// Priority (later overrides earlier):
+/// 1. Inline TOML servers from config.toml
+/// 2. External JSON file referenced by `mcp.config_file`
+/// 3. CLI `--mcp-config-file` override
+pub fn resolve_mcp_config(
+  mcp_config: &super::McpConfig,
+  cli_mcp_config_file: Option<&Path>,
+) -> Result<super::McpConfig> {
+  let mut resolved = super::McpConfig {
+    config_file: mcp_config.config_file.clone(),
+    servers: mcp_config.servers.clone(),
+  };
+
+  // Load external JSON config file if specified in TOML
+  if let Some(ref config_file) = mcp_config.config_file {
+    let config_file_str = config_file.to_string_lossy();
+    let expanded = tilde(&config_file_str);
+    let path = PathBuf::from(expanded.as_ref());
+    if path.exists() {
+      let external_servers = load_mcp_json_config(&path)?;
+      resolved.servers.extend(external_servers);
+    }
+  }
+
+  // CLI override takes highest priority
+  if let Some(cli_file) = cli_mcp_config_file
+    && cli_file.exists()
+  {
+    let cli_servers = load_mcp_json_config(cli_file)?;
+    resolved.servers.extend(cli_servers);
+    resolved.config_file = Some(cli_file.to_path_buf());
+  }
+
+  Ok(resolved)
 }
 
 #[allow(dead_code)]
@@ -418,6 +558,7 @@ supports_streaming = true
       retry: RetryConfig::default(),
       yolo: false,
       auto_approve: Vec::new(),
+      mcp: McpConfig::default(),
     };
     let result = validate_config(&config);
     assert!(result.is_err());
@@ -472,5 +613,181 @@ model = "kimi-for-coding"
     let config = result.unwrap();
     let provider = config.providers.get("kimi").unwrap();
     assert_eq!(provider.provider_type, "kimi");
+  }
+
+  #[test]
+  fn test_parse_inline_mcp_config() {
+    let toml = r#"
+default_model = "openai/gpt-4o"
+
+[providers.openai]
+type = "openai-compatible"
+base_url = "https://api.openai.com/v1"
+api_key = "${OPENAI_API_KEY}"
+
+[models."openai/gpt-4o"]
+provider = "openai"
+model = "gpt-4o"
+
+[mcp.servers.context7]
+transport = "http"
+url = "https://mcp.context7.com/mcp"
+headers = { CONTEXT7_API_KEY = "test-key" }
+
+[mcp.servers.devtools]
+transport = "stdio"
+command = "npx"
+args = ["-y", "chrome-devtools-mcp@latest"]
+env = { SOME_VAR = "value" }
+disabled = true
+auto_approve = ["navigate"]
+"#;
+
+    let config: Config = from_str(toml).expect("Failed to parse TOML with MCP config");
+    assert_eq!(config.mcp.servers.len(), 2);
+
+    let context7 = config.mcp.servers.get("context7").unwrap();
+    assert!(matches!(
+      context7.transport,
+      crate::config::McpTransport::Http
+    ));
+    assert_eq!(
+      context7.url,
+      Some("https://mcp.context7.com/mcp".to_string())
+    );
+    assert_eq!(
+      context7.headers.get("CONTEXT7_API_KEY"),
+      Some(&"test-key".to_string())
+    );
+    assert!(!context7.disabled);
+
+    let devtools = config.mcp.servers.get("devtools").unwrap();
+    assert!(matches!(
+      devtools.transport,
+      crate::config::McpTransport::Stdio
+    ));
+    assert_eq!(devtools.command, Some("npx".to_string()));
+    assert_eq!(devtools.args, vec!["-y", "chrome-devtools-mcp@latest"]);
+    assert_eq!(devtools.env.get("SOME_VAR"), Some(&"value".to_string()));
+    assert!(devtools.disabled);
+    assert_eq!(devtools.auto_approve, vec!["navigate"]);
+  }
+
+  #[test]
+  fn test_load_mcp_json_config() {
+    use std::io::Write;
+    let dir = tempfile::tempdir().unwrap();
+    let mcp_path = dir.path().join("mcp.json");
+    let json = r#"{
+  "mcpServers": {
+    "context7": {
+      "url": "https://mcp.context7.com/mcp",
+      "headers": {
+        "CONTEXT7_API_KEY": "json-key"
+      }
+    },
+    "chrome-devtools": {
+      "command": "npx",
+      "args": ["-y", "chrome-devtools-mcp@latest"],
+      "env": {
+        "SOME_VAR": "json-value"
+      }
+    }
+  }
+}"#;
+    {
+      let mut file = fs::File::create(&mcp_path).unwrap();
+      file.write_all(json.as_bytes()).unwrap();
+    }
+
+    let servers = load_mcp_json_config(&mcp_path).expect("Failed to load MCP JSON");
+    assert_eq!(servers.len(), 2);
+
+    let context7 = servers.get("context7").unwrap();
+    assert!(matches!(
+      context7.transport,
+      crate::config::McpTransport::Http
+    ));
+    assert_eq!(
+      context7.url,
+      Some("https://mcp.context7.com/mcp".to_string())
+    );
+    assert_eq!(
+      context7.headers.get("CONTEXT7_API_KEY"),
+      Some(&"json-key".to_string())
+    );
+
+    let devtools = servers.get("chrome-devtools").unwrap();
+    assert!(matches!(
+      devtools.transport,
+      crate::config::McpTransport::Stdio
+    ));
+    assert_eq!(devtools.command, Some("npx".to_string()));
+    assert_eq!(devtools.args, vec!["-y", "chrome-devtools-mcp@latest"]);
+    assert_eq!(
+      devtools.env.get("SOME_VAR"),
+      Some(&"json-value".to_string())
+    );
+  }
+
+  #[test]
+  fn test_resolve_mcp_config_merge() {
+    use std::io::Write;
+    let dir = tempfile::tempdir().unwrap();
+    let mcp_path = dir.path().join("mcp.json");
+    let json = r#"{"mcpServers": {"external": {"url": "https://external.com/mcp"}}}"#;
+    {
+      let mut file = fs::File::create(&mcp_path).unwrap();
+      file.write_all(json.as_bytes()).unwrap();
+    }
+
+    let mut inline = super::McpConfig::default();
+    inline.servers.insert(
+      "inline".to_string(),
+      crate::config::McpServerConfig {
+        transport: crate::config::McpTransport::Stdio,
+        command: Some("node".to_string()),
+        args: vec!["server.js".to_string()],
+        url: None,
+        headers: HashMap::new(),
+        env: HashMap::new(),
+        disabled: false,
+        auto_approve: Vec::new(),
+      },
+    );
+    inline.config_file = Some(mcp_path.clone());
+
+    let resolved = resolve_mcp_config(&inline, None).expect("Failed to resolve MCP config");
+    assert_eq!(resolved.servers.len(), 2);
+    assert!(resolved.servers.contains_key("inline"));
+    assert!(resolved.servers.contains_key("external"));
+  }
+
+  #[test]
+  fn test_mcp_json_env_expansion() {
+    use std::io::Write;
+    unsafe {
+      env::set_var("MCP_TEST_KEY", "expanded-value");
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let mcp_path = dir.path().join("mcp.json");
+    let json = r#"{"mcpServers": {"test": {"url": "https://test.com", "headers": {"API_KEY": "${MCP_TEST_KEY}"}, "env": {"SECRET": "${MCP_TEST_KEY}"}}}}"#;
+    {
+      let mut file = fs::File::create(&mcp_path).unwrap();
+      file.write_all(json.as_bytes()).unwrap();
+    }
+
+    let servers = load_mcp_json_config(&mcp_path).unwrap();
+    let test = servers.get("test").unwrap();
+    assert_eq!(
+      test.headers.get("API_KEY"),
+      Some(&"expanded-value".to_string())
+    );
+    assert_eq!(test.env.get("SECRET"), Some(&"expanded-value".to_string()));
+
+    unsafe {
+      env::remove_var("MCP_TEST_KEY");
+    }
   }
 }
