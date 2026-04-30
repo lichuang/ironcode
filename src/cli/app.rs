@@ -418,12 +418,18 @@ impl App {
               questions.len(),
               tool_call_id
             );
+            // Apply default values if the first question has them
+            let selected_option_idx = questions
+              .first()
+              .and_then(|q| q.default.first().copied())
+              .unwrap_or(0);
+            let answers: Vec<Vec<usize>> = questions.iter().map(|q| q.default.clone()).collect();
             self.data.pending_questions = Some(PendingQuestions {
               tool_call_id,
               questions,
               current_question_idx: 0,
-              answers: Vec::new(),
-              selected_option_idx: 0,
+              answers,
+              selected_option_idx,
             });
           }
           SessionEvent::CompactionCompleted {

@@ -77,6 +77,10 @@ pub struct Question {
   pub multi_select: bool,
   /// Whether this is a yes/no confirmation dialog
   pub confirmation: bool,
+  /// Default selected option indices (0-based)
+  pub default: Vec<usize>,
+  /// Whether the user must select at least one option
+  pub required: bool,
 }
 
 /// Commands sent to the session actor
@@ -1414,6 +1418,10 @@ struct AskUserQuestionArgQuestion {
   multi_select: bool,
   #[serde(default)]
   confirmation: bool,
+  #[serde(default)]
+  default: Vec<usize>,
+  #[serde(default)]
+  required: bool,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1463,6 +1471,26 @@ fn parse_ask_user_questions(arguments: &str) -> std::result::Result<Vec<Question
           ));
         }
       }
+
+      // Validate default indices
+      let effective_option_count = if q.confirmation { 2 } else { q.options.len() };
+      for (d_idx, &default_idx) in q.default.iter().enumerate() {
+        if default_idx >= effective_option_count {
+          return Err(format!(
+            "Question {}: default index {} (value: {}) is out of range (max: {}).",
+            idx + 1,
+            d_idx + 1,
+            default_idx,
+            effective_option_count.saturating_sub(1)
+          ));
+        }
+      }
+      if !q.multi_select && !q.confirmation && q.default.len() > 1 {
+        return Err(format!(
+          "Question {}: single-select question can have at most one default index.",
+          idx + 1
+        ));
+      }
     }
   }
 
@@ -1496,6 +1524,8 @@ fn parse_ask_user_questions(arguments: &str) -> std::result::Result<Vec<Question
         options,
         multi_select: q.multi_select,
         confirmation: q.confirmation,
+        default: q.default,
+        required: q.required,
       }
     })
     .collect();

@@ -43,6 +43,14 @@ struct Question {
   #[allow(dead_code)]
   #[serde(default)]
   confirmation: bool,
+  /// Default selected option indices (0-based)
+  #[allow(dead_code)]
+  #[serde(default)]
+  default: Vec<usize>,
+  /// Whether the user must select at least one option
+  #[allow(dead_code)]
+  #[serde(default)]
+  required: bool,
 }
 
 /// Arguments for the AskUserQuestion tool

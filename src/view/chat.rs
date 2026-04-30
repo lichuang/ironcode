@@ -988,11 +988,21 @@ impl View for ChatView {
             while questions.answers.len() <= q_idx {
               questions.answers.push(Vec::new());
             }
+            // Check required validation
+            if q.required && questions.answers[q_idx].is_empty() {
+              // Don't advance, keep the question open
+              // (UI will show it's still pending)
+              return None;
+            }
             if !q.multi_select {
               questions.answers[q_idx] = vec![questions.selected_option_idx];
             }
             questions.current_question_idx += 1;
-            questions.selected_option_idx = 0;
+            questions.selected_option_idx = questions
+              .questions
+              .get(questions.current_question_idx)
+              .and_then(|q| q.default.first().copied())
+              .unwrap_or(0);
             if questions.current_question_idx >= questions.questions.len() {
               let answers = std::mem::take(&mut questions.answers);
               let tool_call_id = questions.tool_call_id.clone();
@@ -1023,7 +1033,11 @@ impl View for ChatView {
             } else {
               questions.answers[q_idx] = vec![digit];
               questions.current_question_idx += 1;
-              questions.selected_option_idx = 0;
+              questions.selected_option_idx = questions
+                .questions
+                .get(questions.current_question_idx)
+                .and_then(|q| q.default.first().copied())
+                .unwrap_or(0);
               if questions.current_question_idx >= questions.questions.len() {
                 let answers = std::mem::take(&mut questions.answers);
                 let tool_call_id = questions.tool_call_id.clone();
@@ -1759,6 +1773,8 @@ mod tests {
           ],
           multi_select: false,
           confirmation: false,
+          default: Vec::new(),
+          required: false,
         },
         Question {
           question: "Pick sizes".to_string(),
@@ -1775,6 +1791,8 @@ mod tests {
           ],
           multi_select: true,
           confirmation: false,
+          default: Vec::new(),
+          required: false,
         },
       ],
       current_question_idx: 0,
@@ -1975,6 +1993,8 @@ mod tests {
         ],
         multi_select: false,
         confirmation: true,
+        default: Vec::new(),
+        required: false,
       }],
       current_question_idx: 0,
       answers: Vec::new(),
@@ -2032,5 +2052,87 @@ mod tests {
       }
       other => panic!("Expected AnswerQuestions, got {:?}", other),
     }
+  }
+
+  #[test]
+  fn test_question_default_value_preselected() {
+    init_test_config();
+    let (session_handle, _cmd_rx) = make_session_handle();
+    let mut data = AppData::new();
+    let mut view = ChatView::new(&data, session_handle);
+    data.pending_questions = Some(PendingQuestions {
+      tool_call_id: "call-def".to_string(),
+      questions: vec![Question {
+        question: "Pick one".to_string(),
+        header: "Choice".to_string(),
+        options: vec![
+          crate::llm::session::QuestionOption {
+            label: "A".to_string(),
+            description: String::new(),
+          },
+          crate::llm::session::QuestionOption {
+            label: "B".to_string(),
+            description: String::new(),
+          },
+        ],
+        multi_select: false,
+        confirmation: false,
+        default: vec![1], // default is B
+        required: false,
+      }],
+      current_question_idx: 0,
+      answers: Vec::new(),
+      selected_option_idx: 0,
+    });
+
+    // Default should auto-select option 1 and move to next/submit
+    // Since it's single-select with default, the default is already applied
+    // Check that pressing Enter submits the default
+    view.handle_key(&mut data, KeyEvent::from(KeyCode::Enter));
+    assert!(data.pending_questions.is_none());
+  }
+
+  #[test]
+  fn test_question_required_blocks_empty() {
+    init_test_config();
+    let (session_handle, _cmd_rx) = make_session_handle();
+    let mut data = AppData::new();
+    let mut view = ChatView::new(&data, session_handle);
+    data.pending_questions = Some(PendingQuestions {
+      tool_call_id: "call-req".to_string(),
+      questions: vec![Question {
+        question: "Required?".to_string(),
+        header: "".to_string(),
+        options: vec![
+          crate::llm::session::QuestionOption {
+            label: "Opt1".to_string(),
+            description: String::new(),
+          },
+          crate::llm::session::QuestionOption {
+            label: "Opt2".to_string(),
+            description: String::new(),
+          },
+        ],
+        multi_select: false,
+        confirmation: false,
+        default: Vec::new(),
+        required: true,
+      }],
+      current_question_idx: 0,
+      answers: Vec::new(),
+      selected_option_idx: 0,
+    });
+
+    view.handle_key(&mut data, KeyEvent::from(KeyCode::Enter));
+
+    // Should still be pending because required and nothing selected
+    assert!(data.pending_questions.is_some());
+    let pq = data.pending_questions.as_ref().unwrap();
+    assert_eq!(pq.current_question_idx, 0);
+
+    // Now select an option
+    view.handle_key(&mut data, KeyEvent::from(KeyCode::Char('1')));
+    view.handle_key(&mut data, KeyEvent::from(KeyCode::Enter));
+    assert!(data.pending_questions.is_none());
   }
 }

@@ -91,7 +91,7 @@
 #### 6. Structured AskUser Tool
 - [x] Single-select/multi-select question types
 - [x] Confirmation dialogs (yes/no)
-- [ ] Input validation and default values
+- [x] Input validation and default values
 - [ ] Rich text rendering (Markdown)
 
 #### 7. Full MCP Support
@@ -224,9 +224,9 @@
 | Metric | Count |
 |--------|-------|
 | **Total Tasks** | 93 |
-| **Completed** | 20 |
-| **Remaining** | 73 |
-| **Progress** | 21.5% |
+| **Completed** | 21 |
+| **Remaining** | 72 |
+| **Progress** | 22.6% |
 
 > **Note:** This summary must be updated whenever tasks are completed. After each batch of completions, recalculate the counts and percentage to keep the document accurate.
 

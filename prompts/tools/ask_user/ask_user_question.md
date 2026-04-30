@@ -56,6 +56,17 @@ description: Use this tool when you need to ask the user questions with structur
             "type": "boolean",
             "description": "Whether this is a yes/no confirmation dialog. When true, options default to Yes/No and are rendered as a compact confirmation.",
             "default": false
+          },
+          "default": {
+            "type": "array",
+            "description": "Default selected option indices (0-based). For single-select use [0], for multi-select use [0, 2]. If empty, no option is pre-selected.",
+            "items": {"type": "integer"},
+            "default": []
+          },
+          "required": {
+            "type": "boolean",
+            "description": "Whether the user must select at least one option before proceeding. If true and no option is selected, pressing Enter will show a validation error.",
+            "default": false
           }
         },
         "required": ["question"]
