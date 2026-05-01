@@ -19,7 +19,6 @@ use crate::llm::types::{Message, Role};
 
 /// Metadata for a persisted session
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
 pub struct SessionMeta {
   /// Session identifier
   pub id: String,

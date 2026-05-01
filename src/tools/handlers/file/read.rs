@@ -58,11 +58,6 @@ impl ToolHandler for ReadFileHandler {
     // Extract arguments from payload
     let arguments = match payload {
       ToolPayload::Function { arguments } => arguments,
-      _ => {
-        return Err(ToolError::RespondToModel(
-          "ReadFile handler received unsupported payload".to_string(),
-        ));
-      }
     };
 
     // Parse arguments

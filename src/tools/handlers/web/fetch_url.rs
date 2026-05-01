@@ -41,11 +41,6 @@ impl ToolHandler for FetchURLHandler {
     // Extract arguments from payload
     let arguments = match payload {
       ToolPayload::Function { arguments } => arguments,
-      _ => {
-        return Err(ToolError::RespondToModel(
-          "FetchURL handler received unsupported payload".to_string(),
-        ));
-      }
     };
 
     // Parse arguments

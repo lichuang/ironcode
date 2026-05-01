@@ -196,11 +196,6 @@ impl InputHistoryManager {
   }
 
   #[allow(dead_code)]
-  pub fn exit_browsing(&mut self) {
-    self.cursor = None;
-  }
-
-  #[allow(dead_code)]
   pub fn entries(&self) -> &[HistoryEntry] {
     &self.entries
   }
@@ -231,12 +226,6 @@ impl InputHistoryManager {
     }
 
     // Reset navigation when new entry added
-    self.cursor = None;
-    self.original_input.clear();
-  }
-
-  #[allow(dead_code)]
-  pub fn reset_navigation(&mut self) {
     self.cursor = None;
     self.original_input.clear();
   }
@@ -534,8 +523,8 @@ impl InputHistoryStorage {
     Ok(())
   }
 
-  #[allow(dead_code)]
   /// Clear all history.
+  #[allow(dead_code)]
   pub fn clear(&self) -> std::io::Result<()> {
     if self.path.exists() {
       fs::remove_file(&self.path)?;

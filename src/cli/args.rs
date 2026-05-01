@@ -55,10 +55,4 @@ impl Args {
         .join(".ironcode")
     })
   }
-
-  #[allow(dead_code)]
-  /// Get the configuration file path (config.toml in the config directory)
-  pub fn config_path(&self) -> PathBuf {
-    self.config_dir().join("config.toml")
-  }
 }

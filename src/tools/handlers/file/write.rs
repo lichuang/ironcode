@@ -63,11 +63,6 @@ impl ToolHandler for WriteFileHandler {
     // Extract arguments from payload
     let arguments = match payload {
       ToolPayload::Function { arguments } => arguments,
-      _ => {
-        return Err(ToolError::RespondToModel(
-          "WriteFile handler received unsupported payload".to_string(),
-        ));
-      }
     };
 
     // Parse arguments
@@ -192,11 +187,6 @@ impl WriteFileHandler {
   fn parse_args(&self, invocation: &ToolInvocation) -> Result<WriteFileArgs, ToolError> {
     let arguments = match &invocation.payload {
       ToolPayload::Function { arguments } => arguments.clone(),
-      _ => {
-        return Err(ToolError::RespondToModel(
-          "WriteFile handler received unsupported payload".to_string(),
-        ));
-      }
     };
     parse_arguments(&arguments)
   }

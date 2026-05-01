@@ -185,13 +185,6 @@ pub enum ToolKind {
 pub enum ToolPayload {
   /// Standard function call with JSON arguments
   Function { arguments: String },
-  #[allow(dead_code)]
-  /// MCP tool call
-  Mcp {
-    server: String,
-    tool: String,
-    raw_arguments: String,
-  },
 }
 
 #[allow(dead_code)]
@@ -200,7 +193,6 @@ impl ToolPayload {
   pub fn log_payload(&self) -> String {
     match self {
       ToolPayload::Function { arguments } => arguments.clone(),
-      ToolPayload::Mcp { raw_arguments, .. } => raw_arguments.clone(),
     }
   }
 }
@@ -290,7 +282,7 @@ pub trait ToolHandler: Send + Sync {
   fn matches_kind(&self, payload: &ToolPayload) -> bool {
     matches!(
       (self.kind(), payload),
-      (ToolKind::Function, ToolPayload::Function { .. }) | (ToolKind::Mcp, ToolPayload::Mcp { .. })
+      (ToolKind::Function, ToolPayload::Function { .. })
     )
   }
 
@@ -325,12 +317,6 @@ impl ExecutableToolRegistry {
     if self.handlers.insert(name.clone(), handler).is_some() {
       log::warn!("Overwriting handler for tool: {}", name);
     }
-  }
-
-  #[allow(dead_code)]
-  /// Get a handler by name
-  pub fn get(&self, name: &str) -> Option<&dyn ToolHandler> {
-    self.handlers.get(name).map(|b| b.as_ref())
   }
 
   /// Compute a preview for a tool invocation without executing it.

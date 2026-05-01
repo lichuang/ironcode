@@ -11,19 +11,16 @@ use crate::llm::types::Message;
 use crate::session::SessionMeta;
 
 /// Manages persistent storage of chat sessions
-#[allow(dead_code)]
 pub struct SessionStore {
   sessions_dir: PathBuf,
   /// Cached file handles for active sessions' context.jsonl files
   files: Mutex<HashMap<String, File>>,
 }
 
-#[allow(dead_code)]
 const META_FILE: &str = "meta.json";
 #[allow(dead_code)]
 const CONTEXT_FILE: &str = "context.jsonl";
 
-#[allow(dead_code)]
 impl SessionStore {
   /// Create a new session store rooted at the given data directory
   pub fn new(data_dir: &Path) -> Self {
@@ -169,6 +166,7 @@ impl SessionStore {
   }
 
   /// Delete a session directory and all its contents
+  #[allow(dead_code)]
   pub fn delete(&self, id: &str) -> Result<()> {
     let session_dir = self.session_dir(id)?;
     if session_dir.exists() {

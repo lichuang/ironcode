@@ -24,6 +24,7 @@ struct QuestionOption {
 }
 
 /// A question to ask the user
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct Question {
   /// The question text
@@ -36,19 +37,15 @@ struct Question {
   #[serde(default)]
   options: Vec<QuestionOption>,
   /// Whether multiple options can be selected
-  #[allow(dead_code)]
   #[serde(default)]
   multi_select: bool,
   /// Whether this is a yes/no confirmation dialog
-  #[allow(dead_code)]
   #[serde(default)]
   confirmation: bool,
   /// Default selected option indices (0-based)
-  #[allow(dead_code)]
   #[serde(default)]
   default: Vec<usize>,
   /// Whether the user must select at least one option
-  #[allow(dead_code)]
   #[serde(default)]
   required: bool,
 }
@@ -77,11 +74,6 @@ impl ToolHandler for AskUserQuestionHandler {
     // Extract arguments from payload
     let arguments = match payload {
       ToolPayload::Function { arguments } => arguments,
-      _ => {
-        return Err(ToolError::RespondToModel(
-          "AskUserQuestion handler received unsupported payload".to_string(),
-        ));
-      }
     };
 
     // Parse arguments

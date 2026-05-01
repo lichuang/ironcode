@@ -93,11 +93,6 @@ impl ToolHandler for ReplaceFileHandler {
     // Extract arguments from payload
     let arguments = match payload {
       ToolPayload::Function { arguments } => arguments,
-      _ => {
-        return Err(ToolError::RespondToModel(
-          "ReplaceFile handler received unsupported payload".to_string(),
-        ));
-      }
     };
 
     // Parse arguments
@@ -200,11 +195,6 @@ impl ReplaceFileHandler {
   fn parse_args(&self, invocation: &ToolInvocation) -> Result<ReplaceFileArgs, ToolError> {
     let arguments = match &invocation.payload {
       ToolPayload::Function { arguments } => arguments.clone(),
-      _ => {
-        return Err(ToolError::RespondToModel(
-          "ReplaceFile handler received unsupported payload".to_string(),
-        ));
-      }
     };
     parse_arguments(&arguments)
   }

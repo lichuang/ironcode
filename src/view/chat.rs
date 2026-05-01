@@ -120,7 +120,6 @@ pub enum ChatMessage {
 
 /// Level for system messages
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum SystemMessageLevel {
   /// Informational message
   Info,
@@ -172,51 +171,10 @@ pub fn llm_messages_to_chat_history(messages: &[Message]) -> Vec<ChatMessage> {
   history
 }
 
-#[allow(dead_code)]
 impl ChatMessage {
-  /// Get the content of the message
-  pub fn content(&self) -> &str {
-    match self {
-      ChatMessage::User { content } => content,
-      ChatMessage::Assistant { content, .. } => content,
-      ChatMessage::ToolCall { output, .. } => output.as_deref().unwrap_or(""),
-      ChatMessage::System { content, .. } => content,
-    }
-  }
-
-  #[allow(dead_code)]
-  /// Get the thinking content (if any)
-  pub fn thinking_content(&self) -> Option<&str> {
-    match self {
-      ChatMessage::User { .. } => None,
-      ChatMessage::Assistant {
-        thinking_content, ..
-      } => thinking_content.as_deref(),
-      ChatMessage::ToolCall { .. } => None,
-      ChatMessage::System { .. } => None,
-    }
-  }
-
   /// Check if this is a user message
   pub fn is_user(&self) -> bool {
     matches!(self, ChatMessage::User { .. })
-  }
-
-  #[allow(dead_code)]
-  /// Check if this is an assistant message
-  pub fn is_assistant(&self) -> bool {
-    matches!(self, ChatMessage::Assistant { .. })
-  }
-
-  #[allow(dead_code)]
-  /// Check if this is a tool call message
-  pub fn is_tool_call(&self) -> bool {
-    matches!(self, ChatMessage::ToolCall { .. })
-  }
-
-  /// Check if this is a system message
-  pub fn is_system(&self) -> bool {
-    matches!(self, ChatMessage::System { .. })
   }
 }
 

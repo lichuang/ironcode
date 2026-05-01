@@ -64,11 +64,6 @@ impl ToolHandler for BashHandler {
     // Extract arguments from payload
     let arguments = match payload {
       ToolPayload::Function { arguments } => arguments,
-      _ => {
-        return Err(ToolError::RespondToModel(
-          "Bash handler received unsupported payload".to_string(),
-        ));
-      }
     };
 
     // Parse arguments
@@ -240,11 +235,6 @@ impl BashHandler {
   fn parse_args(&self, invocation: &ToolInvocation) -> Result<BashArgs, ToolError> {
     let arguments = match &invocation.payload {
       ToolPayload::Function { arguments } => arguments.clone(),
-      _ => {
-        return Err(ToolError::RespondToModel(
-          "Bash handler received unsupported payload".to_string(),
-        ));
-      }
     };
     parse_arguments(&arguments)
   }
