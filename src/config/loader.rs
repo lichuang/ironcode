@@ -50,18 +50,6 @@ pub fn data_dir(config: &Config) -> PathBuf {
 }
 
 #[allow(dead_code)]
-/// Get the prompts directory path
-pub fn prompts_dir(config: &Config) -> PathBuf {
-  data_dir(config).join(PROMPTS_DIR)
-}
-
-#[allow(dead_code)]
-/// Get the logs directory path
-pub fn logs_dir(config: &Config) -> PathBuf {
-  data_dir(config).join("logs")
-}
-
-#[allow(dead_code)]
 /// Load configuration from standard location
 ///
 /// Configuration is loaded from `~/.ironcode/config.toml`.
@@ -101,12 +89,6 @@ pub fn load_from_file(path: &Path) -> Result<Config> {
   let config: Config = from_str(&content).map_err(|e| ConfigError::parse_toml(path, e))?;
 
   Ok(config)
-}
-
-#[allow(dead_code)]
-/// Get the user configuration file path (~/.ironcode/config.toml)
-fn user_config_path() -> Option<PathBuf> {
-  default_data_dir().map(|dir| dir.join(CONFIG_FILE))
 }
 
 /// Get the system prompt file path in the config directory

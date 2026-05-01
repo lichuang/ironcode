@@ -159,7 +159,6 @@ fn build_compacted_content(messages: &[Message]) -> String {
   content
 }
 
-#[allow(dead_code)]
 fn format_role(role: &Role) -> &'static str {
   match role {
     Role::System => "System",
@@ -169,7 +168,6 @@ fn format_role(role: &Role) -> &'static str {
   }
 }
 
-#[allow(dead_code)]
 fn truncate(s: &str, max_len: usize) -> String {
   if s.len() <= max_len {
     s.to_string()

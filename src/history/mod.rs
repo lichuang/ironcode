@@ -388,44 +388,6 @@ impl InputHistoryStorage {
     Ok(content.lines().filter(|l| !l.trim().is_empty()).count())
   }
 
-  #[allow(dead_code)]
-  /// Trim the history file to size/entry limits.
-  ///
-  /// Opens the file, acquires an exclusive lock, and trims if necessary.
-  /// This is used when trimming is requested independently of append.
-  pub fn trim(&self) -> std::io::Result<()> {
-    if !self.path.exists() {
-      return Ok(());
-    }
-
-    // Open file for read/write
-    let mut file = OpenOptions::new().read(true).write(true).open(&self.path)?;
-
-    // Acquire exclusive lock
-    for attempt in 0..MAX_LOCK_RETRIES {
-      match file.try_lock_exclusive() {
-        Ok(true) => break,
-        Ok(false) if attempt < MAX_LOCK_RETRIES - 1 => {
-          sleep(Duration::from_millis(LOCK_RETRY_DELAY_MS));
-        }
-        Ok(false) => {
-          return Err(std::io::Error::other(format!(
-            "Failed to acquire exclusive lock for trim after {} attempts",
-            MAX_LOCK_RETRIES
-          )));
-        }
-        Err(e) => {
-          return Err(std::io::Error::other(format!(
-            "Failed to acquire exclusive lock for trim: {}",
-            e
-          )));
-        }
-      }
-    }
-
-    Self::trim_locked(&mut file, &self.config)
-  }
-
   /// Trim the history file using an already locked file.
   ///
   /// The file must be locked exclusively by the caller.

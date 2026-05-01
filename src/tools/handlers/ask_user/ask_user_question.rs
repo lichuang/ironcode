@@ -30,7 +30,6 @@ struct Question {
   /// The question text
   question: String,
   /// Short category tag (max 12 chars)
-  #[allow(dead_code)]
   #[serde(default)]
   header: String,
   /// Available options (2-4 items)

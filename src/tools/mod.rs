@@ -113,13 +113,6 @@ impl ToolRegistry {
   pub fn load_from_dir(dir: impl AsRef<Path>) -> Result<Self> {
     loader::load_tools_from_dir(dir)
   }
-
-  #[allow(dead_code)]
-  /// Load tools from the default directory (`prompts/tools/`)
-  pub fn load_default() -> Result<Self> {
-    let tools_dir = PathBuf::from("prompts/tools");
-    Self::load_from_dir(&tools_dir)
-  }
 }
 
 // ============================================================================
@@ -195,12 +188,6 @@ impl ToolOutput {
       ToolOutput::Function { output } => output,
       ToolOutput::Error { message } => format!("Error: {}", message),
     }
-  }
-
-  #[allow(dead_code)]
-  /// Check if this is a success output
-  pub fn is_success(&self) -> bool {
-    matches!(self, ToolOutput::Function { .. })
   }
 }
 

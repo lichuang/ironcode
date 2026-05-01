@@ -59,15 +59,7 @@ impl FrameRequester {
 }
 
 #[cfg(test)]
-impl FrameRequester {
-  /// Create a stub requester for testing that does nothing.
-  pub fn test_dummy() -> Self {
-    let (tx, _rx) = mpsc::unbounded_channel();
-    FrameRequester {
-      frame_schedule_tx: tx,
-    }
-  }
-}
+impl FrameRequester {}
 
 /// Background task that processes frame requests and notifies the event loop.
 ///

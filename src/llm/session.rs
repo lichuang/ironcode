@@ -85,7 +85,6 @@ pub struct Question {
 
 /// Commands sent to the session actor
 #[derive(Debug)]
-#[allow(dead_code)]
 pub enum SessionCommand {
   /// Send a user message
   SendMessage { content: String },
