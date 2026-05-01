@@ -212,259 +212,284 @@ impl App {
   pub fn update_chat_session(&mut self) -> bool {
     let mut updated = false;
 
-    if let Some(ref mut session) = self.chat_session {
-      // Process all pending events from LLM
+    if let Some(mut session) = self.chat_session.take() {
+      let session_id = session.handle.id.clone();
       while let Some(event) = session.poll_event() {
         updated = true;
-        match event {
-          SessionEvent::ContentChunk(chunk) => {
-            let preview: String = chunk.chars().take(100).collect();
-            log::debug!(
-              "App: Received ContentChunk, len={}, content={}",
-              chunk.len(),
-              preview
-            );
-            // Add normal content chunk - make_mut to clone only if needed
-            Arc::make_mut(&mut self.current_chunks).push(StreamingChunk::Normal(chunk));
-            // Update streaming response for UI display - cheap Arc clone
-            self.data.streaming_response = self.current_chunks.clone();
-          }
-          SessionEvent::ThinkingChunk(chunk) => {
-            let preview: String = chunk.chars().take(100).collect();
-            log::info!(
-              "App: Received ThinkingChunk, len={}, content={}",
-              chunk.len(),
-              preview
-            );
-            // Add thinking content chunk - make_mut to clone only if needed
-            Arc::make_mut(&mut self.current_chunks).push(StreamingChunk::Thinking(chunk));
-            // Update streaming response for UI display - cheap Arc clone
-            self.data.streaming_response = self.current_chunks.clone();
-          }
-          SessionEvent::ToolCallReceived {
-            id,
-            name,
-            arguments,
-          } => {
-            log::info!(
-              "App: Tool call received: id={}, name={}, args={}",
-              id,
-              name,
-              arguments
-            );
-            // Add tool call indicator to streaming response
-            Arc::make_mut(&mut self.current_chunks).push(StreamingChunk::ToolCall {
-              name: name.clone(),
-              arguments,
-              status: ToolCallStatus::Running,
-            });
-            self.data.streaming_response = self.current_chunks.clone();
-          }
-          SessionEvent::ToolCallCompleted { name, output } => {
-            log::info!(
-              "App: Tool call completed: name={}, output_len={}",
-              name,
-              output.len()
-            );
-            // Update the last tool call chunk to completed status
-            let chunks = Arc::make_mut(&mut self.current_chunks);
-            let mut tool_args = None;
-            if let Some(StreamingChunk::ToolCall {
-              name: n,
-              arguments,
-              status,
-              ..
-            }) = chunks.last_mut()
-              && n == &name
-            {
-              *status = ToolCallStatus::Completed;
-              tool_args = Some(arguments.clone());
-            }
-            // Add completed tool call to chat history so it persists
-            if let Some(args) = tool_args {
-              // Only show diff/output for file-modifying tools in chat history
-              let display_output = match name.as_str() {
-                "WriteFile" | "ReplaceFile" => Some(output.clone()),
-                _ => None,
-              };
-              self.data.chat_history.push(ChatMessage::ToolCall {
-                name: name.clone(),
-                arguments: args,
-                output: display_output,
-              });
-            }
-            self.data.streaming_response = self.current_chunks.clone();
-          }
-          SessionEvent::Completed => {
-            // Extract normal and thinking content from chunks
-            let normal_content: String = self
-              .current_chunks
-              .iter()
-              .filter_map(|c| match c {
-                StreamingChunk::Normal(s) => Some(s.as_str()),
-                _ => None,
-              })
-              .collect();
-            let thinking_content: String = self
-              .current_chunks
-              .iter()
-              .filter_map(|c| match c {
-                StreamingChunk::Thinking(s) => Some(s.as_str()),
-                _ => None,
-              })
-              .collect();
-            log::info!(
-              "App: Stream completed, normal_len={}, thinking_len={}",
-              normal_content.len(),
-              thinking_content.len()
-            );
-            // Stream completed - save AI response to chat history
-            if !normal_content.is_empty() || !thinking_content.is_empty() {
-              // Add AI response to chat history (with thinking content if any)
-              self.data.chat_history.push(ChatMessage::Assistant {
-                content: normal_content,
-                thinking_content: if thinking_content.is_empty() {
-                  None
-                } else {
-                  Some(thinking_content)
-                },
-              });
-            }
-            // Clear streaming state
-            self.data.streaming_response = Arc::new(Vec::new());
-            self.current_chunks = Arc::new(Vec::new());
-          }
-          SessionEvent::StreamInterrupted { .. } => {
-            // The actor is retrying; clear our partial streaming state so we
-            // stay consistent and don't concatenate old chunks with the retry.
-            self.current_chunks = Arc::new(Vec::new());
-            self.data.streaming_response = Arc::new(Vec::new());
-          }
-          SessionEvent::ApprovalNeeded {
-            id,
-            name,
-            arguments,
-            diff_preview,
-          } => {
-            self.data.pending_approval = Some(PendingApproval {
-              tool_call_id: id,
-              name,
-              arguments,
-              diff_preview,
-            });
-          }
-          SessionEvent::Error(err) => {
-            // Log error and clear any partial response
-            error!("LLM stream error: {}", err);
-            self.current_chunks = Arc::new(Vec::new());
-            self.data.streaming_response = Arc::new(Vec::new());
-            // Show a user-friendly system message in the chat history
-            self.data.chat_history.push(ChatMessage::System {
-              content: err,
-              level: SystemMessageLevel::Error,
-            });
-          }
-          SessionEvent::Shutdown => {
-            // Session has been shutdown
-            info!("ChatSession {} shutdown", session.handle.id);
-          }
-          SessionEvent::Usage {
-            total_tokens,
-            prompt_tokens,
-            completion_tokens,
-          } => {
-            log::info!(
-              "App: Received precise token usage - total={}, prompt={}, completion={}",
-              total_tokens,
-              prompt_tokens,
-              completion_tokens
-            );
-            // Store the precise token count for status bar display
-            self.data.precise_token_count = Some(total_tokens);
-          }
-          SessionEvent::CompactionNeeded {
-            current_tokens,
-            threshold,
-            max_context_size,
-          } => {
-            log::info!(
-              "App: Compaction needed - {} tokens (threshold: {}, max: {})",
-              current_tokens,
-              threshold,
-              max_context_size
-            );
-            // Store compaction warning for UI display
-            self.data.compaction_warning = Some(CompactionWarning {
-              current_tokens,
-              threshold,
-              max_context_size,
-            });
-            // Add system notification to chat history
-            let percentage = (current_tokens as f64 / max_context_size as f64 * 100.0) as usize;
-            let message = format!(
-              "⚠️ Context usage is at {}% ({} / {} tokens). Consider starting a new session soon.",
-              percentage, current_tokens, max_context_size
-            );
-            self.data.chat_history.push(ChatMessage::System {
-              content: message,
-              level: SystemMessageLevel::Warning,
-            });
-          }
-          SessionEvent::QuestionsAsked {
-            tool_call_id,
-            questions,
-          } => {
-            log::info!(
-              "App: Questions asked - {} questions from tool_call_id={}",
-              questions.len(),
-              tool_call_id
-            );
-            // Apply default values if the first question has them
-            let selected_option_idx = questions
-              .first()
-              .and_then(|q| q.default.first().copied())
-              .unwrap_or(0);
-            let answers: Vec<Vec<usize>> = questions.iter().map(|q| q.default.clone()).collect();
-            self.data.pending_questions = Some(PendingQuestions {
-              tool_call_id,
-              questions,
-              current_question_idx: 0,
-              answers,
-              selected_option_idx,
-            });
-          }
-          SessionEvent::CompactionCompleted {
-            message_count_before,
-            message_count_after,
-            new_token_count,
-          } => {
-            log::info!(
-              "App: Compaction completed - {} -> {} messages, ~{} tokens",
-              message_count_before,
-              message_count_after,
-              new_token_count
-            );
-            // Clear the warning since we've compacted
-            self.data.compaction_warning = None;
-            // Add system notification
-            let message = format!(
-              "🗜️ Context compacted: {} messages -> {} messages (~{} tokens)",
-              message_count_before, message_count_after, new_token_count
-            );
-            self.data.chat_history.push(ChatMessage::System {
-              content: message,
-              level: SystemMessageLevel::Info,
-            });
-          }
-        }
+        self.handle_session_event(event, &session_id);
       }
+      self.chat_session = Some(session);
 
-      // Trigger redraw if there were updates
       if updated && let Some(ref fr) = self.frame_requester {
         fr.schedule_frame();
       }
     }
 
     updated
+  }
+
+  fn handle_session_event(&mut self, event: SessionEvent, session_id: &str) {
+    match event {
+      SessionEvent::ContentChunk(chunk) => self.on_content_chunk(chunk),
+      SessionEvent::ThinkingChunk(chunk) => self.on_thinking_chunk(chunk),
+      SessionEvent::ToolCallReceived {
+        id,
+        name,
+        arguments,
+      } => self.on_tool_call_received(id, name, arguments),
+      SessionEvent::ToolCallCompleted { name, output } => {
+        self.on_tool_call_completed(name, output);
+      }
+      SessionEvent::Completed => self.on_stream_completed(),
+      SessionEvent::StreamInterrupted { .. } => self.on_stream_interrupted(),
+      SessionEvent::ApprovalNeeded {
+        id,
+        name,
+        arguments,
+        diff_preview,
+      } => self.on_approval_needed(id, name, arguments, diff_preview),
+      SessionEvent::Error(err) => self.on_session_error(err),
+      SessionEvent::Shutdown => self.on_session_shutdown(session_id),
+      SessionEvent::Usage {
+        total_tokens,
+        prompt_tokens,
+        completion_tokens,
+      } => self.on_usage(total_tokens, prompt_tokens, completion_tokens),
+      SessionEvent::CompactionNeeded {
+        current_tokens,
+        threshold,
+        max_context_size,
+      } => self.on_compaction_needed(current_tokens, threshold, max_context_size),
+      SessionEvent::QuestionsAsked {
+        tool_call_id,
+        questions,
+      } => self.on_questions_asked(tool_call_id, questions),
+      SessionEvent::CompactionCompleted {
+        message_count_before,
+        message_count_after,
+        new_token_count,
+      } => self.on_compaction_completed(message_count_before, message_count_after, new_token_count),
+    }
+  }
+
+  fn on_content_chunk(&mut self, chunk: String) {
+    let preview: String = chunk.chars().take(100).collect();
+    log::debug!(
+      "App: Received ContentChunk, len={}, content={}",
+      chunk.len(),
+      preview
+    );
+    Arc::make_mut(&mut self.current_chunks).push(StreamingChunk::Normal(chunk));
+    self.data.streaming_response = self.current_chunks.clone();
+  }
+
+  fn on_thinking_chunk(&mut self, chunk: String) {
+    let preview: String = chunk.chars().take(100).collect();
+    log::info!(
+      "App: Received ThinkingChunk, len={}, content={}",
+      chunk.len(),
+      preview
+    );
+    Arc::make_mut(&mut self.current_chunks).push(StreamingChunk::Thinking(chunk));
+    self.data.streaming_response = self.current_chunks.clone();
+  }
+
+  fn on_tool_call_received(&mut self, id: String, name: String, arguments: String) {
+    log::info!(
+      "App: Tool call received: id={}, name={}, args={}",
+      id,
+      name,
+      arguments
+    );
+    Arc::make_mut(&mut self.current_chunks).push(StreamingChunk::ToolCall {
+      name: name.clone(),
+      arguments,
+      status: ToolCallStatus::Running,
+    });
+    self.data.streaming_response = self.current_chunks.clone();
+  }
+
+  fn on_tool_call_completed(&mut self, name: String, output: String) {
+    log::info!(
+      "App: Tool call completed: name={}, output_len={}",
+      name,
+      output.len()
+    );
+    let chunks = Arc::make_mut(&mut self.current_chunks);
+    let mut tool_args = None;
+    if let Some(StreamingChunk::ToolCall {
+      name: n,
+      arguments,
+      status,
+      ..
+    }) = chunks.last_mut()
+      && n == &name
+    {
+      *status = ToolCallStatus::Completed;
+      tool_args = Some(arguments.clone());
+    }
+    if let Some(args) = tool_args {
+      let display_output = match name.as_str() {
+        "WriteFile" | "ReplaceFile" => Some(output.clone()),
+        _ => None,
+      };
+      self.data.chat_history.push(ChatMessage::ToolCall {
+        name: name.clone(),
+        arguments: args,
+        output: display_output,
+      });
+    }
+    self.data.streaming_response = self.current_chunks.clone();
+  }
+
+  fn on_stream_completed(&mut self) {
+    let normal_content: String = self
+      .current_chunks
+      .iter()
+      .filter_map(|c| match c {
+        StreamingChunk::Normal(s) => Some(s.as_str()),
+        _ => None,
+      })
+      .collect();
+    let thinking_content: String = self
+      .current_chunks
+      .iter()
+      .filter_map(|c| match c {
+        StreamingChunk::Thinking(s) => Some(s.as_str()),
+        _ => None,
+      })
+      .collect();
+    log::info!(
+      "App: Stream completed, normal_len={}, thinking_len={}",
+      normal_content.len(),
+      thinking_content.len()
+    );
+    if !normal_content.is_empty() || !thinking_content.is_empty() {
+      self.data.chat_history.push(ChatMessage::Assistant {
+        content: normal_content,
+        thinking_content: if thinking_content.is_empty() {
+          None
+        } else {
+          Some(thinking_content)
+        },
+      });
+    }
+    self.data.streaming_response = Arc::new(Vec::new());
+    self.current_chunks = Arc::new(Vec::new());
+  }
+
+  fn on_stream_interrupted(&mut self) {
+    self.current_chunks = Arc::new(Vec::new());
+    self.data.streaming_response = Arc::new(Vec::new());
+  }
+
+  fn on_approval_needed(
+    &mut self,
+    id: String,
+    name: String,
+    arguments: String,
+    diff_preview: Option<String>,
+  ) {
+    self.data.pending_approval = Some(PendingApproval {
+      tool_call_id: id,
+      name,
+      arguments,
+      diff_preview,
+    });
+  }
+
+  fn on_session_error(&mut self, err: String) {
+    error!("LLM stream error: {}", err);
+    self.current_chunks = Arc::new(Vec::new());
+    self.data.streaming_response = Arc::new(Vec::new());
+    self.data.chat_history.push(ChatMessage::System {
+      content: err,
+      level: SystemMessageLevel::Error,
+    });
+  }
+
+  fn on_session_shutdown(&mut self, session_id: &str) {
+    info!("ChatSession {} shutdown", session_id);
+  }
+
+  fn on_usage(&mut self, total_tokens: u32, prompt_tokens: u32, completion_tokens: u32) {
+    log::info!(
+      "App: Received precise token usage - total={}, prompt={}, completion={}",
+      total_tokens,
+      prompt_tokens,
+      completion_tokens
+    );
+    self.data.precise_token_count = Some(total_tokens);
+  }
+
+  fn on_compaction_needed(
+    &mut self,
+    current_tokens: usize,
+    threshold: usize,
+    max_context_size: usize,
+  ) {
+    log::info!(
+      "App: Compaction needed - {} tokens (threshold: {}, max: {})",
+      current_tokens,
+      threshold,
+      max_context_size
+    );
+    self.data.compaction_warning = Some(CompactionWarning {
+      current_tokens,
+      threshold,
+      max_context_size,
+    });
+    let percentage = (current_tokens as f64 / max_context_size as f64 * 100.0) as usize;
+    let message = format!(
+      "⚠️ Context usage is at {}% ({} / {} tokens). Consider starting a new session soon.",
+      percentage, current_tokens, max_context_size
+    );
+    self.data.chat_history.push(ChatMessage::System {
+      content: message,
+      level: SystemMessageLevel::Warning,
+    });
+  }
+
+  fn on_questions_asked(&mut self, tool_call_id: String, questions: Vec<Question>) {
+    log::info!(
+      "App: Questions asked - {} questions from tool_call_id={}",
+      questions.len(),
+      tool_call_id
+    );
+    let selected_option_idx = questions
+      .first()
+      .and_then(|q| q.default.first().copied())
+      .unwrap_or(0);
+    let answers: Vec<Vec<usize>> = questions.iter().map(|q| q.default.clone()).collect();
+    self.data.pending_questions = Some(PendingQuestions {
+      tool_call_id,
+      questions,
+      current_question_idx: 0,
+      answers,
+      selected_option_idx,
+    });
+  }
+
+  fn on_compaction_completed(
+    &mut self,
+    message_count_before: usize,
+    message_count_after: usize,
+    new_token_count: usize,
+  ) {
+    log::info!(
+      "App: Compaction completed - {} -> {} messages, ~{} tokens",
+      message_count_before,
+      message_count_after,
+      new_token_count
+    );
+    self.data.compaction_warning = None;
+    let message = format!(
+      "🗜️ Context compacted: {} messages -> {} messages (~{} tokens)",
+      message_count_before, message_count_after, new_token_count
+    );
+    self.data.chat_history.push(ChatMessage::System {
+      content: message,
+      level: SystemMessageLevel::Info,
+    });
   }
 }
