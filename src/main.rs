@@ -11,7 +11,6 @@ mod view;
 
 use std::env;
 use std::fs::{self, OpenOptions};
-use std::sync::Arc;
 
 use chrono::Local;
 use env_logger::Target;
@@ -25,8 +24,7 @@ use log::{info, warn};
 use cli::{App, Args};
 use config::Config;
 use config::loader::{data_dir, load_config_from_dir, resolve_mcp_config};
-use session::SessionStore;
-use tui::{Tui, TuiEvent, TuiEventStream, init_terminal, restore_terminal};
+use tui::{Tui, TuiEvent, init_terminal, restore_terminal};
 
 // Re-export error types for convenience
 pub use error::{Error, Result as IronResult};
@@ -130,21 +128,15 @@ async fn main() -> Result<()> {
   // Create TUI infrastructure
   let mut tui = Tui::new()?;
 
-  // Create session store
-  let session_store = Arc::new(SessionStore::new(&data_dir));
-
   // Create app state
   // Pass data_dir for loading system prompt from data_dir/prompts/system.md
-  let mut app = App::new(&data_dir, &args, session_store)?;
+  let mut app = App::new(&data_dir, &args)?;
 
   // Give the view a frame requester for animations
   app.set_frame_requester(tui.frame_requester());
 
-  // Create event stream
-  let mut event_stream = tui.create_event_stream();
-
   // Run the main event loop
-  let result = run_app(&mut tui, &mut app, &mut event_stream).await;
+  let result = run_app(&mut tui, &mut app).await;
 
   // Restore terminal settings
   restore_terminal()?;
@@ -155,7 +147,10 @@ async fn main() -> Result<()> {
 }
 
 /// Run the main application loop
-async fn run_app(tui: &mut Tui, app: &mut App, event_stream: &mut TuiEventStream) -> Result<()> {
+async fn run_app(tui: &mut Tui, app: &mut App) -> Result<()> {
+  // Create event stream
+  let mut event_stream = tui.create_event_stream();
+
   // Initial draw
   tui.draw(|f| app.draw(f))?;
 

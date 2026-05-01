@@ -134,7 +134,7 @@ impl App {
   /// * `data_dir` - The data directory for loading system prompt (data_dir/prompts/system.md)
   /// * `args` - Command line arguments for session control
   /// * `session_store` - Persistent session storage
-  pub fn new(data_dir: &Path, args: &Args, session_store: Arc<SessionStore>) -> Result<Self> {
+  pub fn new(data_dir: &Path, args: &Args) -> Result<Self> {
     let runtime = Runtime::new(data_dir)?;
     let mut data = AppData::new();
 
@@ -148,6 +148,7 @@ impl App {
       SessionMode::New
     };
 
+    let session_store = Arc::new(SessionStore::new(data_dir));
     let (chat_session, messages) =
       ChatSession::create_or_resume(global_config(), system_prompt, session_store, mode)?;
 
