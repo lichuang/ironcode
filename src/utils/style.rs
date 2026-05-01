@@ -6,7 +6,7 @@ use ratatui::style::{Modifier, Style};
 
 use crate::utils::colors::{
   BLUE as BlueColor, ERROR as ErrorColor, GREEN as GreenColor, HIGHLIGHT as HighlightColor,
-  MUTED as MutedColor, PRIMARY as PrimaryColor, SUBTLE as SubtleColor, TEXT as TextColor,
+  MUTED as MutedColor, PRIMARY as PrimaryColor, SUBTLE as SubtleColor,
 };
 
 /// Primary text style - for active elements and highlights
@@ -22,22 +22,6 @@ pub static MUTED: LazyLock<Style> = LazyLock::new(|| Style::default().fg(MutedCo
 #[allow(dead_code)]
 /// Subtle text style - for hints and metadata
 pub static SUBTLE: LazyLock<Style> = LazyLock::new(|| Style::default().fg(SubtleColor));
-
-#[allow(dead_code)]
-/// Error text style - for error messages
-pub static ERROR: LazyLock<Style> = LazyLock::new(|| Style::default().fg(ErrorColor));
-
-#[allow(dead_code)]
-/// Default text style
-pub static TEXT: LazyLock<Style> = LazyLock::new(|| Style::default().fg(TextColor));
-
-#[allow(dead_code)]
-/// Title style - bold primary color
-pub static TITLE: LazyLock<Style> = LazyLock::new(|| {
-  Style::default()
-    .fg(PrimaryColor)
-    .add_modifier(Modifier::BOLD)
-});
 
 /// Thinking content style - italic subtle color
 pub static THINKING: LazyLock<Style> = LazyLock::new(|| {

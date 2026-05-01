@@ -57,9 +57,6 @@ pub struct PendingApproval {
   pub tool_call_id: String,
   /// Tool name
   pub name: String,
-  /// Tool arguments
-  #[allow(dead_code)]
-  pub arguments: String,
   /// Optional diff preview for file-modifying tools
   pub diff_preview: Option<String>,
 }
@@ -387,13 +384,12 @@ impl App {
     &mut self,
     id: String,
     name: String,
-    arguments: String,
+    _arguments: String,
     diff_preview: Option<String>,
   ) {
     self.data.pending_approval = Some(PendingApproval {
       tool_call_id: id,
       name,
-      arguments,
       diff_preview,
     });
   }

@@ -254,7 +254,6 @@ mod tests {
 
     let handler = WriteFileHandler::new();
     let invocation = ToolInvocation::new(
-      "WriteFile",
       "test-call-id",
       ToolPayload::Function {
         arguments: format!(
@@ -294,7 +293,6 @@ mod tests {
 
     let handler = WriteFileHandler::new();
     let invocation = ToolInvocation::new(
-      "WriteFile",
       "test-call-id",
       ToolPayload::Function {
         arguments: format!(
@@ -327,7 +325,6 @@ mod tests {
 
     let handler = WriteFileHandler::new();
     let invocation = ToolInvocation::new(
-      "WriteFile",
       "test-call-id",
       ToolPayload::Function {
         arguments: format!(

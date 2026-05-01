@@ -134,7 +134,6 @@ mod tests {
     let handler = SetTodoListHandler::new();
 
     let invocation = ToolInvocation::new(
-      "SetTodoList",
       "test-call-id",
       ToolPayload::Function {
         arguments: r#"{
@@ -165,7 +164,6 @@ mod tests {
     let handler = SetTodoListHandler::new();
 
     let invocation = ToolInvocation::new(
-      "SetTodoList",
       "test-call-id",
       ToolPayload::Function {
         arguments: r#"{
@@ -190,7 +188,6 @@ mod tests {
     let handler = SetTodoListHandler::new();
 
     let invocation = ToolInvocation::new(
-      "SetTodoList",
       "test-call-id",
       ToolPayload::Function {
         arguments: r#"{

@@ -230,7 +230,6 @@ mod tests {
     let handler = GlobHandler::new();
     let cwd = PathBuf::from(".");
     let invocation = ToolInvocation::new(
-      "Glob",
       "test-call-id",
       ToolPayload::Function {
         arguments: r#"{"pattern": "*.toml", "include_dirs": false}"#.to_string(),
@@ -250,7 +249,6 @@ mod tests {
     let handler = GlobHandler::new();
     let cwd = PathBuf::from(".");
     let invocation = ToolInvocation::new(
-      "Glob",
       "test-call-id",
       ToolPayload::Function {
         arguments: r#"{"pattern": "src/**/*.rs"}"#.to_string(),
@@ -271,7 +269,6 @@ mod tests {
     let handler = GlobHandler::new();
     let cwd = PathBuf::from(".");
     let invocation = ToolInvocation::new(
-      "Glob",
       "test-call-id",
       ToolPayload::Function {
         arguments: r#"{"pattern": "*.nonexistent"}"#.to_string(),
@@ -291,7 +288,6 @@ mod tests {
     let handler = GlobHandler::new();
     let cwd = PathBuf::from(".");
     let invocation = ToolInvocation::new(
-      "Glob",
       "test-call-id",
       ToolPayload::Function {
         arguments: r#"{"pattern": "**/*.rs"}"#.to_string(),
@@ -311,7 +307,6 @@ mod tests {
     let handler = GlobHandler::new();
     let cwd = PathBuf::from(".");
     let invocation = ToolInvocation::new(
-      "Glob",
       "test-call-id",
       ToolPayload::Function {
         arguments: r#"{"pattern": "*.rs", "directory": "/nonexistent/path/12345"}"#.to_string(),

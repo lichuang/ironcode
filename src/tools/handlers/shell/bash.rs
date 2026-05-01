@@ -286,7 +286,6 @@ mod tests {
     let temp_dir = env::temp_dir();
     let handler = BashHandler::new();
     let invocation = ToolInvocation::new(
-      "Bash",
       "test-call-id",
       ToolPayload::Function {
         arguments: r#"{"command": "echo 'Hello World'"}"#.to_string(),
@@ -306,7 +305,6 @@ mod tests {
     let temp_dir = env::temp_dir();
     let handler = BashHandler::new();
     let invocation = ToolInvocation::new(
-      "Bash",
       "test-call-id",
       ToolPayload::Function {
         arguments: r#"{"command": "exit 42"}"#.to_string(),
@@ -326,7 +324,6 @@ mod tests {
     let temp_dir = env::temp_dir();
     let handler = BashHandler::new();
     let invocation = ToolInvocation::new(
-      "Bash",
       "test-call-id",
       ToolPayload::Function {
         arguments: r#"{"command": "   "}"#.to_string(),
@@ -346,7 +343,6 @@ mod tests {
     let temp_dir = env::temp_dir();
     let handler = BashHandler::new();
     let invocation = ToolInvocation::new(
-      "Bash",
       "test-call-id",
       ToolPayload::Function {
         arguments: r#"{"command": "echo 'line1' && echo 'line2'"}"#.to_string(),
@@ -370,7 +366,6 @@ mod tests {
 
     let handler = BashHandler::new();
     let invocation = ToolInvocation::new(
-      "Bash",
       "test-call-id",
       ToolPayload::Function {
         arguments: r#"{"command": "pwd"}"#.to_string(),

@@ -182,7 +182,6 @@ mod tests {
     let handler = FetchURLHandler::new();
 
     let invocation = ToolInvocation::new(
-      "FetchURL",
       "test-call-id",
       ToolPayload::Function {
         arguments: r#"{"url": "not-a-valid-url"}"#.to_string(),

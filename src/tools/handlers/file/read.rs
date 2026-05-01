@@ -224,7 +224,6 @@ mod tests {
 
     let handler = ReadFileHandler::new();
     let invocation = ToolInvocation::new(
-      "ReadFile",
       "test-call-id",
       ToolPayload::Function {
         arguments: format!(

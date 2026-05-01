@@ -324,57 +324,6 @@ pub fn ensure_data_dir(config: &Config) -> Result<PathBuf> {
   Ok(data_dir_path)
 }
 
-#[allow(dead_code)]
-/// Create a default configuration file if it doesn't exist
-///
-/// Creates the config file in the default location (~/.ironcode/)
-pub fn create_default_config() -> Result<PathBuf> {
-  let config_dir = default_data_dir().ok_or(ConfigError::HomeDirNotFound)?;
-
-  // Ensure the config directory exists
-  if !config_dir.exists() {
-    fs::create_dir_all(&config_dir).map_err(|e| ConfigError::create_dir(&config_dir, e))?;
-  }
-
-  let config_path = config_dir.join(CONFIG_FILE);
-
-  if !config_path.exists() {
-    let default_config = r#"# IronCode Configuration File
-# Location: ~/.ironcode/config.toml
-
-# Data directory for ironcode files (logs, prompts, etc.)
-# Defaults to ~/.ironcode/ if not specified
-# dir = "~/.ironcode"
-
-# Default model to use (required)
-default_model = "openai/gpt-4o"
-
-# Provider definitions
-[providers.openai]
-type = "openai-compatible"
-base_url = "https://api.openai.com/v1"
-api_key = "${OPENAI_API_KEY}"
-
-# Model definitions
-[models."openai/gpt-4o"]
-provider = "openai"
-model = "gpt-4o"
-max_context_size = 128000
-supports_streaming = true
-supports_vision = true
-
-# Logging
-[logging]
-level = "info"
-"#;
-
-    fs::write(&config_path, default_config)
-      .map_err(|e| ConfigError::write_file(&config_path, e))?;
-  }
-
-  Ok(config_path)
-}
-
 #[cfg(test)]
 mod tests {
   use super::super::{CompactionConfig, Config, HistoryConfig, LoggingConfig, RetryConfig};

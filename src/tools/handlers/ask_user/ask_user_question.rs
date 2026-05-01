@@ -234,7 +234,6 @@ mod tests {
 
     // Valid question but handler returns error (interactive not supported)
     let invocation = ToolInvocation::new(
-      "AskUserQuestion",
       "test-call-id",
       ToolPayload::Function {
         arguments: r#"{
@@ -262,7 +261,6 @@ mod tests {
     let handler = AskUserQuestionHandler::new();
 
     let invocation = ToolInvocation::new(
-      "AskUserQuestion",
       "test-call-id",
       ToolPayload::Function {
         arguments: r#"{
@@ -290,7 +288,6 @@ mod tests {
     let handler = AskUserQuestionHandler::new();
 
     let invocation = ToolInvocation::new(
-      "AskUserQuestion",
       "test-call-id",
       ToolPayload::Function {
         arguments: r#"{
@@ -318,7 +315,6 @@ mod tests {
     let handler = AskUserQuestionHandler::new();
 
     let invocation = ToolInvocation::new(
-      "AskUserQuestion",
       "test-call-id",
       ToolPayload::Function {
         arguments: r#"{

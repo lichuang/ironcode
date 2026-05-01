@@ -288,7 +288,6 @@ mod tests {
 
     let handler = ReplaceFileHandler::new();
     let invocation = ToolInvocation::new(
-      "ReplaceFile",
       "test-call-id",
       ToolPayload::Function {
         arguments: format!(
@@ -328,7 +327,6 @@ mod tests {
 
     let handler = ReplaceFileHandler::new();
     let invocation = ToolInvocation::new(
-      "ReplaceFile",
       "test-call-id",
       ToolPayload::Function {
         arguments: format!(
@@ -367,7 +365,6 @@ mod tests {
 
     let handler = ReplaceFileHandler::new();
     let invocation = ToolInvocation::new(
-      "ReplaceFile",
       "test-call-id",
       ToolPayload::Function {
         arguments: format!(
@@ -404,7 +401,6 @@ mod tests {
 
     let handler = ReplaceFileHandler::new();
     let invocation = ToolInvocation::new(
-      "ReplaceFile",
       "test-call-id",
       ToolPayload::Function {
         arguments: format!(
@@ -432,7 +428,6 @@ mod tests {
 
     let handler = ReplaceFileHandler::new();
     let invocation = ToolInvocation::new(
-      "ReplaceFile",
       "test-call-id",
       ToolPayload::Function {
         arguments: format!(

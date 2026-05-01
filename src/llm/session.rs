@@ -1132,7 +1132,6 @@ impl SessionActor {
           self.id, tool_call.name
         );
         let invocation = ToolInvocation::new(
-          &tool_call.name,
           &tool_call.id,
           ToolPayload::Function {
             arguments: tool_call.arguments.clone(),
@@ -1191,7 +1190,6 @@ impl SessionActor {
   /// Execute a single tool call and store the result.
   async fn execute_single_tool_call(&mut self, tool_call: &ToolCall) {
     let invocation = ToolInvocation::new(
-      &tool_call.name,
       &tool_call.id,
       ToolPayload::Function {
         arguments: tool_call.arguments.clone(),

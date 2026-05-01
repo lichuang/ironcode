@@ -84,7 +84,6 @@ impl Tool {
     }
   }
 
-  #[allow(dead_code)]
   /// Convert to OpenAI ChatCompletionTools format
   pub fn to_openai_tool(&self) -> ChatCompletionTools {
     ChatCompletionTools::Function(ChatCompletionTool {
@@ -252,9 +251,6 @@ impl ToolOutput {
 pub struct ToolInvocation {
   /// Tool name
   pub tool_name: String,
-  #[allow(dead_code)]
-  /// Call ID from the model
-  pub call_id: String,
   /// Tool payload (arguments)
   pub payload: ToolPayload,
   /// Working directory
@@ -263,15 +259,9 @@ pub struct ToolInvocation {
 
 impl ToolInvocation {
   /// Create a new tool invocation
-  pub fn new(
-    tool_name: impl Into<String>,
-    call_id: impl Into<String>,
-    payload: ToolPayload,
-    cwd: impl AsRef<Path>,
-  ) -> Self {
+  pub fn new(tool_name: impl Into<String>, payload: ToolPayload, cwd: impl AsRef<Path>) -> Self {
     Self {
       tool_name: tool_name.into(),
-      call_id: call_id.into(),
       payload,
       cwd: cwd.as_ref().to_path_buf(),
     }

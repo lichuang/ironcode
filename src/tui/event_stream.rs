@@ -83,27 +83,6 @@ impl<S: TuiEventSource + Default> TuiEventBroker<S> {
     }
   }
 
-  /// Temporarily disable the input stream.
-  #[allow(dead_code)]
-  pub fn pause_events(&self) {
-    let mut state = self
-      .state
-      .lock()
-      .unwrap_or_else(std::sync::PoisonError::into_inner);
-    *state = TuiEventBrokerState::Paused;
-  }
-
-  /// Re-enable the input stream after a pause.
-  #[allow(dead_code)]
-  pub fn resume_events(&self) {
-    let mut state = self
-      .state
-      .lock()
-      .unwrap_or_else(std::sync::PoisonError::into_inner);
-    *state = TuiEventBrokerState::Start;
-    let _ = self.resume_events_tx.send(());
-  }
-
   /// Get a signal that fires when the stream is resumed.
   pub fn resume_events_rx(&self) -> watch::Receiver<()> {
     self.resume_events_tx.subscribe()

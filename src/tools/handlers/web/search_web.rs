@@ -220,7 +220,6 @@ mod tests {
     let handler = SearchWebHandler::new();
 
     let invocation = ToolInvocation::new(
-      "SearchWeb",
       "test-call-id",
       ToolPayload::Function {
         arguments: r#"{"query": ""}"#.to_string(),
@@ -240,7 +239,6 @@ mod tests {
     let handler = SearchWebHandler::new();
 
     let invocation = ToolInvocation::new(
-      "SearchWeb",
       "test-call-id",
       ToolPayload::Function {
         arguments: r#"{"query": "Rust", "limit": 25}"#.to_string(),

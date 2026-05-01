@@ -415,37 +415,6 @@ impl InputHistoryStorage {
   }
 
   #[allow(dead_code)]
-  /// Count entries in the file without loading them all.
-  /// Uses a shared lock to ensure consistent read.
-  fn count_entries(&self) -> std::io::Result<usize> {
-    if !self.path.exists() {
-      return Ok(0);
-    }
-
-    let file = File::open(&self.path)?;
-
-    // Acquire shared lock
-    for attempt in 0..MAX_LOCK_RETRIES {
-      match file.try_lock_shared() {
-        Ok(()) => break,
-        Err(_) if attempt < MAX_LOCK_RETRIES - 1 => {
-          sleep(Duration::from_millis(LOCK_RETRY_DELAY_MS));
-        }
-        Err(_) => {
-          return Err(std::io::Error::other(format!(
-            "Failed to acquire shared lock after {} attempts",
-            MAX_LOCK_RETRIES
-          )));
-        }
-      }
-    }
-
-    let mut content = String::new();
-    file.take(u64::MAX).read_to_string(&mut content)?;
-    Ok(content.lines().filter(|l| !l.trim().is_empty()).count())
-  }
-
-  #[allow(dead_code)]
   /// Trim the history file to size/entry limits.
   ///
   /// Opens the file, acquires an exclusive lock, and trims if necessary.
