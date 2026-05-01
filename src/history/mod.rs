@@ -195,11 +195,6 @@ impl InputHistoryManager {
     &self.original_input
   }
 
-  #[allow(dead_code)]
-  pub fn entries(&self) -> &[HistoryEntry] {
-    &self.entries
-  }
-
   /// Record a new entry to the history (both memory and persistent storage).
   ///
   /// Deduplicates against the most recent entry.
@@ -228,16 +223,6 @@ impl InputHistoryManager {
     // Reset navigation when new entry added
     self.cursor = None;
     self.original_input.clear();
-  }
-
-  #[allow(dead_code)]
-  pub fn len(&self) -> usize {
-    self.entries.len()
-  }
-
-  #[allow(dead_code)]
-  pub fn is_empty(&self) -> bool {
-    self.entries.is_empty()
   }
 }
 
@@ -576,7 +561,7 @@ mod tests {
   #[test]
   fn test_manager_new() {
     let manager = InputHistoryManager::new();
-    assert!(manager.is_empty());
+    assert!(manager.entries.is_empty());
     assert!(!manager.is_browsing());
   }
 
@@ -595,7 +580,7 @@ mod tests {
     // Record new entry resets navigation
     manager.record_entry("third");
     assert!(!manager.is_browsing());
-    assert_eq!(manager.len(), 3);
+    assert_eq!(manager.entries.len(), 3);
   }
 
   fn create_test_config(dir: &TempDir) -> Config {
@@ -612,7 +597,7 @@ mod tests {
   #[test]
   fn test_nav_empty() {
     let mut nav = InputHistoryManager::new();
-    assert!(nav.is_empty());
+    assert!(nav.entries.is_empty());
     assert!(!nav.is_browsing());
     assert_eq!(nav.navigate_up(""), None);
     assert_eq!(nav.navigate_down(), None);
@@ -682,15 +667,15 @@ mod tests {
     let mut nav = InputHistoryManager::new();
 
     nav.record_entry("hello");
-    assert_eq!(nav.len(), 1);
+    assert_eq!(nav.entries.len(), 1);
 
     // Duplicate should be ignored
     nav.record_entry("hello");
-    assert_eq!(nav.len(), 1);
+    assert_eq!(nav.entries.len(), 1);
 
     // New entry should be added
     nav.record_entry("world");
-    assert_eq!(nav.len(), 2);
+    assert_eq!(nav.entries.len(), 2);
   }
 
   #[test]
@@ -752,7 +737,7 @@ mod tests {
   fn test_record_empty() {
     let mut nav = InputHistoryManager::new();
     nav.record_entry("");
-    assert!(nav.is_empty());
+    assert!(nav.entries.is_empty());
   }
 
   #[test]

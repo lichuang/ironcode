@@ -6,7 +6,7 @@ use ratatui::style::{Modifier, Style};
 
 use crate::utils::colors::{
   BLUE as BlueColor, ERROR as ErrorColor, GREEN as GreenColor, HIGHLIGHT as HighlightColor,
-  MUTED as MutedColor, PRIMARY as PrimaryColor, SUBTLE as SubtleColor,
+  PRIMARY as PrimaryColor, SUBTLE as SubtleColor,
 };
 
 /// Primary text style - for active elements and highlights
@@ -14,14 +14,6 @@ pub static PRIMARY: LazyLock<Style> = LazyLock::new(|| Style::default().fg(Prima
 
 /// Highlight text style - for important elements and keyboard shortcuts
 pub static HIGHLIGHT: LazyLock<Style> = LazyLock::new(|| Style::default().fg(HighlightColor));
-
-#[allow(dead_code)]
-/// Muted text style - for secondary information
-pub static MUTED: LazyLock<Style> = LazyLock::new(|| Style::default().fg(MutedColor));
-
-#[allow(dead_code)]
-/// Subtle text style - for hints and metadata
-pub static SUBTLE: LazyLock<Style> = LazyLock::new(|| Style::default().fg(SubtleColor));
 
 /// Thinking content style - italic subtle color
 pub static THINKING: LazyLock<Style> = LazyLock::new(|| {
@@ -32,11 +24,6 @@ pub static THINKING: LazyLock<Style> = LazyLock::new(|| {
 
 /// Primary border style
 pub static PRIMARY_BORDER: LazyLock<Style> = LazyLock::new(|| Style::default().fg(PrimaryColor));
-
-#[allow(dead_code)]
-/// Highlight border style
-pub static HIGHLIGHT_BORDER: LazyLock<Style> =
-  LazyLock::new(|| Style::default().fg(HighlightColor));
 
 #[allow(dead_code)]
 /// Error border style

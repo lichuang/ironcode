@@ -34,7 +34,6 @@ impl MessageBroker {
     self.tx.clone()
   }
 
-  #[allow(dead_code)]
   /// Try to receive a message without blocking.
   ///
   /// Returns `Some(message)` if a message is available, `None` otherwise.

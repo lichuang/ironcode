@@ -1751,12 +1751,6 @@ impl ChatSession {
   }
 
   #[allow(dead_code)]
-  /// Check if there's an event ready without consuming it
-  pub fn has_event(&self) -> bool {
-    !self.event_rx.is_empty()
-  }
-
-  #[allow(dead_code)]
   /// Shutdown the session
   pub fn shutdown(&self) {
     self.handle.shutdown();

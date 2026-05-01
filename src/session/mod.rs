@@ -35,7 +35,6 @@ pub struct SessionMeta {
   pub yolo: bool,
 }
 
-#[allow(dead_code)]
 impl SessionMeta {
   /// Create a new session metadata
   pub fn new(id: impl Into<String>, system_prompt: impl Into<String>) -> Self {

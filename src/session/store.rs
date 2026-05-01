@@ -18,7 +18,6 @@ pub struct SessionStore {
 }
 
 const META_FILE: &str = "meta.json";
-#[allow(dead_code)]
 const CONTEXT_FILE: &str = "context.jsonl";
 
 impl SessionStore {

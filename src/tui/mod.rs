@@ -89,12 +89,6 @@ impl Tui {
     )
   }
 
-  /// Get a reference to the terminal.
-  #[allow(dead_code)]
-  pub fn terminal(&mut self) -> &mut Terminal<CrosstermBackend<Stdout>> {
-    &mut self.terminal
-  }
-
   /// Draw the UI using the provided function.
   pub fn draw<F>(&mut self, f: F) -> Result<()>
   where

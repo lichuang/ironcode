@@ -18,8 +18,8 @@ struct QuestionOption {
   /// Concise display text (1-5 words)
   label: String,
   /// Brief explanation of trade-offs or implications
-  #[allow(dead_code)]
   #[serde(default)]
+  #[allow(dead_code)]
   description: String,
 }
 

@@ -4,16 +4,11 @@ use crate::llm::types::{Message, Role};
 
 /// Result of a compaction operation.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CompactionResult {
   /// The compacted message list (summary + preserved messages)
   pub messages: Vec<Message>,
   /// Whether compaction was actually performed
   pub did_compact: bool,
-  /// Number of messages that were compacted into summary
-  pub compacted_count: usize,
-  /// Number of messages that were preserved
-  pub preserved_count: usize,
 }
 
 /// Context compaction implementation.
@@ -84,8 +79,6 @@ impl Compaction {
       return CompactionResult {
         messages: messages.to_vec(),
         did_compact: false,
-        compacted_count: 0,
-        preserved_count: messages.len(),
       };
     }
 
@@ -128,8 +121,6 @@ impl Compaction {
     CompactionResult {
       messages: result,
       did_compact: true,
-      compacted_count: to_compact.len(),
-      preserved_count: preserved.len(),
     }
   }
 }
@@ -224,8 +215,6 @@ mod tests {
     let result = compaction.compact(&messages);
 
     assert!(result.did_compact);
-    assert_eq!(result.compacted_count, 4); // First 4 messages compacted
-    assert_eq!(result.preserved_count, 2); // Last 2 messages preserved
     assert_eq!(result.messages.len(), 3); // compacted_msg + 2 preserved
   }
 

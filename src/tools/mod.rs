@@ -30,7 +30,6 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use anyhow::Result;
-use async_openai::types::chat::{ChatCompletionTool, ChatCompletionTools, FunctionObject};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::from_str;
@@ -53,22 +52,7 @@ pub struct Tool {
   pub no_handler: bool,
 }
 
-#[allow(dead_code)]
 impl Tool {
-  /// Create a new tool
-  pub fn new(
-    name: impl Into<String>,
-    description: impl Into<String>,
-    parameters: serde_json::Value,
-  ) -> Self {
-    Self {
-      name: name.into(),
-      description: description.into(),
-      parameters,
-      no_handler: false,
-    }
-  }
-
   /// Create a new tool with no_handler flag
   pub fn new_with_no_handler(
     name: impl Into<String>,
@@ -82,18 +66,6 @@ impl Tool {
       parameters,
       no_handler,
     }
-  }
-
-  /// Convert to OpenAI ChatCompletionTools format
-  pub fn to_openai_tool(&self) -> ChatCompletionTools {
-    ChatCompletionTools::Function(ChatCompletionTool {
-      function: FunctionObject {
-        name: self.name.clone(),
-        description: Some(self.description.clone()),
-        parameters: Some(self.parameters.clone()),
-        strict: None,
-      },
-    })
   }
 }
 
@@ -135,12 +107,6 @@ impl ToolRegistry {
   /// Check if registry is empty
   pub fn is_empty(&self) -> bool {
     self.tools.is_empty()
-  }
-
-  #[allow(dead_code)]
-  /// Convert all tools to OpenAI format
-  pub fn to_openai_tools(&self) -> Vec<ChatCompletionTools> {
-    self.tools.values().map(|t| t.to_openai_tool()).collect()
   }
 
   /// Load tools from a specific directory

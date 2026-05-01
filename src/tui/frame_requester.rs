@@ -61,7 +61,6 @@ impl FrameRequester {
 #[cfg(test)]
 impl FrameRequester {
   /// Create a stub requester for testing that does nothing.
-  #[allow(dead_code)]
   pub fn test_dummy() -> Self {
     let (tx, _rx) = mpsc::unbounded_channel();
     FrameRequester {
