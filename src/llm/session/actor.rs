@@ -5,7 +5,7 @@
 
 use std::env;
 use std::future::pending;
-use std::mem::take;
+use std::mem;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -15,6 +15,7 @@ use tokio::sync::mpsc;
 
 use super::approval::{ApprovalDecision, ApprovalService};
 use super::compaction::CompactionService;
+use super::state::ActorState;
 use crate::cli::runtime::Runtime;
 use crate::error::Result;
 use crate::llm::provider::LLMProvider;
@@ -70,8 +71,6 @@ struct SessionActor {
   current_response: String,
   /// Current thinking content being accumulated
   current_thinking: String,
-  /// Whether a streaming request is in progress
-  is_streaming: bool,
   /// Event receiver for the current stream (if any)
   stream_rx: Option<mpsc::UnboundedReceiver<SessionEvent>>,
   /// Stream manager for LLM streaming with retry
@@ -95,26 +94,8 @@ struct SessionActor {
   /// Runtime context (config, tool registries, etc.)
   #[allow(dead_code)]
   runtime: Arc<Runtime>,
-  /// State for resuming tool call execution after approval
-  tool_call_execution_state: Option<ToolCallExecutionState>,
-  /// State for resuming after user answers structured questions
-  pending_answers_state: Option<PendingAnswersState>,
-}
-
-/// State kept while waiting for user answers to structured questions.
-#[derive(Debug, Clone)]
-struct PendingAnswersState {
-  /// The tool call ID that asked the questions
-  tool_call_id: String,
-}
-
-/// State kept while executing a batch of tool calls so that execution can
-/// be paused for approval and resumed later.
-struct ToolCallExecutionState {
-  /// The tool calls to execute
-  tool_calls: Vec<ToolCall>,
-  /// Index of the next tool call to execute
-  current_index: usize,
+  /// Explicit actor state replacing is_streaming + tool_call_execution_state + pending_answers_state
+  state: ActorState,
 }
 
 impl SessionActor {
@@ -138,7 +119,6 @@ impl SessionActor {
       cmd_rx,
       current_response: String::new(),
       current_thinking: String::new(),
-      is_streaming: false,
       stream_rx: None,
       stream_manager: StreamManager::new(provider, runtime.retry_config()),
       pending_tool_calls: Vec::new(),
@@ -153,8 +133,7 @@ impl SessionActor {
       approval_service: ApprovalService::new(yolo, runtime.auto_approve()),
       compaction_service: CompactionService::new(runtime.compaction_config().clone()),
       runtime,
-      tool_call_execution_state: None,
-      pending_answers_state: None,
+      state: ActorState::Idle,
     }
   }
 
@@ -211,8 +190,11 @@ impl SessionActor {
           self.id, preview, ellipsis
         );
 
-        if self.is_streaming {
-          error!("Session {}: Cannot send message while streaming", self.id);
+        if !matches!(self.state, ActorState::Idle) {
+          error!(
+            "Session {}: Cannot send message while another request is in progress",
+            self.id
+          );
           let _ = self.event_tx.send(SessionEvent::Error(
             "Cannot send message while another request is in progress".to_string(),
           ));
@@ -259,10 +241,10 @@ impl SessionActor {
       }
 
       SessionCommand::Cancel => {
-        if self.is_streaming {
+        if matches!(self.state, ActorState::Streaming) {
           info!("Session {}: Cancelling stream", self.id);
           self.stream_rx = None;
-          self.is_streaming = false;
+          self.state = ActorState::Idle;
           self.current_response.clear();
           self.current_thinking.clear();
         }
@@ -283,9 +265,9 @@ impl SessionActor {
         self.current_response.clear();
         self.current_thinking.clear();
         self.pending_tool_calls.clear();
-        if self.is_streaming {
+        if matches!(self.state, ActorState::Streaming) {
           self.stream_rx = None;
-          self.is_streaming = false;
+          self.state = ActorState::Idle;
         }
         true
       }
@@ -395,7 +377,7 @@ impl SessionActor {
     match self.stream_manager.start(messages).await {
       Ok(rx) => {
         self.stream_rx = Some(rx);
-        self.is_streaming = true;
+        self.state = ActorState::Streaming;
       }
       Err(err) => {
         error!("Session {}: failed to start stream: {}", self.id, err);
@@ -490,9 +472,9 @@ impl SessionActor {
       }
       SessionEvent::Completed => {
         // Add the complete assistant message to history (with tool calls if any)
-        let response = take(&mut self.current_response);
-        let thinking = take(&mut self.current_thinking);
-        let tool_calls = take(&mut self.pending_tool_calls);
+        let response = mem::take(&mut self.current_response);
+        let thinking = mem::take(&mut self.current_thinking);
+        let tool_calls = mem::take(&mut self.pending_tool_calls);
 
         let has_content = !response.is_empty() || !thinking.is_empty();
         let has_tool_calls = !tool_calls.is_empty();
@@ -519,7 +501,7 @@ impl SessionActor {
           );
         }
 
-        self.is_streaming = false;
+        self.state = ActorState::Idle;
         self.stream_rx = None;
 
         // Check if we have tool calls to execute
@@ -543,7 +525,7 @@ impl SessionActor {
         is_retryable,
       } => {
         error!("Session {}: Stream interrupted: {}", self.id, error);
-        self.is_streaming = false;
+        self.state = ActorState::Idle;
         self.stream_rx = None;
         // Do NOT retain partial content — mirrors kimi-cli behaviour
         self.current_response.clear();
@@ -560,7 +542,7 @@ impl SessionActor {
       }
       SessionEvent::Error(err) => {
         error!("Session {}: Stream error: {}", self.id, err);
-        self.is_streaming = false;
+        self.state = ActorState::Idle;
         self.stream_rx = None;
         self.current_response.clear();
         self.current_thinking.clear();
@@ -630,18 +612,21 @@ impl SessionActor {
       tool_calls.len()
     );
 
-    self.tool_call_execution_state = Some(ToolCallExecutionState {
+    self.state = ActorState::ExecutingTools {
       tool_calls,
       current_index: 0,
-    });
+    };
     self.continue_tool_call_execution().await;
   }
 
   /// Resume tool call execution from the pending state.
   async fn continue_tool_call_execution(&mut self) {
-    let state = match self.tool_call_execution_state.take() {
-      Some(s) => s,
-      None => {
+    let (tool_calls, current_index) = match mem::replace(&mut self.state, ActorState::Idle) {
+      ActorState::ExecutingTools {
+        tool_calls,
+        current_index,
+      } => (tool_calls, current_index),
+      _ => {
         error!(
           "Session {}: continue_tool_call_execution called with no state",
           self.id
@@ -650,8 +635,7 @@ impl SessionActor {
       }
     };
 
-    let tool_calls = state.tool_calls.clone();
-    for (i, tool_call) in tool_calls.iter().enumerate().skip(state.current_index) {
+    for (i, tool_call) in tool_calls.iter().enumerate().skip(current_index) {
       let _ = self.event_tx.send(SessionEvent::ToolCallReceived {
         id: tool_call.id.clone(),
         name: tool_call.name.clone(),
@@ -683,13 +667,11 @@ impl SessionActor {
               "Session {}: AskUserQuestion paused, waiting for user answers",
               self.id
             );
-            self.pending_answers_state = Some(PendingAnswersState {
-              tool_call_id: tool_call.id.clone(),
-            });
-            self.tool_call_execution_state = Some(ToolCallExecutionState {
-              tool_calls: state.tool_calls.clone(),
+            self.state = ActorState::WaitingAnswers {
+              tool_calls: tool_calls.clone(),
               current_index: i,
-            });
+              tool_call_id: tool_call.id.clone(),
+            };
             let _ = self.event_tx.send(SessionEvent::QuestionsAsked {
               tool_call_id: tool_call.id.clone(),
               questions,
@@ -729,10 +711,10 @@ impl SessionActor {
             "Session {}: Tool {} requires approval, pausing execution",
             self.id, name
           );
-          self.tool_call_execution_state = Some(ToolCallExecutionState {
-            tool_calls: state.tool_calls.clone(),
+          self.state = ActorState::WaitingApproval {
+            tool_calls: tool_calls.clone(),
             current_index: i,
-          });
+          };
           let _ = self.event_tx.send(SessionEvent::ApprovalNeeded {
             id: tool_call_id,
             name,
@@ -827,9 +809,12 @@ impl SessionActor {
 
   /// Handle user approval or denial of a pending tool call.
   async fn handle_approval(&mut self, tool_call_id: String, approved: bool) {
-    let state = match self.tool_call_execution_state.take() {
-      Some(s) => s,
-      None => {
+    let (tool_calls, current_index) = match mem::replace(&mut self.state, ActorState::Idle) {
+      ActorState::WaitingApproval {
+        tool_calls,
+        current_index,
+      } => (tool_calls, current_index),
+      _ => {
         error!(
           "Session {}: Received approval but no tool execution is pending",
           self.id
@@ -838,15 +823,17 @@ impl SessionActor {
       }
     };
 
-    let current_index = state.current_index;
-    let tool_call = &state.tool_calls[current_index];
+    let tool_call = &tool_calls[current_index];
 
     if tool_call.id != tool_call_id {
       error!(
         "Session {}: Approval tool_call_id mismatch: expected {}, got {}",
         self.id, tool_call.id, tool_call_id
       );
-      self.tool_call_execution_state = Some(state);
+      self.state = ActorState::WaitingApproval {
+        tool_calls,
+        current_index,
+      };
       return;
     }
 
@@ -872,10 +859,10 @@ impl SessionActor {
     }
 
     let next_index = current_index + 1;
-    self.tool_call_execution_state = Some(ToolCallExecutionState {
-      tool_calls: state.tool_calls,
+    self.state = ActorState::ExecutingTools {
+      tool_calls,
       current_index: next_index,
-    });
+    };
     self.continue_tool_call_execution().await;
   }
 
@@ -886,41 +873,36 @@ impl SessionActor {
     answers: Vec<Vec<usize>>,
     dismissed: bool,
   ) {
-    let state = match self.tool_call_execution_state.take() {
-      Some(s) => s,
-      None => {
-        error!(
-          "Session {}: Received question answers but no tool execution is pending",
-          self.id
-        );
-        return;
-      }
-    };
+    let (tool_calls, current_index, expected_id) =
+      match mem::replace(&mut self.state, ActorState::Idle) {
+        ActorState::WaitingAnswers {
+          tool_calls,
+          current_index,
+          tool_call_id: expected_id,
+        } => (tool_calls, current_index, expected_id),
+        _ => {
+          error!(
+            "Session {}: Received question answers but no questions are pending",
+            self.id
+          );
+          return;
+        }
+      };
 
-    let pending = match self.pending_answers_state.take() {
-      Some(p) => p,
-      None => {
-        error!(
-          "Session {}: Received question answers but no questions are pending",
-          self.id
-        );
-        self.tool_call_execution_state = Some(state);
-        return;
-      }
-    };
-
-    if pending.tool_call_id != tool_call_id {
+    if expected_id != tool_call_id {
       error!(
         "Session {}: Question answer tool_call_id mismatch: expected {}, got {}",
-        self.id, pending.tool_call_id, tool_call_id
+        self.id, expected_id, tool_call_id
       );
-      self.tool_call_execution_state = Some(state);
-      self.pending_answers_state = Some(pending);
+      self.state = ActorState::WaitingAnswers {
+        tool_calls,
+        current_index,
+        tool_call_id: expected_id,
+      };
       return;
     }
 
-    let current_index = state.current_index;
-    let tool_call = &state.tool_calls[current_index];
+    let tool_call = &tool_calls[current_index];
 
     let output = if dismissed || answers.is_empty() {
       info!("Session {}: User dismissed AskUserQuestion", self.id);
@@ -971,10 +953,10 @@ impl SessionActor {
     let _ = self.persistence.flush();
 
     let next_index = current_index + 1;
-    self.tool_call_execution_state = Some(ToolCallExecutionState {
-      tool_calls: state.tool_calls,
+    self.state = ActorState::ExecutingTools {
+      tool_calls,
       current_index: next_index,
-    });
+    };
     self.continue_tool_call_execution().await;
   }
 }
