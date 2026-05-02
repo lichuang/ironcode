@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use shellexpand::tilde;
 use toml::from_str;
 
-use crate::error::{ConfigError, Result};
+use crate::error::Result;
 
 use super::{Config, LoggingConfig, McpConfig};
 
@@ -54,7 +54,7 @@ pub fn data_dir(config: &Config) -> PathBuf {
 ///
 /// Configuration is loaded from `~/.ironcode/config.toml`.
 pub fn load_config() -> Result<Config> {
-  let config_dir = default_data_dir().ok_or(ConfigError::HomeDirNotFound)?;
+  let config_dir = default_data_dir().ok_or(crate::config::Error::HomeDirNotFound)?;
   load_config_from_dir(&config_dir)
 }
 
@@ -84,9 +84,9 @@ pub fn load_config_from(path: &Path) -> Result<Config> {
 
 /// Load configuration from a specific file path
 pub fn load_from_file(path: &Path) -> Result<Config> {
-  let content = fs::read_to_string(path).map_err(|e| ConfigError::read_file(path, e))?;
+  let content = fs::read_to_string(path).map_err(|e| crate::config::Error::read_file(path, e))?;
 
-  let config: Config = from_str(&content).map_err(|e| ConfigError::parse_toml(path, e))?;
+  let config: Config = from_str(&content).map_err(|e| crate::config::Error::parse_toml(path, e))?;
 
   Ok(config)
 }
@@ -153,13 +153,13 @@ fn merge_mcp_configs(base: McpConfig, override_: McpConfig) -> McpConfig {
 /// Validate configuration
 fn validate_config(config: &Config) -> Result<()> {
   if config.default_model.is_empty() {
-    return Err(ConfigError::MissingDefaultModel.into());
+    return Err(crate::config::Error::MissingDefaultModel.into());
   }
 
   // Check that default_model exists in models
   if !config.models.contains_key(&config.default_model) {
     return Err(
-      ConfigError::ModelNotFound {
+      crate::config::Error::ModelNotFound {
         model: config.default_model.clone(),
       }
       .into(),
@@ -198,9 +198,9 @@ struct McpJsonServer {
 /// { "mcpServers": { "server-name": { "command": "...", "args": [...] } } }
 /// ```
 pub fn load_mcp_json_config(path: &Path) -> Result<HashMap<String, super::McpServerConfig>> {
-  let content = fs::read_to_string(path).map_err(|e| ConfigError::read_file(path, e))?;
+  let content = fs::read_to_string(path).map_err(|e| crate::config::Error::read_file(path, e))?;
   let json: McpJsonRoot =
-    serde_json::from_str(&content).map_err(|e| ConfigError::ParseMcpJson {
+    serde_json::from_str(&content).map_err(|e| crate::config::Error::ParseMcpJson {
       message: format!("Invalid MCP JSON config: {}", e),
     })?;
 
@@ -300,7 +300,8 @@ pub fn ensure_data_dir(config: &Config) -> Result<PathBuf> {
   let data_dir_path = data_dir(config);
 
   if !data_dir_path.exists() {
-    fs::create_dir_all(&data_dir_path).map_err(|e| ConfigError::create_dir(&data_dir_path, e))?;
+    fs::create_dir_all(&data_dir_path)
+      .map_err(|e| crate::config::Error::create_dir(&data_dir_path, e))?;
   }
 
   Ok(data_dir_path)

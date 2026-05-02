@@ -19,7 +19,7 @@ use tokio::sync::mpsc;
 use tokio::time::sleep;
 
 use crate::config::{Config, global_config};
-use crate::error::{ConfigError, Error, LlmError, Result, StreamErrorCategory};
+use crate::error::{Error, LlmError, Result, StreamErrorCategory};
 use crate::llm::compaction::{Compaction, calculate_threshold, should_auto_compact};
 use crate::llm::provider::LLMProvider;
 use crate::llm::providers::KimiProvider;
@@ -1616,16 +1616,15 @@ impl ChatSession {
     // Get default model configuration
     let model_config = config
       .default_model_config()
-      .ok_or(ConfigError::MissingDefaultModel)?;
+      .ok_or(crate::config::Error::MissingDefaultModel)?;
 
     // Get provider configuration
-    let provider =
-      config
-        .get_provider(&model_config.provider)
-        .ok_or_else(|| ConfigError::ProviderNotFound {
-          provider: model_config.provider.clone(),
-          model: config.default_model.clone(),
-        })?;
+    let provider = config.get_provider(&model_config.provider).ok_or_else(|| {
+      crate::config::Error::ProviderNotFound {
+        provider: model_config.provider.clone(),
+        model: config.default_model.clone(),
+      }
+    })?;
 
     // Resolve API key (may contain env var references like ${OPENAI_API_KEY})
     let api_key = provider
@@ -1665,7 +1664,7 @@ impl ChatSession {
       )?),
       _ => {
         return Err(
-          ConfigError::ProviderNotFound {
+          crate::config::Error::ProviderNotFound {
             provider: provider.provider_type.clone(),
             model: config.default_model.clone(),
           }

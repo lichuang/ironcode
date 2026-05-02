@@ -4,6 +4,31 @@ pub use store::SessionStore;
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 
+/// Session persistence errors
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+  #[error("Session '{id}' not found")]
+  NotFound { id: String },
+
+  #[error("Failed to serialize message: {source}")]
+  SerializeMessage { source: serde_json::Error },
+
+  #[error("Failed to serialize session meta: {source}")]
+  SerializeMeta { source: serde_json::Error },
+
+  #[error("Failed to deserialize message: {source}")]
+  DeserializeMessage { source: serde_json::Error },
+
+  #[error("Failed to deserialize session meta: {source}")]
+  DeserializeMeta { source: serde_json::Error },
+
+  #[error("Failed to read session meta for '{id}': {source}")]
+  ReadMeta { id: String, source: std::io::Error },
+
+  #[error("Failed to write session meta for '{id}': {source}")]
+  WriteMeta { id: String, source: std::io::Error },
+}
+
 /// How to initialize a chat session
 #[derive(Debug, Clone)]
 pub enum SessionMode {

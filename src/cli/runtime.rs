@@ -6,7 +6,7 @@ use chrono::Local;
 use log::{debug, info, warn};
 
 use crate::config::loader::system_prompt_path;
-use crate::error::{Result, RuntimeError};
+use crate::error::Result;
 use crate::tools::handlers::{
   AskUserQuestionHandler, FetchURLHandler, GlobHandler, GrepHandler, ReadFileHandler,
   ReplaceFileHandler, SearchWebHandler, SetTodoListHandler, WriteFileHandler,
@@ -21,6 +21,66 @@ use crate::tools::{
 use crate::tools::handlers::BashHandler;
 #[cfg(target_os = "windows")]
 use crate::tools::handlers::PowerShellHandler;
+
+/// Runtime environment errors
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+  #[error("Failed to get current directory")]
+  GetCurrentDir {
+    #[source]
+    source: std::io::Error,
+  },
+
+  #[error("Failed to read directory: {path}")]
+  ReadDir {
+    path: PathBuf,
+    #[source]
+    source: std::io::Error,
+  },
+
+  #[error("Failed to read file metadata: {path}")]
+  ReadMetadata {
+    path: PathBuf,
+    #[source]
+    source: std::io::Error,
+  },
+
+  #[error("Failed to read system prompt from: {path}")]
+  ReadSystemPrompt {
+    path: PathBuf,
+    #[source]
+    source: std::io::Error,
+  },
+
+  #[error("Tool '{tool_name}' is defined in prompts but no handler is implemented")]
+  MissingToolHandler { tool_name: String },
+}
+
+impl Error {
+  /// Create a read directory error with path
+  pub fn read_dir(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
+    Error::ReadDir {
+      path: path.into(),
+      source,
+    }
+  }
+
+  /// Create a read metadata error with path
+  pub fn read_metadata(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
+    Error::ReadMetadata {
+      path: path.into(),
+      source,
+    }
+  }
+
+  /// Create a read system prompt error with path
+  pub fn read_system_prompt(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
+    Error::ReadSystemPrompt {
+      path: path.into(),
+      source,
+    }
+  }
+}
 
 /// Runtime environment arguments for template substitution
 ///
@@ -67,20 +127,20 @@ impl RuntimeArgs {
   fn load_work_dir() -> Result<String> {
     env::current_dir()
       .map(|p| p.to_string_lossy().to_string())
-      .map_err(|e| RuntimeError::GetCurrentDir { source: e }.into())
+      .map_err(|e| Error::GetCurrentDir { source: e }.into())
   }
 
   /// Get directory listing of working directory
   fn load_work_dir_ls() -> Result<String> {
-    let work_dir = env::current_dir().map_err(|e| RuntimeError::GetCurrentDir { source: e })?;
+    let work_dir = env::current_dir().map_err(|e| Error::GetCurrentDir { source: e })?;
     let mut entries = Vec::new();
 
-    for entry in fs::read_dir(&work_dir).map_err(|e| RuntimeError::read_dir(&work_dir, e))? {
-      let entry = entry.map_err(|e| RuntimeError::read_dir(&work_dir, e))?;
+    for entry in fs::read_dir(&work_dir).map_err(|e| Error::read_dir(&work_dir, e))? {
+      let entry = entry.map_err(|e| Error::read_dir(&work_dir, e))?;
       let name = entry.file_name().to_string_lossy().to_string();
       let metadata = entry
         .metadata()
-        .map_err(|e| RuntimeError::read_metadata(&work_dir, e))?;
+        .map_err(|e| Error::read_metadata(&work_dir, e))?;
       let size = metadata.len();
       let is_dir = metadata.is_dir();
       let permissions = metadata.permissions();
@@ -227,7 +287,7 @@ impl Runtime {
       }
       if !executable_registry.has(&tool.name) {
         return Err(
-          RuntimeError::MissingToolHandler {
+          Error::MissingToolHandler {
             tool_name: tool.name.clone(),
           }
           .into(),

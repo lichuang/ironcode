@@ -427,6 +427,99 @@ pub enum McpTransport {
 }
 
 // ---------------------------------------------------------------------------
+// Configuration errors
+// ---------------------------------------------------------------------------
+
+/// Configuration-related errors
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+  #[error("Failed to determine home directory")]
+  HomeDirNotFound,
+
+  #[error("Failed to determine config directory")]
+  ConfigDirNotFound,
+
+  #[error("Failed to read config file: {path}")]
+  ReadFile {
+    path: PathBuf,
+    #[source]
+    source: std::io::Error,
+  },
+
+  #[error("Failed to parse TOML config from: {path}")]
+  ParseToml {
+    path: PathBuf,
+    #[source]
+    source: toml::de::Error,
+  },
+
+  #[error("Failed to create config directory: {path}")]
+  CreateDir {
+    path: PathBuf,
+    #[source]
+    source: std::io::Error,
+  },
+
+  #[error("Failed to write default config to: {path}")]
+  WriteFile {
+    path: PathBuf,
+    #[source]
+    source: std::io::Error,
+  },
+
+  #[error(
+    "Missing required field: default_model. Please specify a default model in your configuration."
+  )]
+  MissingDefaultModel,
+
+  #[error("Default model '{model}' not found in [models] section.")]
+  ModelNotFound { model: String },
+
+  #[error("Provider '{provider}' not found for model '{model}'")]
+  ProviderNotFound { provider: String, model: String },
+
+  #[error("API key is required for provider '{provider}' but not provided")]
+  MissingApiKey { provider: String },
+
+  #[error("Failed to parse MCP JSON config: {message}")]
+  ParseMcpJson { message: String },
+}
+
+impl Error {
+  /// Create a read file error with path
+  pub fn read_file(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
+    Error::ReadFile {
+      path: path.into(),
+      source,
+    }
+  }
+
+  /// Create a parse TOML error with path
+  pub fn parse_toml(path: impl Into<PathBuf>, source: toml::de::Error) -> Self {
+    Error::ParseToml {
+      path: path.into(),
+      source,
+    }
+  }
+
+  /// Create a create directory error with path
+  pub fn create_dir(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
+    Error::CreateDir {
+      path: path.into(),
+      source,
+    }
+  }
+
+  /// Create a write file error with path
+  pub fn write_file(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
+    Error::WriteFile {
+      path: path.into(),
+      source,
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Global configuration
 // ---------------------------------------------------------------------------
 

@@ -6,7 +6,7 @@ use std::sync::Mutex;
 
 use serde_json::{from_str, to_string, to_string_pretty};
 
-use crate::error::{Result, SessionError};
+use crate::error::Result;
 use crate::llm::types::Message;
 use crate::session::SessionMeta;
 
@@ -65,7 +65,8 @@ impl SessionStore {
       files.entry(id.to_string()).or_insert(f)
     };
 
-    let line = to_string(message).map_err(|e| SessionError::SerializeMessage { source: e })?;
+    let line =
+      to_string(message).map_err(|e| crate::session::Error::SerializeMessage { source: e })?;
 
     writeln!(file, "{}", line)?;
 
@@ -76,16 +77,17 @@ impl SessionStore {
   pub fn load(&self, id: &str) -> Result<(SessionMeta, Vec<Message>)> {
     let session_dir = self.session_dir(id)?;
     if !session_dir.exists() {
-      return Err(SessionError::NotFound { id: id.to_string() }.into());
+      return Err(crate::session::Error::NotFound { id: id.to_string() }.into());
     }
 
     let meta_path = session_dir.join(META_FILE);
-    let meta_content = fs::read_to_string(&meta_path).map_err(|e| SessionError::ReadMeta {
-      id: id.to_string(),
-      source: e,
-    })?;
+    let meta_content =
+      fs::read_to_string(&meta_path).map_err(|e| crate::session::Error::ReadMeta {
+        id: id.to_string(),
+        source: e,
+      })?;
     let meta: SessionMeta =
-      from_str(&meta_content).map_err(|e| SessionError::DeserializeMeta { source: e })?;
+      from_str(&meta_content).map_err(|e| crate::session::Error::DeserializeMeta { source: e })?;
 
     let context_path = session_dir.join(CONTEXT_FILE);
     let mut messages = Vec::new();
@@ -99,7 +101,7 @@ impl SessionStore {
           continue;
         }
         let message: Message =
-          from_str(&line).map_err(|e| SessionError::DeserializeMessage { source: e })?;
+          from_str(&line).map_err(|e| crate::session::Error::DeserializeMessage { source: e })?;
         messages.push(message);
       }
     }
@@ -129,7 +131,7 @@ impl SessionStore {
 
       let content = fs::read_to_string(&meta_path)?;
       let meta: SessionMeta =
-        from_str(&content).map_err(|e| SessionError::DeserializeMeta { source: e })?;
+        from_str(&content).map_err(|e| crate::session::Error::DeserializeMeta { source: e })?;
       sessions.push(meta);
     }
 
@@ -155,7 +157,8 @@ impl SessionStore {
       .open(&context_path)?;
 
     for message in messages {
-      let line = to_string(message).map_err(|e| SessionError::SerializeMessage { source: e })?;
+      let line =
+        to_string(message).map_err(|e| crate::session::Error::SerializeMessage { source: e })?;
       writeln!(file, "{}", line)?;
     }
 
@@ -187,8 +190,9 @@ impl SessionStore {
 
   fn write_meta(&self, session_dir: &Path, meta: &SessionMeta) -> Result<()> {
     let meta_path = session_dir.join(META_FILE);
-    let content = to_string_pretty(meta).map_err(|e| SessionError::SerializeMeta { source: e })?;
-    fs::write(&meta_path, content).map_err(|e| SessionError::WriteMeta {
+    let content =
+      to_string_pretty(meta).map_err(|e| crate::session::Error::SerializeMeta { source: e })?;
+    fs::write(&meta_path, content).map_err(|e| crate::session::Error::WriteMeta {
       id: meta.id.clone(),
       source: e,
     })?;
