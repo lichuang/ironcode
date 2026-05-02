@@ -410,17 +410,14 @@ mod tests {
 
 ### Using Tools
 
-Register and execute tools via `ExecutableToolRegistry`:
+Tools are loaded from `prompts/tools/*.md` at `Runtime` initialization and registered into `ExecutableToolRegistry`. Do **not** access tools through global state; pass the registry explicitly:
 
 ```rust
-use crate::tools::{
-    ExecutableToolRegistry, ToolInvocation, ToolPayload,
-    handlers::ReadFileHandler,
-};
+use crate::cli::runtime::Runtime;
+use crate::tools::{ToolInvocation, ToolPayload};
 
-// Create registry and register handlers
-let mut registry = ExecutableToolRegistry::new();
-registry.register("ReadFile", Box::new(ReadFileHandler::new()));
+// Get the pre-loaded registry from Runtime
+let registry = runtime.executable_registry();
 
 // Create invocation context
 let invocation = ToolInvocation::new(
@@ -432,13 +429,63 @@ let invocation = ToolInvocation::new(
     std::env::current_dir().unwrap(),
 );
 
-// Execute tool
+// Execute tool via the registry
 match registry.dispatch(invocation).await {
     Ok(output) => println!("Result: {}", output.into_response()),
     Err(e) => eprintln!("Error: {}", e),
 }
 ```
 
+`ToolExecutor` (used by `SessionActor`) receives `Arc<ExecutableToolRegistry>` at construction time and handles all tool call dispatching internally.
+
+
+## Architecture Overview
+
+### Session Layer (`src/llm/session/`)
+
+`SessionActor` is a **coordinator** (not a God Object). It delegates all work to sub-components:
+
+```
+src/llm/session/
+├── mod.rs          # SessionHandle, SessionCommand, SessionEvent exports
+├── actor.rs        # SessionActor — tokio::select! loop + state machine coordination
+├── state.rs        # ActorState enum (Idle | Streaming | ExecutingTools | WaitingApproval | WaitingAnswers)
+├── context.rs      # Context — in-memory message history
+├── stream.rs       # StreamManager — LLM stream + connection recovery + exponential backoff
+├── tool_exec.rs    # ToolExecutor — tool calls + diff preview
+├── approval.rs     # ApprovalService — approval policy (pure functions)
+├── persistence.rs  # SessionPersistence — batch buffering + async flush
+└── compaction.rs   # CompactionService
+```
+
+- **No global state**: `GLOBAL_CONFIG`, `GLOBAL_TOOL_REGISTRY`, and `GLOBAL_EXECUTABLE_TOOL_REGISTRY` have been removed. All state is passed explicitly.
+- **`WireBus`** (`src/wire/`): `SessionActor` publishes `WireMessage` via `WirePublisher`; `App` subscribes via `WireSubscriber`. No direct `mpsc` coupling between `llm/` and `view/`.
+
+### View Layer (`src/view/chat/`)
+
+`ChatView` is a **container** that assembles sub-components:
+
+```
+src/view/chat/
+├── mod.rs         # ChatView container + View trait implementation
+├── input.rs       # InputComponent — text editing, cursor, history navigation
+├── messages.rs    # MessageListComponent — ChatMessage/StreamingChunk types + rendering helpers
+├── approval.rs    # ApprovalPanel — approval prompt rendering
+├── questions.rs   # QuestionsPanel — structured question rendering
+└── tests.rs       # ChatView unit tests
+```
+
+- `Component` trait (`src/view/mod.rs`) is the abstraction for UI sub-components.
+- All rendering helpers moved out of `ChatView` into their respective component modules.
+
+### Error Handling
+
+`src/error.rs` is a thin boundary type. Each module owns its own error enum:
+- `config::loader::Error`
+- `session::store::Error`
+- `tools::ToolError`
+
+No `ConfigError`, `SessionError`, or `RuntimeError` variants in `src/error.rs`.
 
 ## Project Maintenance Rules
 
