@@ -2,7 +2,6 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 use chrono::Local;
 use log::{debug, info, warn};
@@ -10,6 +9,7 @@ use log::{debug, info, warn};
 use crate::config::loader::{data_dir, system_prompt_path};
 use crate::config::{
   CompactionConfig, Config, DEFAULT_MAX_CONTEXT_SIZE, HistoryConfig, ModelConfig, ProviderConfig,
+  RetryConfig,
 };
 use crate::error::Result;
 use crate::tools::handlers::{
@@ -347,11 +347,6 @@ impl Runtime {
     &self.config.compaction
   }
 
-  /// Get the maximum number of retry attempts for LLM requests.
-  pub fn retry_max_attempts(&self) -> u32 {
-    self.config.retry.max_attempts.max(1)
-  }
-
   /// Get the default model name.
   pub fn default_model(&self) -> String {
     self.config.default_model.clone()
@@ -406,9 +401,9 @@ impl Runtime {
     self.config.resolve_api_key(key)
   }
 
-  /// Calculate the retry delay for a given attempt number.
-  pub fn retry_delay_for_attempt(&self, attempt: u32) -> Duration {
-    self.config.retry.delay_for_attempt(attempt)
+  /// Get the retry configuration.
+  pub fn retry_config(&self) -> RetryConfig {
+    self.config.retry.clone()
   }
 
   /// Render the system prompt with all template variables substituted

@@ -9,17 +9,12 @@ use std::mem::take;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use async_openai::error::OpenAIError;
-use async_openai::types::chat::{
-  ChatCompletionMessageToolCallChunk, ChatCompletionResponseStream, FunctionCallStream,
-};
 use chrono::{Datelike, Local, Timelike};
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 use tokio::sync::mpsc;
-use tokio::time::sleep;
 
 use crate::cli::runtime::Runtime;
-use crate::error::{Error, LlmError, Result, StreamErrorCategory};
+use crate::error::Result;
 use crate::llm::compaction::{Compaction, calculate_threshold, should_auto_compact};
 use crate::llm::provider::LLMProvider;
 use crate::llm::providers::KimiProvider;
@@ -57,14 +52,13 @@ pub(crate) fn generate_session_id() -> String {
 
 use super::context::Context;
 use super::persistence::SessionPersistence;
+use super::stream::{StreamManager, format_user_friendly_error};
 use super::{Question, QuestionOption, SessionCommand, SessionEvent, SessionHandle};
 
 /// Internal state of the session actor
 struct SessionActor {
   /// Session ID
   id: String,
-  /// The LLM provider
-  provider: Box<dyn LLMProvider>,
   /// Message history managed by Context
   context: Context,
   /// Channel to send events back to the caller
@@ -79,8 +73,8 @@ struct SessionActor {
   is_streaming: bool,
   /// Event receiver for the current stream (if any)
   stream_rx: Option<mpsc::UnboundedReceiver<SessionEvent>>,
-  /// Current retry attempt counter for the active stream
-  stream_retry_attempt: u32,
+  /// Stream manager for LLM streaming with retry
+  stream_manager: StreamManager,
   /// Tool call buffer for accumulating tool calls during streaming
   pending_tool_calls: Vec<ToolCall>,
   /// Working directory for tool execution
@@ -142,7 +136,6 @@ impl SessionActor {
     let max_context_size = provider.max_context_size();
     Self {
       id,
-      provider,
       context: Context::from_messages(messages),
       event_tx,
       cmd_rx,
@@ -150,7 +143,7 @@ impl SessionActor {
       current_thinking: String::new(),
       is_streaming: false,
       stream_rx: None,
-      stream_retry_attempt: 0,
+      stream_manager: StreamManager::new(provider, runtime.retry_config()),
       pending_tool_calls: Vec::new(),
       cwd: env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
       persistence: SessionPersistence::new(session_store),
@@ -263,7 +256,7 @@ impl SessionActor {
         }
 
         // Start streaming
-        self.start_chat_stream().await;
+        self.start_stream().await;
         true
       }
 
@@ -475,153 +468,25 @@ impl SessionActor {
   ///
   /// Mirrors kimi-cli's two-layer retry: connection recovery (rebuild client)
   /// followed by tenacity-style exponential backoff.
-  async fn start_chat_stream(&mut self) {
-    self.stream_retry_attempt = 0;
-    self.attempt_chat_stream("starting").await;
-  }
-
-  /// Attempt to start (or resume) a chat stream, with retries.
-  ///
-  /// This is the inner retry loop shared by initial connection attempts and
-  /// mid-stream interruption recovery.  It respects `stream_retry_attempt`
-  /// so that the total number of retries for a single step never exceeds
-  /// `retry_config.max_attempts`.
-  async fn attempt_chat_stream(&mut self, context: &str) {
-    let max_attempts = self.runtime.retry_max_attempts();
-
-    while self.stream_retry_attempt < max_attempts {
-      match self.run_chat_stream_with_recovery().await {
-        Ok(stream) => {
-          if self.stream_retry_attempt > 0 {
-            info!(
-              "Session {}: stream {} on attempt {}/{}",
-              self.id,
-              context,
-              self.stream_retry_attempt + 1,
-              max_attempts
-            );
-          }
-          let (tx, rx) = mpsc::unbounded_channel();
-          self.stream_rx = Some(rx);
-          self.is_streaming = true;
-          tokio::spawn(handle_stream(stream, tx));
-          info!("Session {}: Started streaming for message", self.id);
-          return;
-        }
-        Err((err, recovery_exhausted)) => {
-          let err_string = err.to_string();
-          let is_retryable = !recovery_exhausted && is_error_retryable(&err);
-          self.stream_retry_attempt += 1;
-
-          if !is_retryable {
-            error!(
-              "Session {}: non-retryable error on attempt {}/{}: {}",
-              self.id, self.stream_retry_attempt, max_attempts, err_string
-            );
-            let _ = self
-              .event_tx
-              .send(SessionEvent::Error(format_user_friendly_error(&err_string)));
-            return;
-          }
-
-          if self.stream_retry_attempt >= max_attempts {
-            error!(
-              "Session {}: all {} attempts exhausted, last error: {}",
-              self.id, max_attempts, err_string
-            );
-            let friendly = format_user_friendly_error(&err_string);
-            let _ = self.event_tx.send(SessionEvent::Error(format!(
-              "{} (tried {} times)",
-              friendly, max_attempts
-            )));
-            return;
-          }
-
-          let delay = self
-            .runtime
-            .retry_delay_for_attempt(self.stream_retry_attempt - 1);
-          warn!(
-            "Session {}: attempt {}/{} failed ({}), retrying in {:?}",
-            self.id, self.stream_retry_attempt, max_attempts, err_string, delay
-          );
-          sleep(delay).await;
-        }
+  /// Start streaming the current context messages via the StreamManager.
+  async fn start_stream(&mut self) {
+    let messages = self.context.messages().to_vec();
+    match self.stream_manager.start(messages).await {
+      Ok(rx) => {
+        self.stream_rx = Some(rx);
+        self.is_streaming = true;
       }
-    }
-  }
-
-  /// Attempt to start a chat stream once, with immediate connection recovery.
-  ///
-  /// If the error is a connection-level error (timeout, disconnect, transport),
-  /// calls `provider.on_retryable_error()` to refresh the connection and retries
-  /// exactly once immediately. If that retry also fails, `recovery_exhausted`
-  /// is returned as `true`, signaling the outer loop not to retry further.
-  async fn run_chat_stream_with_recovery(
-    &mut self,
-  ) -> std::result::Result<ChatCompletionResponseStream, (Error, bool)> {
-    match self
-      .provider
-      .chat_stream(self.context.messages().to_vec())
-      .await
-    {
-      Ok(stream) => Ok(stream),
       Err(err) => {
-        let is_connection_error = matches!(
-          &err,
-          Error::Llm(LlmError::Stream {
-            category: StreamErrorCategory::Timeout
-              | StreamErrorCategory::Disconnected
-              | StreamErrorCategory::Transport,
-            ..
-          }) | Error::Llm(LlmError::EmptyResponse)
-        );
-
-        if is_connection_error {
-          info!(
-            "Session {}: connection error, attempting immediate recovery: {}",
-            self.id, err
-          );
-          if let Error::Llm(ref llm_err) = err {
-            self.provider.on_retryable_error(llm_err).await;
-          }
-
-          match self
-            .provider
-            .chat_stream(self.context.messages().to_vec())
-            .await
-          {
-            Ok(stream) => {
-              info!("Session {}: connection recovery succeeded", self.id);
-              Ok(stream)
-            }
-            Err(retry_err) => {
-              warn!(
-                "Session {}: connection recovery failed: {}",
-                self.id, retry_err
-              );
-              // Only mark recovery as exhausted if the retry error is also a
-              // connection-level error.  If it is now an HTTP status error
-              // (e.g. 503) the outer retry loop should still attempt backoff.
-              let is_still_connection = matches!(
-                &retry_err,
-                Error::Llm(LlmError::Stream {
-                  category: StreamErrorCategory::Timeout
-                    | StreamErrorCategory::Disconnected
-                    | StreamErrorCategory::Transport,
-                  ..
-                }) | Error::Llm(LlmError::EmptyResponse)
-              );
-              Err((retry_err, is_still_connection))
-            }
-          }
-        } else {
-          Err((err, false))
-        }
+        error!("Session {}: failed to start stream: {}", self.id, err);
+        let _ = self
+          .event_tx
+          .send(SessionEvent::Error(format_user_friendly_error(
+            &err.to_string(),
+          )));
       }
     }
   }
 
-  /// Handle a streaming event from the LLM
   async fn handle_stream_event(&mut self, event: SessionEvent) {
     match &event {
       SessionEvent::ContentChunk(chunk) => {
@@ -765,7 +630,7 @@ impl SessionActor {
         self.pending_tool_calls.clear();
 
         if *is_retryable {
-          self.attempt_chat_stream("resumed after interrupt").await;
+          self.start_stream().await;
         } else {
           let _ = self
             .event_tx
@@ -992,7 +857,7 @@ impl SessionActor {
 
     self.current_response.clear();
     self.current_thinking.clear();
-    self.start_chat_stream().await;
+    self.start_stream().await;
   }
 
   /// Execute a single tool call and store the result.
@@ -1572,585 +1437,5 @@ impl ChatSession {
   /// Shutdown the session
   pub fn shutdown(&self) {
     self.handle.shutdown();
-  }
-}
-
-/// Handle the streaming response from the LLM
-async fn handle_stream(
-  mut stream: ChatCompletionResponseStream,
-  tx: mpsc::UnboundedSender<SessionEvent>,
-) {
-  use futures::StreamExt;
-
-  // Buffer for accumulating content across chunks (for parsing think tags)
-  let mut buffer = String::new();
-  let mut in_thinking_mode = false;
-  let mut has_received_thinking = false;
-
-  // Buffer for accumulating tool calls
-  let mut tool_call_buffer: Vec<ChatCompletionMessageToolCallChunk> = Vec::new();
-
-  while let Some(result) = stream.next().await {
-    match result {
-      Ok(response) => {
-        log::debug!("recv raw response: {:?}", response);
-
-        log::debug!(
-          "Session: Received stream response: id={}, model={}, choices={}",
-          response.id,
-          response.model,
-          response.choices.len()
-        );
-
-        // Check for usage information (only present in the final chunk)
-        if let Some(usage) = &response.usage {
-          log::info!(
-            "Session: Received usage - total={}, prompt={}, completion={}",
-            usage.total_tokens,
-            usage.prompt_tokens,
-            usage.completion_tokens
-          );
-          let _ = tx.send(SessionEvent::Usage {
-            total_tokens: usage.total_tokens,
-            prompt_tokens: usage.prompt_tokens,
-            completion_tokens: usage.completion_tokens,
-          });
-        }
-
-        for (i, choice) in response.choices.iter().enumerate() {
-          log::debug!(
-            "Session: Choice[{}]: delta={:?}, finish_reason={:?}",
-            i,
-            choice.delta,
-            choice.finish_reason
-          );
-        }
-        for choice in &response.choices {
-          // Handle tool calls
-          if let Some(ref tool_calls) = choice.delta.tool_calls {
-            for tool_call in tool_calls {
-              log::info!(
-                "Session: Received tool call chunk: index={:?}, id={:?}",
-                tool_call.index,
-                tool_call.id
-              );
-
-              // Get the index for this tool call (u32, not Option<u32>)
-              let idx = tool_call.index as usize;
-
-              // Ensure buffer has enough slots
-              while tool_call_buffer.len() <= idx {
-                tool_call_buffer.push(ChatCompletionMessageToolCallChunk {
-                  index: tool_call_buffer.len() as u32,
-                  id: None,
-                  r#type: None,
-                  function: None,
-                });
-              }
-
-              // Update the tool call at this index
-              let existing = &mut tool_call_buffer[idx];
-
-              // Update ID if provided
-              if let Some(ref id) = tool_call.id {
-                existing.id = Some(id.clone());
-              }
-
-              // Update type if provided
-              if let Some(ref call_type) = tool_call.r#type {
-                existing.r#type = Some(call_type.clone());
-              }
-
-              // Update function if provided
-              if let Some(ref function) = tool_call.function {
-                if existing.function.is_none() {
-                  existing.function = Some(FunctionCallStream {
-                    name: None,
-                    arguments: None,
-                  });
-                }
-
-                if let Some(ref existing_func) = existing.function {
-                  let mut updated_func = existing_func.clone();
-
-                  if let Some(ref name) = function.name {
-                    updated_func.name = Some(name.clone());
-                  }
-                  if let Some(ref args) = function.arguments {
-                    if let Some(ref existing_args) = updated_func.arguments {
-                      updated_func.arguments = Some(format!("{}{}", existing_args, args));
-                    } else {
-                      updated_func.arguments = Some(args.clone());
-                    }
-                  }
-
-                  existing.function = Some(updated_func);
-                }
-              }
-            }
-          }
-
-          if let Some(content) = &choice.delta.content
-            && !content.is_empty()
-          {
-            let preview: String = content.chars().take(100).collect();
-            log::debug!(
-              "Session: Received content chunk: len={}, content={}",
-              content.len(),
-              preview
-            );
-
-            // Parse content for <think> tags (Kimi thinking mode)
-            buffer.push_str(content);
-            log::debug!(
-              "Session: Buffer len={}, in_thinking_mode={}",
-              buffer.len(),
-              in_thinking_mode
-            );
-
-            // Process the buffer to extract thinking content
-            loop {
-              if in_thinking_mode {
-                // Look for </think> closing tag
-                if let Some(end_pos) = buffer.find("</think>") {
-                  // Extract thinking content
-                  let thinking = buffer[..end_pos].to_string();
-                  if !thinking.is_empty() {
-                    if !has_received_thinking {
-                      log::info!(
-                        "Session: First thinking content received: len={}",
-                        thinking.len()
-                      );
-                      has_received_thinking = true;
-                    }
-                    log::debug!("Session: Sending ThinkingChunk: len={}", thinking.len());
-                    if tx.send(SessionEvent::ThinkingChunk(thinking)).is_err() {
-                      return;
-                    }
-                  }
-                  // Remove processed part including closing tag
-                  buffer = buffer[end_pos + 8..].to_string();
-                  in_thinking_mode = false;
-                  log::debug!(
-                    "Session: Exited thinking mode, remaining buffer len={}",
-                    buffer.len()
-                  );
-                } else {
-                  // Still in thinking mode, send what we have so far
-                  if !buffer.is_empty() {
-                    if !has_received_thinking {
-                      log::info!(
-                        "Session: First thinking content received (partial): len={}",
-                        buffer.len()
-                      );
-                      has_received_thinking = true;
-                    }
-                    log::debug!(
-                      "Session: Sending ThinkingChunk (partial): len={}",
-                      buffer.len()
-                    );
-                    if tx
-                      .send(SessionEvent::ThinkingChunk(buffer.clone()))
-                      .is_err()
-                    {
-                      return;
-                    }
-                    buffer.clear();
-                  }
-                  break;
-                }
-              } else {
-                // Look for <think> opening tag
-                if let Some(start_pos) = buffer.find("<think>") {
-                  log::info!("Session: Found <think> tag at position {}", start_pos);
-                  // Send any content before <think> as regular content
-                  if start_pos > 0 {
-                    let before = buffer[..start_pos].to_string();
-                    if !before.is_empty() {
-                      log::debug!(
-                        "Session: Sending ContentChunk (before think): len={}",
-                        before.len()
-                      );
-                      if tx.send(SessionEvent::ContentChunk(before)).is_err() {
-                        return;
-                      }
-                    }
-                  }
-                  // Enter thinking mode
-                  buffer = buffer[start_pos + 7..].to_string();
-                  in_thinking_mode = true;
-                  log::info!("Session: Entered thinking mode");
-                } else {
-                  // No <think> tag, send as regular content
-                  if !buffer.is_empty() {
-                    log::debug!("Session: Sending ContentChunk: len={}", buffer.len());
-                    if tx.send(SessionEvent::ContentChunk(buffer.clone())).is_err() {
-                      return;
-                    }
-                    buffer.clear();
-                  }
-                  break;
-                }
-              }
-            }
-          }
-        }
-      }
-      Err(e) => {
-        log::error!("Session: Stream error: {}", e);
-        let is_retryable = is_stream_error_retryable(&e);
-        let _ = tx.send(SessionEvent::StreamInterrupted {
-          error: e.to_string(),
-          is_retryable,
-        });
-        return;
-      }
-    }
-  }
-
-  // Flush any remaining content in buffer
-  if !buffer.is_empty() {
-    if in_thinking_mode {
-      log::info!(
-        "Session: Flushing final thinking content: len={}",
-        buffer.len()
-      );
-      let _ = tx.send(SessionEvent::ThinkingChunk(buffer));
-    } else {
-      log::debug!("Session: Flushing final content: len={}", buffer.len());
-      let _ = tx.send(SessionEvent::ContentChunk(buffer));
-    }
-  }
-
-  // Send any accumulated tool calls
-  for tool_call in tool_call_buffer {
-    if let (Some(id), Some(function)) = (tool_call.id, tool_call.function)
-      && let (Some(name), Some(arguments)) = (function.name, function.arguments)
-      && !id.is_empty()
-      && !name.is_empty()
-    {
-      log::info!(
-        "Session: Sending accumulated tool call: id={}, name={}, args={}",
-        id,
-        name,
-        arguments
-      );
-      // Store the tool call info for later use
-      let _ = tx.send(SessionEvent::ToolCallReceived {
-        id: id.clone(),
-        name: name.clone(),
-        arguments: arguments.clone(),
-      });
-    }
-  }
-
-  log::info!(
-    "Session: Stream completed, received_thinking={}",
-    has_received_thinking
-  );
-  // Stream completed
-  let _ = tx.send(SessionEvent::Completed);
-}
-
-/// Check if an error from `chat_stream` is retryable.
-///
-/// - `Llm` errors → delegates to `LlmError::is_retryable()`
-/// - All other error types → not retryable
-fn is_error_retryable(err: &Error) -> bool {
-  match err {
-    Error::Llm(llm_err) => llm_err.is_retryable(),
-    _ => false,
-  }
-}
-
-/// Convert a raw LLM error string into a user-friendly message.
-fn format_user_friendly_error(err: &str) -> String {
-  if err.contains("Stream timeout") || err.contains("timed out") {
-    "Connection timed out while waiting for the response. Please check your network and try again."
-      .to_string()
-  } else if err.contains("Connection lost") {
-    "The connection was interrupted. Please check your network and try again.".to_string()
-  } else if err.contains("Transport error") {
-    "A network error occurred. Please check your connection and try again.".to_string()
-  } else if err.contains("HTTP 429") {
-    "Rate limit exceeded. Please wait a moment and try again.".to_string()
-  } else if err.contains("HTTP 500")
-    || err.contains("HTTP 502")
-    || err.contains("HTTP 503")
-    || err.contains("HTTP 504")
-  {
-    "The server is temporarily unavailable. Please try again later.".to_string()
-  } else if err.contains("Parse error") {
-    "Received an invalid response from the server. Please try again.".to_string()
-  } else if err.contains("EmptyResponse") || err.contains("No response content") {
-    "The server returned an empty response. Please try again.".to_string()
-  } else if err.contains("non-retryable error") {
-    err.to_string()
-  } else {
-    format!("An error occurred: {}", err)
-  }
-}
-
-/// Check if a mid-stream `OpenAIError` is retryable.
-///
-/// Used by `handle_stream` to decide whether a stream interruption should
-/// trigger a step-level retry.
-fn is_stream_error_retryable(err: &OpenAIError) -> bool {
-  match err {
-    OpenAIError::Reqwest(reqwest_err) => {
-      reqwest_err.is_timeout() || reqwest_err.is_connect() || reqwest_err.is_request()
-    }
-    OpenAIError::StreamError(stream_err) => {
-      // KimiProvider embeds LlmError::Stream messages here.
-      // Parse errors are NOT retryable.
-      let msg = stream_err.to_string();
-      !msg.contains("parse error") && !msg.contains("Parse error")
-    }
-    _ => false,
-  }
-}
-
-#[cfg(test)]
-impl SessionHandle {
-  /// Create a test session handle with a given command sender.
-  pub fn test_new(id: String, cmd_tx: mpsc::UnboundedSender<SessionCommand>) -> Self {
-    Self { id, cmd_tx }
-  }
-}
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-  use crate::error::LlmError;
-
-  #[test]
-  fn test_session_id_format() {
-    let id = generate_session_id();
-    assert!(id.contains('-'));
-    assert!(id.contains(':'));
-  }
-
-  #[test]
-  fn test_is_error_retryable() {
-    use crate::error::StreamErrorCategory;
-
-    // --- Stream errors (→ kimi-cli APITimeoutError / APIConnectionError / APIStatusError) ---
-
-    // Timeout — retryable (→ APITimeoutError)
-    let err = Error::Llm(LlmError::Stream {
-      category: StreamErrorCategory::Timeout,
-      status_code: None,
-      message: "stream timeout".to_string(),
-    });
-    assert!(is_error_retryable(&err));
-
-    // Disconnected — retryable (→ APIConnectionError)
-    let err = Error::Llm(LlmError::Stream {
-      category: StreamErrorCategory::Disconnected,
-      status_code: None,
-      message: "connection lost".to_string(),
-    });
-    assert!(is_error_retryable(&err));
-
-    // Transport — retryable
-    let err = Error::Llm(LlmError::Stream {
-      category: StreamErrorCategory::Transport,
-      status_code: None,
-      message: "transport error".to_string(),
-    });
-    assert!(is_error_retryable(&err));
-
-    // Http with 429 — retryable (→ APIStatusError)
-    let err = Error::Llm(LlmError::Stream {
-      category: StreamErrorCategory::Http,
-      status_code: Some(429),
-      message: "rate limited".to_string(),
-    });
-    assert!(is_error_retryable(&err));
-
-    // Http with 500, 502, 503, 504 — retryable
-    for code in [500, 502, 503, 504] {
-      let err = Error::Llm(LlmError::Stream {
-        category: StreamErrorCategory::Http,
-        status_code: Some(code),
-        message: "server error".to_string(),
-      });
-      assert!(
-        is_error_retryable(&err),
-        "Stream HTTP {} should be retryable",
-        code
-      );
-    }
-
-    // Http with 400, 401, 403, 404 — NOT retryable
-    for code in [400, 401, 403, 404] {
-      let err = Error::Llm(LlmError::Stream {
-        category: StreamErrorCategory::Http,
-        status_code: Some(code),
-        message: "client error".to_string(),
-      });
-      assert!(
-        !is_error_retryable(&err),
-        "Stream HTTP {} should NOT be retryable",
-        code
-      );
-    }
-
-    // Parse — NOT retryable
-    let err = Error::Llm(LlmError::Stream {
-      category: StreamErrorCategory::Parse,
-      status_code: None,
-      message: "invalid UTF-8".to_string(),
-    });
-    assert!(!is_error_retryable(&err));
-
-    // --- EmptyResponse (→ kimi-cli APIEmptyResponseError) ---
-    let err = Error::Llm(LlmError::EmptyResponse);
-    assert!(is_error_retryable(&err));
-
-    // --- InvalidConfig — NOT retryable ---
-    let err = Error::Llm(LlmError::InvalidConfig("bad config".to_string()));
-    assert!(!is_error_retryable(&err));
-
-    // --- BuildRequest — NOT retryable ---
-    let err = Error::Llm(LlmError::BuildRequest {
-      source: OpenAIError::InvalidArgument("test".to_string()),
-    });
-    assert!(!is_error_retryable(&err));
-  }
-
-  #[test]
-  fn test_parse_ask_user_questions_valid() {
-    let json = r#"{
-      "questions": [
-        {
-          "question": "Which option?",
-          "header": "Test",
-          "options": [
-            {"label": "A", "description": "First"},
-            {"label": "B"}
-          ],
-          "multi_select": false
-        }
-      ]
-    }"#;
-    let questions = parse_ask_user_questions(json).unwrap();
-    assert_eq!(questions.len(), 1);
-    assert_eq!(questions[0].question, "Which option?");
-    assert_eq!(questions[0].header, "Test");
-    assert!(!questions[0].multi_select);
-    assert_eq!(questions[0].options.len(), 2);
-    assert_eq!(questions[0].options[0].label, "A");
-    assert_eq!(questions[0].options[0].description, "First");
-    assert_eq!(questions[0].options[1].label, "B");
-  }
-
-  #[test]
-  fn test_parse_ask_user_questions_multi_select() {
-    let json = r#"{
-      "questions": [
-        {
-          "question": "Pick colors",
-          "options": [
-            {"label": "Red"},
-            {"label": "Green"},
-            {"label": "Blue"}
-          ],
-          "multi_select": true
-        }
-      ]
-    }"#;
-    let questions = parse_ask_user_questions(json).unwrap();
-    assert_eq!(questions.len(), 1);
-    assert!(questions[0].multi_select);
-    assert_eq!(questions[0].options.len(), 3);
-  }
-
-  #[test]
-  fn test_parse_ask_user_questions_empty_questions() {
-    let json = r#"{"questions": []}"#;
-    let err = parse_ask_user_questions(json).unwrap_err();
-    assert!(err.contains("At least one question"));
-  }
-
-  #[test]
-  fn test_parse_ask_user_questions_too_many_questions() {
-    let json = r#"{
-      "questions": [
-        {"question": "Q1?", "options": [{"label": "A"}, {"label": "B"}]},
-        {"question": "Q2?", "options": [{"label": "A"}, {"label": "B"}]},
-        {"question": "Q3?", "options": [{"label": "A"}, {"label": "B"}]},
-        {"question": "Q4?", "options": [{"label": "A"}, {"label": "B"}]},
-        {"question": "Q5?", "options": [{"label": "A"}, {"label": "B"}]}
-      ]
-    }"#;
-    let err = parse_ask_user_questions(json).unwrap_err();
-    assert!(err.contains("Maximum 4 questions"));
-  }
-
-  #[test]
-  fn test_parse_ask_user_questions_too_few_options() {
-    let json = r#"{
-      "questions": [
-        {"question": "Q?", "options": [{"label": "Only"}]}
-      ]
-    }"#;
-    let err = parse_ask_user_questions(json).unwrap_err();
-    assert!(err.contains("at least 2 options"));
-  }
-
-  #[test]
-  fn test_parse_ask_user_questions_empty_option_label() {
-    let json = r#"{
-      "questions": [
-        {"question": "Q?", "options": [{"label": ""}, {"label": "B"}]}
-      ]
-    }"#;
-    let err = parse_ask_user_questions(json).unwrap_err();
-    assert!(err.contains("label cannot be empty"));
-  }
-
-  #[test]
-  fn test_parse_ask_user_question_args_roundtrip() {
-    let json = r#"{"questions": [{"question": "Q?", "options": [{"label": "A"}]}]}"#;
-    let args = parse_ask_user_question_args(json).unwrap();
-    assert_eq!(args.questions.len(), 1);
-    assert_eq!(args.questions[0].question, "Q?");
-  }
-
-  #[test]
-  fn test_parse_ask_user_questions_confirmation_defaults_to_yes_no() {
-    let json = r#"{
-      "questions": [
-        {
-          "question": "Are you sure?",
-          "confirmation": true
-        }
-      ]
-    }"#;
-    let questions = parse_ask_user_questions(json).unwrap();
-    assert_eq!(questions.len(), 1);
-    assert!(questions[0].confirmation);
-    assert_eq!(questions[0].options.len(), 2);
-    assert_eq!(questions[0].options[0].label, "Yes");
-    assert_eq!(questions[0].options[1].label, "No");
-  }
-
-  #[test]
-  fn test_parse_ask_user_questions_confirmation_ignores_provided_options() {
-    let json = r#"{
-      "questions": [
-        {
-          "question": "Proceed?",
-          "confirmation": true,
-          "options": [{"label": "Maybe"}]
-        }
-      ]
-    }"#;
-    let questions = parse_ask_user_questions(json).unwrap();
-    assert!(questions[0].confirmation);
-    // Provided options are ignored, replaced with Yes/No
-    assert_eq!(questions[0].options[0].label, "Yes");
-    assert_eq!(questions[0].options[1].label, "No");
   }
 }

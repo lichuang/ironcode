@@ -1,0 +1,438 @@
+//! StreamManager — LLM streaming with connection recovery and exponential backoff.
+
+use async_openai::error::OpenAIError;
+use async_openai::types::chat::{
+  ChatCompletionMessageToolCallChunk, ChatCompletionResponseStream, FunctionCallStream,
+};
+use futures::StreamExt;
+use log::{error, info, warn};
+use tokio::sync::mpsc;
+
+use crate::config::RetryConfig;
+use crate::error::{Error, LlmError, Result, StreamErrorCategory};
+use crate::llm::provider::LLMProvider;
+use crate::llm::types::Message;
+
+use super::SessionEvent;
+
+pub struct StreamManager {
+  provider: Box<dyn LLMProvider>,
+  retry_config: RetryConfig,
+}
+
+impl StreamManager {
+  pub fn new(provider: Box<dyn LLMProvider>, retry_config: RetryConfig) -> Self {
+    Self {
+      provider,
+      retry_config,
+    }
+  }
+
+  /// Start the stream with two-layer retry (connection recovery + exponential backoff).
+  /// Returns a receiver that the caller consumes in a select! loop.
+  pub async fn start(
+    &mut self,
+    messages: Vec<Message>,
+  ) -> Result<mpsc::UnboundedReceiver<SessionEvent>> {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let mut attempt = 0u32;
+    let max_attempts = self.retry_config.max_attempts.max(1);
+
+    while attempt < max_attempts {
+      match self.try_start_stream(messages.clone(), &tx).await {
+        Ok(()) => return Ok(rx),
+        Err((err, recovery_exhausted)) => {
+          attempt += 1;
+          let is_retryable = !recovery_exhausted && is_error_retryable(&err);
+          if !is_retryable || attempt >= max_attempts {
+            return Err(err);
+          }
+          let delay = self.retry_config.delay_for_attempt(attempt - 1);
+          warn!(
+            "Stream: attempt {}/{} failed ({}), retrying in {:?}",
+            attempt, max_attempts, err, delay
+          );
+          tokio::time::sleep(delay).await;
+        }
+      }
+    }
+    unreachable!()
+  }
+
+  async fn try_start_stream(
+    &mut self,
+    messages: Vec<Message>,
+    tx: &mpsc::UnboundedSender<SessionEvent>,
+  ) -> std::result::Result<(), (Error, bool)> {
+    let stream = match self.provider.chat_stream(messages.clone()).await {
+      Ok(s) => s,
+      Err(err) => {
+        let is_connection_error = matches!(
+          &err,
+          Error::Llm(LlmError::Stream {
+            category: StreamErrorCategory::Timeout
+              | StreamErrorCategory::Disconnected
+              | StreamErrorCategory::Transport,
+            ..
+          }) | Error::Llm(LlmError::EmptyResponse)
+        );
+
+        if is_connection_error {
+          info!(
+            "Stream: connection error, attempting immediate recovery: {}",
+            err
+          );
+          if let Error::Llm(ref llm_err) = err {
+            self.provider.on_retryable_error(llm_err).await;
+          }
+          match self.provider.chat_stream(messages).await {
+            Ok(s) => {
+              info!("Stream: connection recovery succeeded");
+              s
+            }
+            Err(retry_err) => {
+              warn!("Stream: connection recovery failed: {}", retry_err);
+              let is_still_connection = matches!(
+                &retry_err,
+                Error::Llm(LlmError::Stream {
+                  category: StreamErrorCategory::Timeout
+                    | StreamErrorCategory::Disconnected
+                    | StreamErrorCategory::Transport,
+                  ..
+                }) | Error::Llm(LlmError::EmptyResponse)
+              );
+              return Err((retry_err, is_still_connection));
+            }
+          }
+        } else {
+          return Err((err, false));
+        }
+      }
+    };
+
+    let tx = tx.clone();
+    tokio::spawn(async move {
+      handle_stream(stream, tx).await;
+    });
+    Ok(())
+  }
+}
+
+async fn handle_stream(
+  mut stream: ChatCompletionResponseStream,
+  tx: mpsc::UnboundedSender<SessionEvent>,
+) {
+  let mut buffer = String::new();
+  let mut in_thinking_mode = false;
+  let mut has_received_thinking = false;
+  let mut tool_call_buffer: Vec<ChatCompletionMessageToolCallChunk> = Vec::new();
+
+  while let Some(result) = stream.next().await {
+    match result {
+      Ok(response) => {
+        if let Some(usage) = &response.usage {
+          let _ = tx.send(SessionEvent::Usage {
+            total_tokens: usage.total_tokens,
+            prompt_tokens: usage.prompt_tokens,
+            completion_tokens: usage.completion_tokens,
+          });
+        }
+
+        for choice in &response.choices {
+          if let Some(ref tool_calls) = choice.delta.tool_calls {
+            for tool_call in tool_calls {
+              let idx = tool_call.index as usize;
+              while tool_call_buffer.len() <= idx {
+                tool_call_buffer.push(ChatCompletionMessageToolCallChunk {
+                  index: tool_call_buffer.len() as u32,
+                  id: None,
+                  r#type: None,
+                  function: None,
+                });
+              }
+              let existing = &mut tool_call_buffer[idx];
+              if let Some(ref id) = tool_call.id {
+                existing.id = Some(id.clone());
+              }
+              if let Some(ref call_type) = tool_call.r#type {
+                existing.r#type = Some(call_type.clone());
+              }
+              if let Some(ref function) = tool_call.function {
+                if existing.function.is_none() {
+                  existing.function = Some(FunctionCallStream {
+                    name: None,
+                    arguments: None,
+                  });
+                }
+                if let Some(ref existing_func) = existing.function {
+                  let mut updated_func = existing_func.clone();
+                  if let Some(ref name) = function.name {
+                    updated_func.name = Some(name.clone());
+                  }
+                  if let Some(ref args) = function.arguments {
+                    if let Some(ref existing_args) = updated_func.arguments {
+                      updated_func.arguments = Some(format!("{}{}", existing_args, args));
+                    } else {
+                      updated_func.arguments = Some(args.clone());
+                    }
+                  }
+                  existing.function = Some(updated_func);
+                }
+              }
+            }
+          }
+
+          if let Some(content) = &choice.delta.content
+            && !content.is_empty()
+          {
+            buffer.push_str(content);
+            loop {
+              if in_thinking_mode {
+                if let Some(end_pos) = buffer.find("</think>") {
+                  let thinking = buffer[..end_pos].to_string();
+                  if !thinking.is_empty() {
+                    if !has_received_thinking {
+                      has_received_thinking = true;
+                    }
+                    if tx.send(SessionEvent::ThinkingChunk(thinking)).is_err() {
+                      return;
+                    }
+                  }
+                  buffer = buffer[end_pos + 8..].to_string();
+                  in_thinking_mode = false;
+                } else {
+                  if !buffer.is_empty() {
+                    if !has_received_thinking {
+                      has_received_thinking = true;
+                    }
+                    if tx
+                      .send(SessionEvent::ThinkingChunk(buffer.clone()))
+                      .is_err()
+                    {
+                      return;
+                    }
+                    buffer.clear();
+                  }
+                  break;
+                }
+              } else if let Some(start_pos) = buffer.find("<think>") {
+                if start_pos > 0 {
+                  let before = buffer[..start_pos].to_string();
+                  if !before.is_empty() && tx.send(SessionEvent::ContentChunk(before)).is_err() {
+                    return;
+                  }
+                }
+                buffer = buffer[start_pos + 7..].to_string();
+                in_thinking_mode = true;
+              } else {
+                if !buffer.is_empty()
+                  && tx.send(SessionEvent::ContentChunk(buffer.clone())).is_err()
+                {
+                  return;
+                }
+                buffer.clear();
+                break;
+              }
+            }
+          }
+        }
+      }
+      Err(e) => {
+        error!("Stream: Stream error: {}", e);
+        let is_retryable = is_stream_error_retryable(&e);
+        let _ = tx.send(SessionEvent::StreamInterrupted {
+          error: e.to_string(),
+          is_retryable,
+        });
+        return;
+      }
+    }
+  }
+
+  if !buffer.is_empty() {
+    if in_thinking_mode {
+      let _ = tx.send(SessionEvent::ThinkingChunk(buffer));
+    } else {
+      let _ = tx.send(SessionEvent::ContentChunk(buffer));
+    }
+  }
+
+  for tool_call in tool_call_buffer {
+    if let (Some(id), Some(function)) = (tool_call.id, tool_call.function)
+      && let (Some(name), Some(arguments)) = (function.name, function.arguments)
+      && !id.is_empty()
+      && !name.is_empty()
+    {
+      let _ = tx.send(SessionEvent::ToolCallReceived {
+        id,
+        name,
+        arguments,
+      });
+    }
+  }
+
+  let _ = tx.send(SessionEvent::Completed);
+}
+
+fn is_error_retryable(err: &Error) -> bool {
+  match err {
+    Error::Llm(llm_err) => llm_err.is_retryable(),
+    _ => false,
+  }
+}
+
+pub fn format_user_friendly_error(err: &str) -> String {
+  if err.contains("Stream timeout") || err.contains("timed out") {
+    "Connection timed out while waiting for the response. Please check your network and try again."
+      .to_string()
+  } else if err.contains("Connection lost") {
+    "The connection was interrupted. Please check your network and try again.".to_string()
+  } else if err.contains("Transport error") {
+    "A network error occurred. Please check your connection and try again.".to_string()
+  } else if err.contains("HTTP 429") {
+    "Rate limit exceeded. Please wait a moment and try again.".to_string()
+  } else if err.contains("HTTP 500")
+    || err.contains("HTTP 502")
+    || err.contains("HTTP 503")
+    || err.contains("HTTP 504")
+  {
+    "The server is temporarily unavailable. Please wait a moment and try again.".to_string()
+  } else if err.contains("HTTP 401") || err.contains("HTTP 403") {
+    "Authentication failed. Please check your API key and try again.".to_string()
+  } else if err.contains("HTTP 400") {
+    "The request was invalid. Please check your input and try again.".to_string()
+  } else {
+    format!("An error occurred: {}. Please try again.", err)
+  }
+}
+
+fn is_stream_error_retryable(err: &OpenAIError) -> bool {
+  match err {
+    OpenAIError::Reqwest(e) => {
+      let msg = e.to_string().to_lowercase();
+      msg.contains("timeout")
+        || msg.contains("connection")
+        || msg.contains("reset")
+        || msg.contains("broken pipe")
+    }
+    OpenAIError::JSONDeserialize(e, _) => {
+      let msg = e.to_string().to_lowercase();
+      msg.contains("eof") || msg.contains("unexpected")
+    }
+    _ => false,
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::error::LlmError;
+
+  #[test]
+  fn test_is_error_retryable_stream_timeout() {
+    let err = Error::Llm(LlmError::Stream {
+      category: StreamErrorCategory::Timeout,
+      status_code: None,
+      message: "timeout".to_string(),
+    });
+    assert!(is_error_retryable(&err));
+  }
+
+  #[test]
+  fn test_is_error_retryable_stream_disconnected() {
+    let err = Error::Llm(LlmError::Stream {
+      category: StreamErrorCategory::Disconnected,
+      status_code: None,
+      message: "disconnected".to_string(),
+    });
+    assert!(is_error_retryable(&err));
+  }
+
+  #[test]
+  fn test_is_error_retryable_stream_transport() {
+    let err = Error::Llm(LlmError::Stream {
+      category: StreamErrorCategory::Transport,
+      status_code: None,
+      message: "transport".to_string(),
+    });
+    assert!(is_error_retryable(&err));
+  }
+
+  #[test]
+  fn test_is_error_retryable_stream_http_500() {
+    let err = Error::Llm(LlmError::Stream {
+      category: StreamErrorCategory::Http,
+      status_code: Some(500),
+      message: "500".to_string(),
+    });
+    assert!(is_error_retryable(&err));
+  }
+
+  #[test]
+  fn test_is_error_retryable_stream_http_429() {
+    let err = Error::Llm(LlmError::Stream {
+      category: StreamErrorCategory::Http,
+      status_code: Some(429),
+      message: "429".to_string(),
+    });
+    assert!(is_error_retryable(&err));
+  }
+
+  #[test]
+  fn test_is_error_retryable_stream_http_400() {
+    let err = Error::Llm(LlmError::Stream {
+      category: StreamErrorCategory::Http,
+      status_code: Some(400),
+      message: "bad request".to_string(),
+    });
+    assert!(!is_error_retryable(&err));
+  }
+
+  #[test]
+  fn test_is_error_retryable_stream_parse() {
+    let err = Error::Llm(LlmError::Stream {
+      category: StreamErrorCategory::Parse,
+      status_code: None,
+      message: "parse error".to_string(),
+    });
+    assert!(!is_error_retryable(&err));
+  }
+
+  #[test]
+  fn test_is_error_retryable_non_llm_error() {
+    let err = Error::Llm(LlmError::EmptyResponse);
+    assert!(is_error_retryable(&err));
+  }
+
+  #[test]
+  fn test_format_user_friendly_error_timeout() {
+    assert!(format_user_friendly_error("Stream timeout").contains("timed out"));
+  }
+
+  #[test]
+  fn test_format_user_friendly_error_connection_lost() {
+    assert!(format_user_friendly_error("Connection lost").contains("interrupted"));
+  }
+
+  #[test]
+  fn test_format_user_friendly_error_rate_limit() {
+    assert!(format_user_friendly_error("HTTP 429").contains("Rate limit exceeded"));
+  }
+
+  #[test]
+  fn test_format_user_friendly_error_server_error() {
+    assert!(format_user_friendly_error("HTTP 503").contains("temporarily unavailable"));
+  }
+
+  #[test]
+  fn test_format_user_friendly_error_auth_error() {
+    assert!(format_user_friendly_error("HTTP 401").contains("Authentication failed"));
+  }
+
+  #[test]
+  fn test_format_user_friendly_error_generic() {
+    let result = format_user_friendly_error("Some random error");
+    assert!(result.contains("Some random error"));
+    assert!(result.contains("Please try again"));
+  }
+}

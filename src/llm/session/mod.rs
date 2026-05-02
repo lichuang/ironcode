@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 pub mod actor;
 pub mod context;
 pub mod persistence;
+pub mod stream;
 
 pub use actor::ChatSession;
 
@@ -205,5 +206,13 @@ impl SessionHandle {
       answers,
       dismissed,
     });
+  }
+}
+
+#[cfg(test)]
+impl SessionHandle {
+  /// Create a test session handle with a given command sender.
+  pub fn test_new(id: String, cmd_tx: mpsc::UnboundedSender<SessionCommand>) -> Self {
+    Self { id, cmd_tx }
   }
 }
