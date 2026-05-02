@@ -11,7 +11,6 @@ use ratatui::{
 use crate::cli::AppData;
 use crate::cli::app::CompactionWarning;
 use crate::cli::runtime::Runtime;
-use crate::config::DEFAULT_MAX_CONTEXT_SIZE;
 use crate::utils::colors::{CRITICAL, MUTED, PRIMARY, SUBTLE, TEXT, WARNING};
 use crate::utils::token_counter::estimate_chat_messages_tokens;
 use crate::view::chat::ChatDisplayState;
@@ -103,16 +102,12 @@ impl StatusBarInfo {
     state: ChatDisplayState,
     runtime: &Runtime,
   ) -> Self {
-    let config = &runtime.config;
     // Get short session ID (first 8 characters)
     let short_id = session_id.chars().take(8).collect();
 
     // Get model name and max context size from config
-    let model_name = config.default_model.clone();
-    let max_context_size = config
-      .default_model_config()
-      .and_then(|m| m.max_context_size)
-      .unwrap_or(DEFAULT_MAX_CONTEXT_SIZE);
+    let model_name = runtime.default_model().to_string();
+    let max_context_size = runtime.max_context_size();
 
     // Calculate estimated token count from all messages
     let token_count = estimate_chat_messages_tokens(&data.chat_history);
