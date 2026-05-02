@@ -5,179 +5,34 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
   Frame,
   layout::{Constraint, Direction, Layout, Rect},
-  symbols::border,
   text::{Line, Span, Text},
-  widgets::{Block, Borders, Paragraph, Wrap},
+  widgets::{Paragraph, Wrap},
 };
 
 use crate::cli::AppData;
-use crate::cli::app::PendingQuestions;
 use crate::cli::runtime::Runtime;
 use crate::history::InputHistoryManager;
 use crate::llm::SessionHandle;
-use crate::llm::types::Message;
 use crate::tui::{FrameRequester, TARGET_FRAME_INTERVAL};
-use crate::utils::colors::{
-  BLUE, CRITICAL, GREEN, HIGHLIGHT as HIGHLIGHT_COLOR, TEXT as TEXT_COLOR, WARNING,
-};
 use crate::utils::{
-  HIGHLIGHT, MOON_FRAMES, PRIMARY, PRIMARY_BORDER, SPINNER_FRAMES, THINKING, char_display_width,
-  string_display_width,
+  HIGHLIGHT, MOON_FRAMES, PRIMARY, SPINNER_FRAMES, char_display_width, string_display_width,
 };
 use crate::view::chat::input::InputComponent;
-use crate::view::diff::{
-  diff_preview_compact_height, diff_render_height, render_diff_panel, render_diff_preview_compact,
-};
+use crate::view::diff::diff_render_height;
 use crate::view::{STATUS_BAR_HEIGHT, StatusBarInfo, View, render_status_bar};
 
+pub mod approval;
 pub mod input;
+pub mod messages;
+pub mod questions;
+
+pub use messages::{
+  ChatMessage, StreamingChunk, SystemMessageLevel, ToolCallStatus, llm_messages_to_chat_history,
+};
 /// Error when creating ChatView without a valid session
 #[derive(Debug)]
 #[allow(dead_code)]
 pub struct NoSessionError;
-
-/// Status of a tool call
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolCallStatus {
-  /// Tool call is being executed
-  Running,
-  /// Tool call completed successfully
-  Completed,
-  #[allow(dead_code)]
-  /// Tool call failed
-  Failed,
-}
-
-/// A chunk of streaming content from LLM
-#[derive(Debug, Clone)]
-pub enum StreamingChunk {
-  /// Normal response content
-  Normal(String),
-  /// Thinking/reasoning content
-  Thinking(String),
-  /// Tool call indicator
-  ToolCall {
-    /// Tool name
-    name: String,
-    /// Tool arguments (JSON)
-    arguments: String,
-    /// Current status
-    status: ToolCallStatus,
-  },
-}
-
-#[allow(dead_code)]
-impl StreamingChunk {
-  /// Get the content of the chunk
-  pub fn content(&self) -> &str {
-    match self {
-      StreamingChunk::Normal(s) => s,
-      StreamingChunk::Thinking(s) => s,
-      StreamingChunk::ToolCall { .. } => "",
-    }
-  }
-
-  /// Check if this is a thinking chunk
-  pub fn is_thinking(&self) -> bool {
-    matches!(self, StreamingChunk::Thinking(_))
-  }
-
-  #[allow(dead_code)]
-  /// Check if this is a tool call chunk
-  pub fn is_tool_call(&self) -> bool {
-    matches!(self, StreamingChunk::ToolCall { .. })
-  }
-}
-
-/// A message in the chat history
-#[derive(Debug, Clone)]
-pub enum ChatMessage {
-  /// User message
-  User { content: String },
-  /// AI assistant response (with optional thinking content)
-  Assistant {
-    /// The main response content
-    content: String,
-    /// The thinking/reasoning content (if any)
-    thinking_content: Option<String>,
-  },
-  /// Tool call result
-  ToolCall {
-    /// Tool name
-    name: String,
-    /// Tool arguments (JSON)
-    arguments: String,
-    /// Tool execution output (e.g., diff or success message)
-    output: Option<String>,
-  },
-  /// System notification (e.g., compaction warning)
-  System {
-    /// The notification content
-    content: String,
-    /// Notification level (info, warning, error)
-    level: SystemMessageLevel,
-  },
-}
-
-/// Level for system messages
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SystemMessageLevel {
-  /// Informational message
-  Info,
-  /// Warning message
-  Warning,
-  /// Error/Critical message
-  Error,
-}
-
-/// Convert LLM messages into UI chat history.
-///
-/// This is used when resuming a persisted session to rebuild the visual chat log.
-pub fn llm_messages_to_chat_history(messages: &[Message]) -> Vec<ChatMessage> {
-  use crate::llm::types::Role;
-
-  let mut history = Vec::new();
-  for msg in messages {
-    match msg.role {
-      Role::System => {}
-      Role::User => {
-        history.push(ChatMessage::User {
-          content: msg.content.clone(),
-        });
-      }
-      Role::Assistant => {
-        let content = msg.content.clone();
-        let (thinking_content, content) = if let Some(start) = content.find("<think>")
-          && let Some(end) = content.find("</think>")
-        {
-          let think = content[start + 7..end].to_string();
-          let after = content[end + 8..].to_string();
-          (Some(think), after)
-        } else {
-          (None, content)
-        };
-        if !content.is_empty() || thinking_content.is_some() {
-          history.push(ChatMessage::Assistant {
-            content,
-            thinking_content,
-          });
-        }
-      }
-      Role::Tool => {
-        // Tool results are not rendered directly in the chat history;
-        // the corresponding tool call indicator is added via ToolCallCompleted events.
-      }
-    }
-  }
-  history
-}
-
-impl ChatMessage {
-  /// Check if this is a user message
-  pub fn is_user(&self) -> bool {
-    matches!(self, ChatMessage::User { .. })
-  }
-}
 
 /// Chat display state machine
 ///
@@ -389,84 +244,10 @@ impl ChatView {
     MOON_FRAMES[self.moon_frame % MOON_FRAMES.len()]
   }
 
-  /// Calculate display width of a string (CJK characters are width 2)
-  fn display_width(s: &str) -> usize {
-    string_display_width(s)
-  }
-
-  /// Wrap text into lines based on available width
-  fn wrap_text(text: &str, available_width: u16) -> Vec<String> {
-    if available_width == 0 {
-      return vec![text.to_string()];
-    }
-    let available = available_width as usize;
-    let mut lines: Vec<String> = vec![];
-    let mut current_line = String::new();
-    let mut current_width = 0;
-
-    for c in text.chars() {
-      let char_width = char_display_width(c);
-
-      if c == '\n' {
-        lines.push(current_line);
-        current_line = String::new();
-        current_width = 0;
-      } else if current_width + char_width > available {
-        lines.push(current_line);
-        current_line = c.to_string();
-        current_width = char_width;
-      } else {
-        current_line.push(c);
-        current_width += char_width;
-      }
-    }
-
-    if !current_line.is_empty() {
-      lines.push(current_line);
-    }
-
-    lines
-  }
-
-  /// Calculate the number of lines needed to display text with given width
-  fn calculate_line_count(text: &str, available_width: u16) -> usize {
-    Self::wrap_text(text, available_width).len().max(1)
-  }
-
-  /// Calculate the number of lines needed to display text with prefix (like prompt) and given width
-  fn calculate_line_count_with_prefix(
-    text: &str,
-    prefix_width: usize,
-    available_width: u16,
-  ) -> usize {
-    if available_width == 0 {
-      return 1;
-    }
-    let available = available_width as usize;
-    let mut lines = 1;
-    let mut current_width = prefix_width;
-
-    for c in text.chars() {
-      let char_width = char_display_width(c);
-
-      if c == '\n' {
-        lines += 1;
-        current_width = 0;
-      } else if current_width + char_width > available {
-        lines += 1;
-        current_width = char_width;
-      } else {
-        current_width += char_width;
-      }
-    }
-
-    lines
-  }
-
   /// Calculate the number of lines needed to display prompt + text with given width
   fn calculate_input_line_count(&self, text: &str, available_width: u16) -> usize {
-    let prompt_width = Self::display_width(&self.full_prompt());
-    Self::calculate_line_count_with_prefix(text, prompt_width, available_width)
+    let prompt_width = string_display_width(&self.full_prompt());
+    messages::calculate_line_count_with_prefix(text, prompt_width, available_width)
   }
 
   /// Find cursor position (line number and column within that line)
@@ -475,7 +256,7 @@ impl ChatView {
       return (0, 0);
     }
     let available = available_width as usize;
-    let prompt_width = Self::display_width(&self.full_prompt());
+    let prompt_width = string_display_width(&self.full_prompt());
 
     let mut line = 0;
     let mut col = prompt_width; // Start after prompt
@@ -532,198 +313,6 @@ impl ChatView {
 
     let widget = Paragraph::new(text).wrap(Wrap { trim: false });
     f.render_widget(widget, area);
-  }
-
-  /// Render a message in a box
-  fn render_message_box(&self, f: &mut Frame, area: Rect, message: &str) {
-    let block = Block::default()
-      .borders(Borders::ALL)
-      .border_set(border::ROUNDED)
-      .border_style(*PRIMARY_BORDER);
-
-    let inner_area = block.inner(area);
-
-    // Render the border block
-    f.render_widget(block, area);
-
-    // Manually wrap text to ensure consistency with line count calculation
-    let inner_width = inner_area.width;
-    let wrapped_lines = Self::wrap_text(message, inner_width);
-
-    // Convert to Lines for rendering
-    let lines: Vec<Line> = wrapped_lines.into_iter().map(Line::from).collect();
-
-    let text = Paragraph::new(Text::from(lines));
-    f.render_widget(text, inner_area);
-  }
-
-  /// Render the moon animation
-  fn render_moon_animation(&self, f: &mut Frame, area: Rect) {
-    let moon = self.current_moon();
-    let text = Text::from(vec![Line::from(vec![
-      Span::raw("  "),
-      Span::styled(moon.to_string(), *HIGHLIGHT),
-    ])]);
-
-    let widget = Paragraph::new(text);
-    f.render_widget(widget, area);
-  }
-
-  /// Render the thinking indicator ("Thinking..." with spinner)
-  fn render_thinking_indicator(&self, f: &mut Frame, area: Rect) {
-    let spinner = self.current_spinner();
-    let text = Text::from(vec![Line::from(vec![
-      Span::raw("  "),
-      Span::styled(spinner.to_string(), *THINKING),
-      Span::raw(" "),
-      Span::styled("Thinking...", *THINKING),
-    ])]);
-
-    let widget = Paragraph::new(text);
-    f.render_widget(widget, area);
-  }
-
-  /// Render AI response as plain text (without box)
-  fn render_ai_response(&self, f: &mut Frame, area: Rect, response: &str) {
-    let wrapped_lines = Self::wrap_text(response, area.width);
-    let lines: Vec<Line> = wrapped_lines.into_iter().map(Line::from).collect();
-    let text = Paragraph::new(Text::from(lines));
-    f.render_widget(text, area);
-  }
-
-  /// Render thinking content with grey italic style
-  fn render_thinking_content(&self, f: &mut Frame, area: Rect, content: &str) {
-    let wrapped_lines = Self::wrap_text(content, area.width);
-    let lines: Vec<Line> = wrapped_lines
-      .into_iter()
-      .map(|line| Line::from(vec![Span::styled(line, *THINKING)]))
-      .collect();
-    let text = Paragraph::new(Text::from(lines));
-    f.render_widget(text, area);
-  }
-
-  /// Render the structured questions panel for AskUserQuestion
-  fn render_questions_panel(&self, f: &mut Frame, area: Rect, pq: &PendingQuestions) {
-    use ratatui::style::{Modifier, Style};
-
-    let block = Block::default()
-      .title("❓ Questions")
-      .borders(Borders::ALL)
-      .border_style(Style::default().fg(BLUE));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    let mut lines: Vec<Line> = Vec::new();
-
-    for (q_idx, q) in pq.questions.iter().enumerate() {
-      let is_current = q_idx == pq.current_question_idx;
-      let _is_answered = q_idx < pq.answers.len() && !pq.answers[q_idx].is_empty();
-
-      // Header
-      if !q.header.is_empty() {
-        lines.push(Line::from(vec![Span::styled(
-          format!("[{}]", q.header),
-          Style::default()
-            .fg(HIGHLIGHT_COLOR)
-            .add_modifier(Modifier::BOLD),
-        )]));
-      }
-
-      // Question text
-      let q_style = if is_current {
-        Style::default().fg(TEXT_COLOR).add_modifier(Modifier::BOLD)
-      } else {
-        Style::default().fg(TEXT_COLOR)
-      };
-      lines.push(Line::from(vec![Span::styled(
-        format!("{}.", q.question),
-        q_style,
-      )]));
-
-      // Options
-      if q.confirmation {
-        // Compact confirmation dialog: [y] Yes  [n] No
-        let yes_style = if is_current {
-          Style::default().fg(GREEN).add_modifier(Modifier::BOLD)
-        } else {
-          Style::default().fg(TEXT_COLOR)
-        };
-        let no_style = if is_current {
-          Style::default().fg(CRITICAL).add_modifier(Modifier::BOLD)
-        } else {
-          Style::default().fg(TEXT_COLOR)
-        };
-        lines.push(Line::from(vec![
-          Span::styled("[y] ", yes_style),
-          Span::styled("Yes  ", yes_style),
-          Span::styled("[n] ", no_style),
-          Span::styled("No", no_style),
-        ]));
-      } else {
-        for (opt_idx, opt) in q.options.iter().enumerate() {
-          let is_selected = is_current && pq.selected_option_idx == opt_idx;
-          let is_checked = if q_idx < pq.answers.len() {
-            pq.answers[q_idx].contains(&opt_idx)
-          } else {
-            false
-          };
-
-          let prefix = if q.multi_select {
-            if is_checked { "[x] " } else { "[ ] " }
-          } else if is_selected {
-            "> "
-          } else {
-            "  "
-          };
-
-          let label_style = if is_selected && is_current {
-            Style::default().fg(BLUE).add_modifier(Modifier::BOLD)
-          } else if is_checked {
-            Style::default().fg(GREEN)
-          } else {
-            Style::default().fg(TEXT_COLOR)
-          };
-
-          let mut spans = vec![
-            Span::styled(prefix, label_style),
-            Span::styled(&opt.label, label_style),
-          ];
-
-          if !opt.description.is_empty() {
-            spans.push(Span::styled(
-              format!(" - {}", opt.description),
-              Style::default().fg(TEXT_COLOR),
-            ));
-          }
-
-          lines.push(Line::from(spans));
-        }
-      }
-
-      // Spacing between questions
-      if q_idx + 1 < pq.questions.len() {
-        lines.push(Line::from(""));
-      }
-    }
-
-    // Hint line
-    if let Some(q) = pq.questions.get(pq.current_question_idx) {
-      let hint = if q.confirmation {
-        "[y] yes  [n] no  [q] dismiss"
-      } else if q.multi_select {
-        "[Space] toggle  [Enter] confirm  [q] dismiss"
-      } else {
-        "[Enter] confirm  [1-4] quick select  [q] dismiss"
-      };
-      lines.push(Line::from(vec![Span::styled(
-        hint,
-        Style::default().fg(TEXT_COLOR),
-      )]));
-    }
-
-    let text = Text::from(lines);
-    let paragraph = Paragraph::new(text).wrap(Wrap { trim: true });
-    f.render_widget(paragraph, inner);
   }
 
   /// Update status bar info with current state
@@ -1106,7 +695,7 @@ impl View for ChatView {
           // User message: prompt line + box
           let prompt_lines = self.calculate_input_line_count(content, available_width);
           constraints.push(Constraint::Length(prompt_lines as u16));
-          let box_content_lines = Self::calculate_line_count(content, box_inner_width);
+          let box_content_lines = messages::calculate_line_count(content, box_inner_width);
           let box_height = box_content_lines + 2; // +2 for top and bottom borders
           constraints.push(Constraint::Length(box_height as u16));
         }
@@ -1116,10 +705,10 @@ impl View for ChatView {
         } => {
           // AI message: thinking content (if any) + main content
           if let Some(thinking) = thinking_content {
-            let thinking_lines = Self::calculate_line_count(thinking, available_width);
+            let thinking_lines = messages::calculate_line_count(thinking, available_width);
             constraints.push(Constraint::Length(thinking_lines as u16));
           }
-          let content_lines = Self::calculate_line_count(content, available_width);
+          let content_lines = messages::calculate_line_count(content, available_width);
           constraints.push(Constraint::Length(content_lines as u16));
         }
         ChatMessage::ToolCall {
@@ -1129,7 +718,7 @@ impl View for ChatView {
         } => {
           // Tool call: showing tool name, arguments, and optional diff panel
           let tool_text = format!("• Used {}({})", name, arguments);
-          let mut lines = Self::calculate_line_count(&tool_text, available_width);
+          let mut lines = messages::calculate_line_count(&tool_text, available_width);
           if let Some(out) = output {
             lines += diff_render_height(out);
           }
@@ -1137,7 +726,7 @@ impl View for ChatView {
         }
         ChatMessage::System { content, .. } => {
           // System message: single line notification
-          let lines = Self::calculate_line_count(content, available_width);
+          let lines = messages::calculate_line_count(content, available_width);
           constraints.push(Constraint::Length(lines.max(1) as u16));
         }
       }
@@ -1159,7 +748,7 @@ impl View for ChatView {
       let total_lines: usize = data
         .streaming_response
         .iter()
-        .map(|c| Self::calculate_line_count(c.content(), available_width))
+        .map(|c| messages::calculate_line_count(c.content(), available_width))
         .sum();
       if total_lines > 0 {
         constraints.push(Constraint::Length(total_lines as u16));
@@ -1168,12 +757,7 @@ impl View for ChatView {
 
     // Approval prompt (if pending)
     let approval_height = if let Some(ref approval) = data.pending_approval {
-      let diff_lines = approval
-        .diff_preview
-        .as_ref()
-        .map(|d| diff_preview_compact_height(d))
-        .unwrap_or(0);
-      (2 + diff_lines).min(20) as u16
+      approval::ApprovalPanel::height(approval)
     } else {
       0
     };
@@ -1183,17 +767,7 @@ impl View for ChatView {
 
     // Structured questions panel (if pending)
     let question_height = if let Some(ref pq) = data.pending_questions {
-      let mut h = 3; // border + title + padding
-      for q in &pq.questions {
-        if !q.header.is_empty() {
-          h += 1;
-        }
-        h += Self::calculate_line_count(&q.question, available_width.saturating_sub(4));
-        h += q.options.len();
-        h += 1; // spacing between questions
-      }
-      h += 1; // hint line
-      h.min(30) as u16
+      questions::QuestionsPanel::height(pq, available_width)
     } else {
       0
     };
@@ -1213,18 +787,18 @@ impl View for ChatView {
     }
 
     // Add remaining space
-    let prompt_width = Self::display_width(&self.full_prompt());
+    let prompt_width = string_display_width(&self.full_prompt());
     let mut total_fixed_height: usize = data
       .chat_history
       .iter()
       .map(|msg| match msg {
         ChatMessage::User { content } => {
-          Self::calculate_line_count_with_prefix(content, prompt_width, available_width)
-            + Self::calculate_line_count(content, box_inner_width)
+          messages::calculate_line_count_with_prefix(content, prompt_width, available_width)
+            + messages::calculate_line_count(content, box_inner_width)
             + 2
         }
         ChatMessage::Assistant { content, .. } => {
-          Self::calculate_line_count(content, available_width)
+          messages::calculate_line_count(content, available_width)
         }
         ChatMessage::ToolCall {
           name,
@@ -1233,9 +807,11 @@ impl View for ChatView {
         } => {
           let tool_text = format!("• Used {}({})", name, arguments);
           let output_lines = output.as_ref().map(|o| o.lines().count()).unwrap_or(0);
-          Self::calculate_line_count(&tool_text, available_width) + output_lines
+          messages::calculate_line_count(&tool_text, available_width) + output_lines
         }
-        ChatMessage::System { content, .. } => Self::calculate_line_count(content, available_width),
+        ChatMessage::System { content, .. } => {
+          messages::calculate_line_count(content, available_width)
+        }
       })
       .sum::<usize>();
     // Add moon animation height if in Animating state
@@ -1253,32 +829,17 @@ impl View for ChatView {
       let chunks_height: usize = data
         .streaming_response
         .iter()
-        .map(|c| Self::calculate_line_count(c.content(), available_width))
+        .map(|c| messages::calculate_line_count(c.content(), available_width))
         .sum();
       total_fixed_height += chunks_height;
     }
     // Add approval prompt height if pending
     if let Some(ref approval) = data.pending_approval {
-      let diff_lines = approval
-        .diff_preview
-        .as_ref()
-        .map(|d| diff_preview_compact_height(d))
-        .unwrap_or(0);
-      total_fixed_height += 2 + diff_lines;
+      total_fixed_height += approval::ApprovalPanel::height(approval) as usize;
     }
     // Add question panel height if pending
     if let Some(ref pq) = data.pending_questions {
-      let mut h = 3;
-      for q in &pq.questions {
-        if !q.header.is_empty() {
-          h += 1;
-        }
-        h += Self::calculate_line_count(&q.question, available_width.saturating_sub(4));
-        h += q.options.len();
-        h += 1;
-      }
-      h += 1;
-      total_fixed_height += h.min(30);
+      total_fixed_height += questions::QuestionsPanel::height(pq, available_width) as usize;
     }
     // Add spinner line height if in WaitingInput state
     if self.state == ChatDisplayState::WaitingInput {
@@ -1310,7 +871,7 @@ impl View for ChatView {
             chunk_idx += 1;
           }
           if chunk_idx < chunks.len() {
-            self.render_message_box(f, chunks[chunk_idx], content);
+            messages::render_message_box(f, chunks[chunk_idx], content);
             chunk_idx += 1;
           }
         }
@@ -1322,11 +883,11 @@ impl View for ChatView {
           if let Some(thinking) = thinking_content
             && chunk_idx < chunks.len()
           {
-            self.render_thinking_content(f, chunks[chunk_idx], thinking);
+            messages::render_thinking_content(f, chunks[chunk_idx], thinking);
             chunk_idx += 1;
           }
           if chunk_idx < chunks.len() {
-            self.render_ai_response(f, chunks[chunk_idx], content);
+            messages::render_ai_response(f, chunks[chunk_idx], content);
             chunk_idx += 1;
           }
         }
@@ -1335,67 +896,14 @@ impl View for ChatView {
           arguments,
           output,
         } => {
-          // Tool call message: render as "• Used ToolName(Params)" with colors:
-          // • - green, Used - white, ToolName - blue, Params - yellow
-          // If output contains a diff, render it as a bordered panel with line numbers.
           if chunk_idx < chunks.len() {
-            use ratatui::style::{Modifier, Style};
-            let area = chunks[chunk_idx];
-            if let Some(out) = output {
-              let layout = ratatui::layout::Layout::default()
-                .direction(ratatui::layout::Direction::Vertical)
-                .constraints([Constraint::Length(1), Constraint::Min(0)])
-                .split(area);
-
-              // Render title line
-              let title_text = Text::from(vec![Line::from(vec![
-                Span::styled(
-                  "• ",
-                  Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled("Used ", Style::default().fg(TEXT_COLOR)),
-                Span::styled(name, Style::default().fg(BLUE).add_modifier(Modifier::BOLD)),
-                Span::styled("(", Style::default().fg(TEXT_COLOR)),
-                Span::styled(arguments, Style::default().fg(HIGHLIGHT_COLOR)),
-                Span::styled(")", Style::default().fg(TEXT_COLOR)),
-              ])]);
-              f.render_widget(Paragraph::new(title_text), layout[0]);
-
-              // Render diff panel
-              render_diff_panel(f, layout[1], out);
-            } else {
-              let text = Text::from(vec![Line::from(vec![
-                Span::styled(
-                  "• ",
-                  Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled("Used ", Style::default().fg(TEXT_COLOR)),
-                Span::styled(name, Style::default().fg(BLUE).add_modifier(Modifier::BOLD)),
-                Span::styled("(", Style::default().fg(TEXT_COLOR)),
-                Span::styled(arguments, Style::default().fg(HIGHLIGHT_COLOR)),
-                Span::styled(")", Style::default().fg(TEXT_COLOR)),
-              ])]);
-              let widget = Paragraph::new(text);
-              f.render_widget(widget, area);
-            }
+            messages::render_tool_call(f, chunks[chunk_idx], name, arguments, output.as_deref());
             chunk_idx += 1;
           }
         }
         ChatMessage::System { content, level } => {
-          // System notification: render with appropriate color based on level
           if chunk_idx < chunks.len() {
-            use ratatui::style::{Modifier, Style};
-            let color = match level {
-              SystemMessageLevel::Info => HIGHLIGHT_COLOR,
-              SystemMessageLevel::Warning => WARNING,
-              SystemMessageLevel::Error => CRITICAL,
-            };
-            let text = Text::from(vec![Line::from(vec![Span::styled(
-              content.clone(),
-              Style::default().fg(color).add_modifier(Modifier::BOLD),
-            )])]);
-            let widget = Paragraph::new(text).alignment(ratatui::layout::Alignment::Center);
-            f.render_widget(widget, chunks[chunk_idx]);
+            messages::render_system_message(f, chunks[chunk_idx], content, *level);
             chunk_idx += 1;
           }
         }
@@ -1404,13 +912,13 @@ impl View for ChatView {
 
     // Render moon animation if in Animating state
     if self.state == ChatDisplayState::Animating && chunk_idx < chunks.len() {
-      self.render_moon_animation(f, chunks[chunk_idx]);
+      messages::render_moon_animation(f, chunks[chunk_idx], self.current_moon());
       chunk_idx += 1;
     }
 
     // Render thinking indicator if in Thinking state
     if self.state == ChatDisplayState::Thinking && chunk_idx < chunks.len() {
-      self.render_thinking_indicator(f, chunks[chunk_idx]);
+      messages::render_thinking_indicator(f, chunks[chunk_idx], self.current_spinner());
       chunk_idx += 1;
     }
 
@@ -1449,9 +957,9 @@ impl View for ChatView {
       for (is_thinking, content) in combined {
         if chunk_idx < chunks.len() && !content.is_empty() {
           if is_thinking {
-            self.render_thinking_content(f, chunks[chunk_idx], &content);
+            messages::render_thinking_content(f, chunks[chunk_idx], &content);
           } else {
-            self.render_ai_response(f, chunks[chunk_idx], &content);
+            messages::render_ai_response(f, chunks[chunk_idx], &content);
           }
           chunk_idx += 1;
         }
@@ -1462,7 +970,7 @@ impl View for ChatView {
     if let Some(ref pq) = data.pending_questions
       && chunk_idx < chunks.len()
     {
-      self.render_questions_panel(f, chunks[chunk_idx], pq);
+      questions::QuestionsPanel::render(f, chunks[chunk_idx], pq);
       chunk_idx += 1;
     }
 
@@ -1470,85 +978,7 @@ impl View for ChatView {
     if let Some(ref approval) = data.pending_approval
       && chunk_idx < chunks.len()
     {
-      use ratatui::style::{Modifier, Style};
-      let area = chunks[chunk_idx];
-
-      if let Some(ref diff) = approval.diff_preview {
-        let layout = ratatui::layout::Layout::default()
-          .direction(ratatui::layout::Direction::Vertical)
-          .constraints([Constraint::Length(2), Constraint::Min(0)])
-          .split(area);
-
-        // Render approval header
-        let header_lines = vec![
-          Line::from(vec![
-            Span::styled(
-              "⏸ ",
-              Style::default().fg(WARNING).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-              format!("{} requires approval", approval.name),
-              Style::default().fg(TEXT_COLOR).add_modifier(Modifier::BOLD),
-            ),
-          ]),
-          Line::from(vec![
-            Span::styled(
-              "[y] ",
-              Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("approve  ", Style::default().fg(TEXT_COLOR)),
-            Span::styled(
-              "[n] ",
-              Style::default().fg(CRITICAL).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("deny  ", Style::default().fg(TEXT_COLOR)),
-            Span::styled(
-              "[a] ",
-              Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("allow session", Style::default().fg(TEXT_COLOR)),
-          ]),
-        ];
-        let text = Text::from(header_lines);
-        let widget = Paragraph::new(text).alignment(ratatui::layout::Alignment::Center);
-        f.render_widget(widget, layout[0]);
-
-        // Render compact diff preview
-        render_diff_preview_compact(f, layout[1], diff);
-      } else {
-        let lines = vec![
-          Line::from(vec![
-            Span::styled(
-              "⏸ ",
-              Style::default().fg(WARNING).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-              format!("{} requires approval", approval.name),
-              Style::default().fg(TEXT_COLOR).add_modifier(Modifier::BOLD),
-            ),
-          ]),
-          Line::from(vec![
-            Span::styled(
-              "[y] ",
-              Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("approve  ", Style::default().fg(TEXT_COLOR)),
-            Span::styled(
-              "[n] ",
-              Style::default().fg(CRITICAL).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("deny  ", Style::default().fg(TEXT_COLOR)),
-            Span::styled(
-              "[a] ",
-              Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("allow session", Style::default().fg(TEXT_COLOR)),
-          ]),
-        ];
-        let text = Text::from(lines);
-        let widget = Paragraph::new(text).alignment(ratatui::layout::Alignment::Center);
-        f.render_widget(widget, area);
-      }
+      approval::ApprovalPanel::render(f, chunks[chunk_idx], approval);
       chunk_idx += 1;
     }
 
