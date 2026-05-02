@@ -1,5 +1,4 @@
 use std::env;
-use std::mem::take;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -25,11 +24,13 @@ use crate::utils::{
   HIGHLIGHT, MOON_FRAMES, PRIMARY, PRIMARY_BORDER, SPINNER_FRAMES, THINKING, char_display_width,
   string_display_width,
 };
+use crate::view::chat::input::InputComponent;
 use crate::view::diff::{
   diff_preview_compact_height, diff_render_height, render_diff_panel, render_diff_preview_compact,
 };
 use crate::view::{STATUS_BAR_HEIGHT, StatusBarInfo, View, render_status_bar};
 
+pub mod input;
 /// Error when creating ChatView without a valid session
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -199,10 +200,8 @@ pub enum ChatDisplayState {
 
 /// Chat view state
 pub struct ChatView {
-  /// Current input text
-  pub input: String,
-  /// Cursor position in the input (character index, not byte index)
-  pub cursor_position: usize,
+  /// Input component managing text, cursor, and history
+  pub input: InputComponent,
   /// Prompt string (username@directory)
   pub prompt: String,
   /// Frame requester for scheduling animations
@@ -221,8 +220,6 @@ pub struct ChatView {
   state: ChatDisplayState,
   /// Session handle for sending messages directly to LLM
   session_handle: SessionHandle,
-  /// Input history manager
-  history: InputHistoryManager,
   /// Status bar info (reused across draws)
   status_bar_info: StatusBarInfo,
 }
@@ -268,8 +265,7 @@ impl ChatView {
     let status_bar_info = StatusBarInfo::from_app_data(data, &session_handle.id, state, runtime);
 
     Self {
-      input: String::new(),
-      cursor_position: 0,
+      input: InputComponent::new(InputHistoryManager::with_config(runtime)),
       prompt,
       frame_requester: None,
       animation_enabled: true,
@@ -279,7 +275,6 @@ impl ChatView {
       moon_frame: 0,
       state,
       session_handle,
-      history: InputHistoryManager::with_config(runtime),
       status_bar_info,
     }
   }
@@ -352,93 +347,14 @@ impl ChatView {
     format!("{} {} ", self.prompt, self.current_spinner())
   }
 
-  /// Get byte position from character position
-  fn char_pos_to_byte_pos(&self, char_pos: usize) -> usize {
-    self
-      .input
-      .char_indices()
-      .nth(char_pos)
-      .map(|(i, _)| i)
-      .unwrap_or(self.input.len())
-  }
-
   /// Handle character input
   pub fn insert_char(&mut self, c: char) {
-    let byte_pos = self.char_pos_to_byte_pos(self.cursor_position);
-    self.input.insert(byte_pos, c);
-    self.cursor_position += 1;
-  }
-
-  /// Handle backspace
-  pub fn backspace(&mut self) {
-    if self.cursor_position > 0 {
-      let byte_pos = self.char_pos_to_byte_pos(self.cursor_position - 1);
-      self.input.remove(byte_pos);
-      self.cursor_position -= 1;
-    }
-  }
-
-  /// Handle delete
-  pub fn delete(&mut self) {
-    if self.cursor_position < self.input.chars().count() {
-      let byte_pos = self.char_pos_to_byte_pos(self.cursor_position);
-      self.input.remove(byte_pos);
-    }
-  }
-
-  /// Move cursor left
-  pub fn move_cursor_left(&mut self) {
-    if self.cursor_position > 0 {
-      self.cursor_position -= 1;
-    }
-  }
-
-  /// Move cursor right
-  pub fn move_cursor_right(&mut self) {
-    if self.cursor_position < self.input.chars().count() {
-      self.cursor_position += 1;
-    }
-  }
-
-  /// Move cursor to start
-  pub fn move_cursor_home(&mut self) {
-    self.cursor_position = 0;
-  }
-
-  /// Move cursor to end
-  pub fn move_cursor_end(&mut self) {
-    self.cursor_position = self.input.chars().count();
-  }
-
-  /// Navigate to previous (older) history entry
-  fn navigate_up(&mut self) {
-    if self.history.should_navigate(&self.input)
-      && let Some(entry) = self.history.navigate_up(&self.input)
-    {
-      self.input = entry.text.clone();
-      self.cursor_position = self.input.chars().count();
-    }
-  }
-
-  /// Navigate to next (newer) history entry
-  fn navigate_down(&mut self) {
-    // Check if we were browsing before navigation
-    let was_browsing = self.history.is_browsing();
-
-    if let Some(entry) = self.history.navigate_down() {
-      self.input = entry.text.clone();
-      self.cursor_position = self.input.chars().count();
-    } else if was_browsing {
-      // navigate_down returned None and we were browsing - this means we exited browsing mode
-      // Restore original input
-      self.input = self.history.original_input().to_string();
-      self.cursor_position = self.input.chars().count();
-    }
+    self.input.insert_char(c);
   }
 
   /// Save current input to history
   fn save_to_history(&mut self) {
-    self.history.record_entry(&self.input);
+    self.input.save_to_history();
   }
 
   /// Submit the current input as a message
@@ -450,12 +366,12 @@ impl ChatView {
       // Save input to history before submitting
       self.save_to_history();
 
-      let message = take(&mut self.input);
+      let message = self.input.take_text();
       // Add user message to chat history
       data.chat_history.push(ChatMessage::User {
         content: message.clone(),
       });
-      self.cursor_position = 0;
+      self.input.move_cursor_home();
 
       // Send message directly to LLM via SessionHandle
       let preview: String = message.chars().take(50).collect();
@@ -565,8 +481,8 @@ impl ChatView {
     let mut col = prompt_width; // Start after prompt
     let mut current_line_width = prompt_width;
 
-    for (idx, c) in self.input.chars().enumerate() {
-      if idx >= self.cursor_position {
+    for (idx, c) in self.input.text().chars().enumerate() {
+      if idx >= self.input.cursor() {
         break;
       }
 
@@ -1030,31 +946,31 @@ impl View for ChatView {
         }
       }
       KeyCode::Up => {
-        self.navigate_up();
+        self.input.navigate_up();
       }
       KeyCode::Down => {
-        self.navigate_down();
+        self.input.navigate_down();
       }
       KeyCode::Backspace => {
-        self.backspace();
+        self.input.backspace();
       }
       KeyCode::Delete => {
-        self.delete();
+        self.input.delete();
       }
       KeyCode::Left => {
-        self.move_cursor_left();
+        self.input.move_cursor_left();
       }
       KeyCode::Right => {
-        self.move_cursor_right();
+        self.input.move_cursor_right();
       }
       KeyCode::Home => {
-        self.move_cursor_home();
+        self.input.move_cursor_home();
       }
       KeyCode::End => {
-        self.move_cursor_end();
+        self.input.move_cursor_end();
       }
       KeyCode::Char(c) => {
-        self.insert_char(c);
+        self.input.insert_char(c);
       }
       _ => {}
     }
@@ -1172,7 +1088,7 @@ impl View for ChatView {
     // Calculate input height (dynamic based on content, including prompt width)
     // No height limit - content will wrap naturally based on available width
     let input_height = self
-      .calculate_input_line_count(&self.input, available_width)
+      .calculate_input_line_count(self.input.text(), available_width)
       .max(1);
 
     // Calculate layout:
@@ -1649,7 +1565,7 @@ impl View for ChatView {
       && chunk_idx < chunks.len()
       && !self.input.is_empty()
     {
-      self.render_input_line(f, chunks[chunk_idx], &self.input, true);
+      self.render_input_line(f, chunks[chunk_idx], self.input.text(), true);
 
       // Set cursor position
       let (cursor_line, cursor_col) = self.find_cursor_position(available_width);
