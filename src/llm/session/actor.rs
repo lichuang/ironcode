@@ -56,6 +56,7 @@ pub(crate) fn generate_session_id() -> String {
 }
 
 use super::context::Context;
+use super::persistence::SessionPersistence;
 use super::{Question, QuestionOption, SessionCommand, SessionEvent, SessionHandle};
 
 /// Internal state of the session actor
@@ -86,8 +87,8 @@ struct SessionActor {
   cwd: PathBuf,
   /// Precise token count from API usage (if available)
   precise_token_count: Option<u32>,
-  /// Session store for persistence
-  session_store: Arc<SessionStore>,
+  /// Buffered persistence layer
+  persistence: SessionPersistence,
   /// Session metadata for persistence
   meta: SessionMeta,
   /// Maximum context size for the current model (read from global config at creation)
@@ -152,7 +153,7 @@ impl SessionActor {
       stream_retry_attempt: 0,
       pending_tool_calls: Vec::new(),
       cwd: env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-      session_store,
+      persistence: SessionPersistence::new(session_store),
       meta,
       precise_token_count: None,
       max_context_size,
@@ -229,10 +230,11 @@ impl SessionActor {
 
         // Add user message to history
         let user_msg = self.context.push_user(&content).clone();
-        let _ = self.session_store.append_message(&self.id, &user_msg);
+        self.persistence.stage_message(&self.id, &user_msg);
         self.meta.update_title_from_message(&user_msg);
         self.meta.updated_at = Local::now();
-        let _ = self.session_store.update_meta(&self.meta);
+        self.persistence.stage_meta(&self.meta);
+        let _ = self.persistence.flush();
         self.current_response.clear();
         self.current_thinking.clear();
         self.pending_tool_calls.clear();
@@ -281,10 +283,11 @@ impl SessionActor {
         self.context.clear_non_system();
 
         self.meta.updated_at = Local::now();
-        let _ = self
-          .session_store
+        self
+          .persistence
           .reset_messages(&self.id, self.context.messages());
-        let _ = self.session_store.update_meta(&self.meta);
+        self.persistence.stage_meta(&self.meta);
+        let _ = self.persistence.flush();
 
         self.current_response.clear();
         self.current_thinking.clear();
@@ -319,7 +322,8 @@ impl SessionActor {
         info!("Session {}: Enabling YOLO mode for this session", self.id);
         self.yolo = true;
         self.meta.yolo = true;
-        if let Err(e) = self.session_store.update_meta(&self.meta) {
+        self.persistence.stage_meta(&self.meta);
+        if let Err(e) = self.persistence.flush() {
           error!(
             "Session {}: Failed to persist yolo mode to meta: {}",
             self.id, e
@@ -448,15 +452,9 @@ impl SessionActor {
     );
 
     // Save compacted messages to session store
-    if let Err(e) = self
-      .session_store
-      .reset_messages(&self.id, self.context.messages())
-    {
-      error!(
-        "Session {}: Failed to save compacted messages: {}",
-        self.id, e
-      );
-    }
+    self
+      .persistence
+      .reset_messages(&self.id, self.context.messages());
 
     // Notify UI
     let _ = self.event_tx.send(SessionEvent::CompactionCompleted {
@@ -723,9 +721,10 @@ impl SessionActor {
             .context
             .push_assistant(response, thinking_opt, tool_calls)
             .clone();
-          let _ = self.session_store.append_message(&self.id, &assistant_msg);
+          self.persistence.stage_message(&self.id, &assistant_msg);
           self.meta.updated_at = Local::now();
-          let _ = self.session_store.update_meta(&self.meta);
+          self.persistence.stage_meta(&self.meta);
+          let _ = self.persistence.flush();
           info!(
             "Session {}: Added assistant message, content_len={}, tool_calls={}",
             self.id,
@@ -892,7 +891,8 @@ impl SessionActor {
           });
           self.context.push_tool_result(&tool_call.id, &output);
           let tool_msg = Message::tool(&output, &tool_call.id);
-          let _ = self.session_store.append_message(&self.id, &tool_msg);
+          self.persistence.stage_message(&self.id, &tool_msg);
+          let _ = self.persistence.flush();
           continue;
         }
 
@@ -927,7 +927,8 @@ impl SessionActor {
             });
             self.context.push_tool_result(&tool_call.id, &error_msg);
             let tool_msg = Message::tool(&error_msg, &tool_call.id);
-            let _ = self.session_store.append_message(&self.id, &tool_msg);
+            self.persistence.stage_message(&self.id, &tool_msg);
+            let _ = self.persistence.flush();
             continue;
           }
         }
@@ -1021,7 +1022,8 @@ impl SessionActor {
         );
         self.context.push_tool_result(&tool_call.id, &output_str);
         let tool_msg = Message::tool(&output_str, &tool_call.id);
-        let _ = self.session_store.append_message(&self.id, &tool_msg);
+        self.persistence.stage_message(&self.id, &tool_msg);
+        let _ = self.persistence.flush();
         info!(
           "Session {}: Tool {} executed successfully, output_len={}",
           self.id,
@@ -1043,7 +1045,8 @@ impl SessionActor {
         );
         self.context.push_tool_result(&tool_call.id, &error_msg);
         let tool_msg = Message::tool(&error_msg, &tool_call.id);
-        let _ = self.session_store.append_message(&self.id, &tool_msg);
+        self.persistence.stage_message(&self.id, &tool_msg);
+        let _ = self.persistence.flush();
         error!("Session {}: Tool {} failed: {}", self.id, tool_call.name, e);
       }
     }
@@ -1091,7 +1094,8 @@ impl SessionActor {
 
       self.context.push_tool_result(&tool_call.id, &denied_msg);
       let tool_msg = Message::tool(&denied_msg, &tool_call.id);
-      let _ = self.session_store.append_message(&self.id, &tool_msg);
+      self.persistence.stage_message(&self.id, &tool_msg);
+      let _ = self.persistence.flush();
     }
 
     let next_index = current_index + 1;
@@ -1190,7 +1194,8 @@ impl SessionActor {
 
     self.context.push_tool_result(&tool_call.id, &output);
     let tool_msg = Message::tool(&output, &tool_call.id);
-    let _ = self.session_store.append_message(&self.id, &tool_msg);
+    self.persistence.stage_message(&self.id, &tool_msg);
+    let _ = self.persistence.flush();
 
     let next_index = current_index + 1;
     self.tool_call_execution_state = Some(ToolCallExecutionState {

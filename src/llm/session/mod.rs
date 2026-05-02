@@ -6,6 +6,7 @@ use tokio::sync::mpsc;
 
 pub mod actor;
 pub mod context;
+pub mod persistence;
 
 pub use actor::ChatSession;
 
