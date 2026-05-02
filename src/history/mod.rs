@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{from_str, to_string};
 
 use crate::cli::runtime::Runtime;
+use crate::config::HistoryConfig;
+use crate::config::loader::data_dir;
 
 /// Filename for storing input history.
 const HISTORY_FILENAME: &str = "history.jsonl";
@@ -85,7 +87,7 @@ impl InputHistoryManager {
       entries: Vec::new(),
       cursor: None,
       original_input: String::new(),
-      storage: InputHistoryStorage::with_path(PathBuf::new(), 0, 0),
+      storage: InputHistoryStorage::with_path(PathBuf::new(), HistoryConfig::default()),
     }
   }
 
@@ -108,7 +110,7 @@ impl InputHistoryManager {
       entries,
       cursor: None,
       original_input: String::new(),
-      storage: InputHistoryStorage::with_path(PathBuf::new(), 0, 0),
+      storage: InputHistoryStorage::with_path(PathBuf::new(), HistoryConfig::default()),
     }
   }
 
@@ -231,28 +233,23 @@ impl InputHistoryManager {
 #[derive(Debug, Clone)]
 pub struct InputHistoryStorage {
   path: PathBuf,
-  max_size: usize,
-  max_entries: usize,
+  config: HistoryConfig,
 }
 
 impl InputHistoryStorage {
   /// Create a new history storage from runtime.
   pub fn new(runtime: &Runtime) -> Self {
-    let path = runtime.data_dir().join(HISTORY_FILENAME);
+    let config = &runtime.config;
+    let path = data_dir(config).join(HISTORY_FILENAME);
     Self {
       path,
-      max_size: runtime.history_max_size(),
-      max_entries: runtime.history_max_entries(),
+      config: config.history.clone(),
     }
   }
 
   /// Create a new history storage with explicit path.
-  pub fn with_path(path: PathBuf, max_size: usize, max_entries: usize) -> Self {
-    Self {
-      path,
-      max_size,
-      max_entries,
-    }
+  pub fn with_path(path: PathBuf, config: HistoryConfig) -> Self {
+    Self { path, config }
   }
 
   /// Load all entries from the history file.
@@ -368,15 +365,15 @@ impl InputHistoryStorage {
     let should_trim = {
       let metadata = file.metadata()?;
       let file_size = metadata.len() as usize;
-      let max_size = self.max_size;
-      let max_entries = self.max_entries;
+      let max_size = self.config.max_size;
+      let max_entries = self.config.max_entries;
 
       (max_size > 0 && file_size > max_size)
         || (max_entries > 0 && Self::count_entries_locked(&file)? > max_entries)
     };
 
     if should_trim {
-      Self::trim_locked(&mut file, self.max_size, self.max_entries)?;
+      Self::trim_locked(&mut file, &self.config)?;
     }
 
     // Lock is automatically released when file is dropped
@@ -396,7 +393,7 @@ impl InputHistoryStorage {
   /// Trim the history file using an already locked file.
   ///
   /// The file must be locked exclusively by the caller.
-  fn trim_locked(file: &mut File, max_size: usize, max_entries: usize) -> std::io::Result<()> {
+  fn trim_locked(file: &mut File, config: &HistoryConfig) -> std::io::Result<()> {
     // Read all entries from the file
     let mut content = String::new();
     file.seek(SeekFrom::Start(0))?;
@@ -411,6 +408,9 @@ impl InputHistoryStorage {
     if entries.is_empty() {
       return Ok(());
     }
+
+    let max_size = config.max_size;
+    let max_entries = config.max_entries;
 
     // Determine how many entries to keep
     let mut keep_count = entries.len();

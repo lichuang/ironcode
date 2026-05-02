@@ -179,20 +179,18 @@ impl RuntimeArgs {
 /// Runtime holds the effective configuration, system prompt template, arguments,
 /// and tool registries. All fields are loaded at startup and are read-only during
 /// the session.
-///
-/// `Runtime` encapsulates all startup environment data. External code should not
-/// access the raw `Config` directly; instead, use the provided accessor methods.
-/// This ensures that the internal structure of `Config` can evolve without
-/// affecting downstream components.
 #[derive(Debug, Clone)]
 pub(crate) struct Runtime {
-  config: Arc<Config>,
+  /// Effective configuration (user config + CLI overrides applied)
+  pub config: Arc<Config>,
   /// Template arguments for substitution
   pub args: RuntimeArgs,
   /// The raw system prompt template (before substitution)
   pub system_prompt_template: String,
-  tool_registry: Arc<ToolRegistry>,
-  executable_registry: Arc<ExecutableToolRegistry>,
+  /// Tool definitions registry (loaded from Markdown files)
+  pub tool_registry: Arc<ToolRegistry>,
+  /// Executable tool registry for dispatching and previewing tool calls
+  pub executable_registry: Arc<ExecutableToolRegistry>,
 }
 
 impl Runtime {
@@ -240,123 +238,6 @@ impl Runtime {
       tool_registry: Arc::new(ToolRegistry::default()),
       executable_registry: Arc::new(ExecutableToolRegistry::new()),
     }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Encapsulated accessors for Config sub-fields
-  // ---------------------------------------------------------------------------
-
-  pub fn yolo(&self) -> bool {
-    self.config.yolo
-  }
-
-  pub fn auto_approve(&self) -> Vec<String> {
-    self.config.auto_approve.clone()
-  }
-
-  pub fn default_model(&self) -> &str {
-    &self.config.default_model
-  }
-
-  pub fn default_thinking(&self) -> bool {
-    self.config.default_thinking
-  }
-
-  pub fn compaction_enabled(&self) -> bool {
-    self.config.compaction.enabled
-  }
-
-  pub fn compaction_should_trigger(&self, token_count: usize, max_context_size: usize) -> bool {
-    crate::llm::compaction::should_auto_compact(
-      token_count,
-      max_context_size,
-      &self.config.compaction,
-    )
-  }
-
-  pub fn compaction_threshold(&self, max_context_size: usize) -> usize {
-    crate::llm::compaction::calculate_threshold(max_context_size, &self.config.compaction)
-  }
-
-  pub fn retry_max_attempts(&self) -> u32 {
-    self.config.retry.max_attempts
-  }
-
-  pub fn retry_delay_for_attempt(&self, attempt: u32) -> std::time::Duration {
-    self.config.retry.delay_for_attempt(attempt)
-  }
-
-  pub fn history_max_size(&self) -> usize {
-    self.config.history.max_size
-  }
-
-  pub fn history_max_entries(&self) -> usize {
-    self.config.history.max_entries
-  }
-
-  pub fn max_context_size(&self) -> usize {
-    self
-      .config
-      .default_model_config()
-      .and_then(|m| m.max_context_size)
-      .unwrap_or(crate::config::DEFAULT_MAX_CONTEXT_SIZE)
-  }
-
-  pub fn model_max_tokens(&self) -> Option<u32> {
-    self
-      .config
-      .default_model_config()
-      .and_then(|m| m.max_tokens)
-  }
-
-  pub fn model_temperature(&self) -> Option<f32> {
-    self
-      .config
-      .default_model_config()
-      .and_then(|m| m.temperature)
-  }
-
-  pub fn model_provider_name(&self) -> &str {
-    self
-      .config
-      .default_model_config()
-      .map(|m| m.provider.as_str())
-      .unwrap_or("")
-  }
-
-  pub fn provider_base_url(&self, name: &str) -> Option<&str> {
-    self.config.get_provider(name).map(|p| p.base_url.as_str())
-  }
-
-  pub fn provider_api_key(&self, name: &str) -> Option<String> {
-    self
-      .config
-      .get_provider(name)
-      .and_then(|p| p.api_key.as_ref())
-      .map(|key| self.config.resolve_api_key(key))
-  }
-
-  pub fn provider_type(&self, name: &str) -> Option<&str> {
-    self
-      .config
-      .get_provider(name)
-      .map(|p| p.provider_type.as_str())
-  }
-
-  pub fn data_dir(&self) -> std::path::PathBuf {
-    crate::config::loader::data_dir(&self.config)
-  }
-
-  // ---------------------------------------------------------------------------
-  // Encapsulated accessors for tool registries
-  // ---------------------------------------------------------------------------
-
-  pub fn tool_registry(&self) -> Arc<ToolRegistry> {
-    self.tool_registry.clone()
-  }
-
-  pub fn executable_registry(&self) -> Arc<ExecutableToolRegistry> {
-    self.executable_registry.clone()
   }
 
   /// Load and initialize the executable tool registry with all handlers
