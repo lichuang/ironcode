@@ -2,12 +2,15 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::Local;
 use log::{debug, info, warn};
 
-use crate::config::Config;
-use crate::config::loader::system_prompt_path;
+use crate::config::loader::{data_dir, system_prompt_path};
+use crate::config::{
+  CompactionConfig, Config, DEFAULT_MAX_CONTEXT_SIZE, HistoryConfig, ModelConfig, ProviderConfig,
+};
 use crate::error::Result;
 use crate::tools::handlers::{
   AskUserQuestionHandler, FetchURLHandler, GlobHandler, GrepHandler, ReadFileHandler,
@@ -182,7 +185,7 @@ impl RuntimeArgs {
 #[derive(Debug, Clone)]
 pub(crate) struct Runtime {
   /// Effective configuration (user config + CLI overrides applied)
-  pub config: Arc<Config>,
+  config: Arc<Config>,
   /// Template arguments for substitution
   pub args: RuntimeArgs,
   /// The raw system prompt template (before substitution)
@@ -332,6 +335,80 @@ impl Runtime {
       warn!("Failed to load system prompt from {:?}: {}", prompt_path, e);
       String::new()
     })
+  }
+
+  /// Whether automatic compaction is enabled.
+  pub fn enable_compaction(&self) -> bool {
+    self.config.compaction.enabled
+  }
+
+  /// Get the compaction configuration.
+  pub fn compaction_config(&self) -> &CompactionConfig {
+    &self.config.compaction
+  }
+
+  /// Get the maximum number of retry attempts for LLM requests.
+  pub fn retry_max_attempts(&self) -> u32 {
+    self.config.retry.max_attempts.max(1)
+  }
+
+  /// Get the default model name.
+  pub fn default_model(&self) -> String {
+    self.config.default_model.clone()
+  }
+
+  /// Get the default model configuration.
+  pub fn default_model_config(&self) -> Option<&ModelConfig> {
+    self.config.default_model_config()
+  }
+
+  /// Get the max context size of the default model.
+  pub fn default_model_max_context_size(&self) -> usize {
+    self
+      .config
+      .default_model_config()
+      .and_then(|m| m.max_context_size)
+      .unwrap_or(DEFAULT_MAX_CONTEXT_SIZE)
+  }
+
+  /// Get the data directory.
+  pub fn data_dir(&self) -> PathBuf {
+    data_dir(&self.config)
+  }
+
+  /// Get the history configuration.
+  pub fn history_config(&self) -> HistoryConfig {
+    self.config.history.clone()
+  }
+
+  /// Whether YOLO mode is enabled.
+  pub fn yolo(&self) -> bool {
+    self.config.yolo
+  }
+
+  /// Get the list of tools to auto-approve.
+  pub fn auto_approve(&self) -> Vec<String> {
+    self.config.auto_approve.clone()
+  }
+
+  /// Whether default thinking mode is enabled.
+  pub fn default_thinking(&self) -> bool {
+    self.config.default_thinking
+  }
+
+  /// Get a provider by name.
+  pub fn get_provider(&self, name: &str) -> Option<&ProviderConfig> {
+    self.config.get_provider(name)
+  }
+
+  /// Resolve an API key (handles env var substitution like "${OPENAI_API_KEY}").
+  pub fn resolve_api_key(&self, key: &str) -> String {
+    self.config.resolve_api_key(key)
+  }
+
+  /// Calculate the retry delay for a given attempt number.
+  pub fn retry_delay_for_attempt(&self, attempt: u32) -> Duration {
+    self.config.retry.delay_for_attempt(attempt)
   }
 
   /// Render the system prompt with all template variables substituted

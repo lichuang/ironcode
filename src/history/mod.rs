@@ -15,7 +15,6 @@ use serde_json::{from_str, to_string};
 
 use crate::cli::runtime::Runtime;
 use crate::config::HistoryConfig;
-use crate::config::loader::data_dir;
 
 /// Filename for storing input history.
 const HISTORY_FILENAME: &str = "history.jsonl";
@@ -239,11 +238,10 @@ pub struct InputHistoryStorage {
 impl InputHistoryStorage {
   /// Create a new history storage from runtime.
   pub fn new(runtime: &Runtime) -> Self {
-    let config = &runtime.config;
-    let path = data_dir(config).join(HISTORY_FILENAME);
+    let path = runtime.data_dir().join(HISTORY_FILENAME);
     Self {
       path,
-      config: config.history.clone(),
+      config: runtime.history_config(),
     }
   }
 

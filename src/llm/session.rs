@@ -570,14 +570,14 @@ impl SessionActor {
       "check_and_notify_compaction: current_tokens={}, max_context_size={}, compaction_config.enabled={}",
       current_tokens,
       self.max_context_size,
-      self.runtime.config.compaction.enabled
+      self.runtime.enable_compaction()
     );
 
     // Check if we should trigger compaction
     let should_compact = should_auto_compact(
       current_tokens,
       self.max_context_size,
-      &self.runtime.config.compaction,
+      self.runtime.compaction_config(),
     );
     log::info!(
       "check_and_notify_compaction: should_auto_compact={}",
@@ -586,7 +586,8 @@ impl SessionActor {
 
     if should_compact {
       if !self.compaction_notified {
-        let threshold = calculate_threshold(self.max_context_size, &self.runtime.config.compaction);
+        let threshold =
+          calculate_threshold(self.max_context_size, self.runtime.compaction_config());
         info!(
           "Session {}: Compaction needed - {} tokens (threshold: {})",
           self.id, current_tokens, threshold
@@ -687,7 +688,7 @@ impl SessionActor {
   /// so that the total number of retries for a single step never exceeds
   /// `retry_config.max_attempts`.
   async fn attempt_chat_stream(&mut self, context: &str) {
-    let max_attempts = self.runtime.config.retry.max_attempts.max(1);
+    let max_attempts = self.runtime.retry_max_attempts();
 
     while self.stream_retry_attempt < max_attempts {
       match self.run_chat_stream_with_recovery().await {
@@ -739,9 +740,7 @@ impl SessionActor {
 
           let delay = self
             .runtime
-            .config
-            .retry
-            .delay_for_attempt(self.stream_retry_attempt - 1);
+            .retry_delay_for_attempt(self.stream_retry_attempt - 1);
           warn!(
             "Session {}: attempt {}/{} failed ({}), retrying in {:?}",
             self.id, self.stream_retry_attempt, max_attempts, err_string, delay
@@ -1560,9 +1559,8 @@ impl ChatSession {
     system_prompt: String,
     session_store: Arc<SessionStore>,
   ) -> Result<(Self, Vec<Message>)> {
-    let config = &runtime.config;
     let mut meta = SessionMeta::new(generate_session_id(), &system_prompt);
-    meta.yolo = config.yolo;
+    meta.yolo = runtime.yolo();
     session_store.create(&meta)?;
     let session = Self::create_with_store(runtime, system_prompt, session_store, meta)?;
     Ok((session, Vec::new()))
@@ -1575,7 +1573,6 @@ impl ChatSession {
     meta: SessionMeta,
     messages: Vec<Message>,
   ) -> Result<(Self, Vec<Message>)> {
-    let config = &runtime.config;
     let provider = Self::create_provider(&runtime)?;
 
     let yolo = meta.yolo;
@@ -1586,7 +1583,7 @@ impl ChatSession {
       session_store,
       meta,
       yolo,
-      config.auto_approve.clone(),
+      runtime.auto_approve(),
       runtime,
     );
     Ok((session, messages))
@@ -1622,27 +1619,26 @@ impl ChatSession {
   /// # Arguments
   /// * `config` - The application configuration
   pub(crate) fn create_provider(runtime: &Runtime) -> Result<Box<dyn LLMProvider>> {
-    let config = &runtime.config;
     let tool_registry = runtime.tool_registry.clone();
 
     // Get default model configuration
-    let model_config = config
+    let model_config = runtime
       .default_model_config()
       .ok_or(crate::config::Error::MissingDefaultModel)?;
 
     // Get provider configuration
-    let provider = config.get_provider(&model_config.provider).ok_or_else(|| {
-      crate::config::Error::ProviderNotFound {
+    let provider = runtime
+      .get_provider(&model_config.provider)
+      .ok_or_else(|| crate::config::Error::ProviderNotFound {
         provider: model_config.provider.clone(),
-        model: config.default_model.clone(),
-      }
-    })?;
+        model: runtime.default_model(),
+      })?;
 
     // Resolve API key (may contain env var references like ${OPENAI_API_KEY})
     let api_key = provider
       .api_key
       .as_ref()
-      .map(|key| config.resolve_api_key(key))
+      .map(|key| runtime.resolve_api_key(key))
       .unwrap_or_default();
 
     // Create chat config
@@ -1654,7 +1650,7 @@ impl ChatSession {
       chat_config = chat_config.with_temperature(temperature);
     }
     // Set thinking mode from config
-    chat_config = chat_config.with_thinking(config.default_thinking);
+    chat_config = chat_config.with_thinking(runtime.default_thinking());
 
     // Determine if we need Coding Agent headers
     // Currently only enable for kimi-for-coding model
@@ -1679,7 +1675,7 @@ impl ChatSession {
         return Err(
           crate::config::Error::ProviderNotFound {
             provider: provider.provider_type.clone(),
-            model: config.default_model.clone(),
+            model: runtime.default_model(),
           }
           .into(),
         );
@@ -1696,7 +1692,6 @@ impl ChatSession {
     session_store: Arc<SessionStore>,
     meta: SessionMeta,
   ) -> Result<Self> {
-    let config = &runtime.config;
     let provider = Self::create_provider(&runtime)?;
     let system_prompt = system_prompt.into();
     let messages = vec![Message::system(system_prompt.clone())];
@@ -1709,7 +1704,7 @@ impl ChatSession {
       session_store,
       meta,
       yolo,
-      config.auto_approve.clone(),
+      runtime.auto_approve(),
       runtime,
     );
     info!(
