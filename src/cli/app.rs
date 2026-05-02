@@ -8,13 +8,14 @@ use ratatui::Frame;
 use crate::cli::Args;
 use crate::cli::runtime::Runtime;
 use crate::error::Result;
-use crate::llm::{ChatSession, Question, SessionEvent};
+use crate::llm::{ChatSession, Question};
 use crate::session::{SessionMode, SessionStore};
 use crate::tui::FrameRequester;
 use crate::view::chat::{
   ChatMessage, StreamingChunk, SystemMessageLevel, ToolCallStatus, llm_messages_to_chat_history,
 };
 use crate::view::{ChatView, View};
+use crate::wire::{WireBus, WireMessage};
 
 /// Application data that can be modified by views
 pub struct AppData {
@@ -118,6 +119,8 @@ pub struct App {
 
   /// Chat session for LLM communication (initialized when first chat starts)
   chat_session: Option<ChatSession>,
+  /// Wire subscriber for receiving events from the session actor
+  wire_subscriber: tokio::sync::broadcast::Receiver<WireMessage>,
   /// Current LLM response chunks being accumulated (for streaming display)
   /// Uses Arc for cheap cloning when sharing with AppData.
   current_chunks: Arc<Vec<StreamingChunk>>,
@@ -144,8 +147,19 @@ impl App {
     };
 
     let session_store = Arc::new(SessionStore::new(data_dir));
-    let (chat_session, messages) =
-      ChatSession::create_or_resume(runtime.clone(), system_prompt, session_store, mode)?;
+
+    // Create wire bus for decoupling session actor from UI
+    let wire_bus = WireBus::new(256);
+    let wire_publisher = wire_bus.publisher();
+    let wire_subscriber = wire_bus.subscriber();
+
+    let (chat_session, messages) = ChatSession::create_or_resume(
+      runtime.clone(),
+      system_prompt,
+      session_store,
+      mode,
+      wire_publisher,
+    )?;
 
     data.chat_history = llm_messages_to_chat_history(&messages);
     let session_handle = chat_session.handle.clone();
@@ -159,6 +173,7 @@ impl App {
       frame_requester: None,
       runtime,
       chat_session: Some(chat_session),
+      wire_subscriber,
       current_chunks: Arc::new(Vec::new()),
     })
   }
@@ -207,63 +222,73 @@ impl App {
   pub fn update_chat_session(&mut self) -> bool {
     let mut updated = false;
 
-    if let Some(mut session) = self.chat_session.take() {
-      let session_id = session.handle.id.clone();
-      while let Some(event) = session.poll_event() {
-        updated = true;
-        self.handle_session_event(event, &session_id);
-      }
-      self.chat_session = Some(session);
+    let session_id = self.chat_session.as_ref().map(|s| s.handle.id.clone());
+    while let Ok(msg) = self.wire_subscriber.try_recv() {
+      updated = true;
+      self.handle_wire_message(msg, session_id.as_deref());
+    }
 
-      if updated && let Some(ref fr) = self.frame_requester {
-        fr.schedule_frame();
-      }
+    if updated && let Some(ref fr) = self.frame_requester {
+      fr.schedule_frame();
     }
 
     updated
   }
 
-  fn handle_session_event(&mut self, event: SessionEvent, session_id: &str) {
-    match event {
-      SessionEvent::ContentChunk(chunk) => self.on_content_chunk(chunk),
-      SessionEvent::ThinkingChunk(chunk) => self.on_thinking_chunk(chunk),
-      SessionEvent::ToolCallReceived {
+  fn handle_wire_message(&mut self, msg: WireMessage, session_id: Option<&str>) {
+    match msg {
+      WireMessage::ContentChunk { text } => self.on_content_chunk(text),
+      WireMessage::ThinkingChunk { text } => self.on_thinking_chunk(text),
+      WireMessage::ToolCallBegin {
         id,
         name,
         arguments,
-      } => self.on_tool_call_received(id, name, arguments),
-      SessionEvent::ToolCallCompleted { name, output } => {
+      } => {
+        self.on_tool_call_received(id, name, arguments);
+      }
+      WireMessage::ToolCallEnd { name, output, .. } => {
         self.on_tool_call_completed(name, output);
       }
-      SessionEvent::Completed => self.on_stream_completed(),
-      SessionEvent::StreamInterrupted { .. } => self.on_stream_interrupted(),
-      SessionEvent::ApprovalNeeded {
+      WireMessage::TurnEnd => self.on_stream_completed(),
+      WireMessage::ApprovalRequest {
         id,
         name,
-        arguments,
         diff_preview,
-      } => self.on_approval_needed(id, name, arguments, diff_preview),
-      SessionEvent::Error(err) => self.on_session_error(err),
-      SessionEvent::Shutdown => self.on_session_shutdown(session_id),
-      SessionEvent::Usage {
+      } => {
+        self.on_approval_needed(id, name, String::new(), diff_preview);
+      }
+      WireMessage::QuestionsAsked {
+        tool_call_id,
+        questions,
+      } => {
+        self.on_questions_asked(tool_call_id, questions);
+      }
+      WireMessage::Error { ref message } => {
+        self.on_session_error(message.clone());
+        if message == "Session shutdown"
+          && let Some(id) = session_id
+        {
+          self.on_session_shutdown(id);
+        }
+      }
+      WireMessage::Usage {
         total_tokens,
         prompt_tokens,
         completion_tokens,
       } => self.on_usage(total_tokens, prompt_tokens, completion_tokens),
-      SessionEvent::CompactionNeeded {
+      WireMessage::CompactionWarning {
         current_tokens,
         threshold,
         max_context_size,
       } => self.on_compaction_needed(current_tokens, threshold, max_context_size),
-      SessionEvent::QuestionsAsked {
-        tool_call_id,
-        questions,
-      } => self.on_questions_asked(tool_call_id, questions),
-      SessionEvent::CompactionCompleted {
-        message_count_before,
-        message_count_after,
-        new_token_count,
-      } => self.on_compaction_completed(message_count_before, message_count_after, new_token_count),
+      WireMessage::CompactionCompleted {
+        before,
+        after,
+        tokens,
+      } => {
+        self.on_compaction_completed(before, after, tokens);
+      }
+      WireMessage::TurnBegin => {}
     }
   }
 
@@ -373,6 +398,7 @@ impl App {
     self.current_chunks = Arc::new(Vec::new());
   }
 
+  #[allow(dead_code)]
   fn on_stream_interrupted(&mut self) {
     self.current_chunks = Arc::new(Vec::new());
     self.data.streaming_response = Arc::new(Vec::new());

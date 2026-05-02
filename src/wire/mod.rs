@@ -1,6 +1,4 @@
 //! Wire protocol layer — decouples core session logic from UI via broadcast bus.
-#![allow(dead_code)]
-#![allow(unused_imports)]
 //!
 //! The wire module provides a message bus that allows the session actor
 //! (producer) and the UI (consumer) to communicate without direct coupling.

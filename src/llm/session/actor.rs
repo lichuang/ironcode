@@ -56,6 +56,7 @@ use super::persistence::SessionPersistence;
 use super::stream::{StreamManager, format_user_friendly_error};
 use super::tool_exec::ToolExecutor;
 use super::{Question, QuestionOption, SessionCommand, SessionEvent, SessionHandle};
+use crate::wire::{WireMessage, WirePublisher};
 
 /// Internal state of the session actor
 struct SessionActor {
@@ -63,8 +64,8 @@ struct SessionActor {
   id: String,
   /// Message history managed by Context
   context: Context,
-  /// Channel to send events back to the caller
-  event_tx: mpsc::UnboundedSender<SessionEvent>,
+  /// Wire publisher for sending events to the UI layer
+  wire_publisher: WirePublisher,
   /// Channel to receive commands
   cmd_rx: mpsc::UnboundedReceiver<SessionCommand>,
   /// Current response being accumulated
@@ -104,7 +105,7 @@ impl SessionActor {
     id: String,
     provider: Box<dyn LLMProvider>,
     messages: Vec<Message>,
-    event_tx: mpsc::UnboundedSender<SessionEvent>,
+    wire_publisher: WirePublisher,
     cmd_rx: mpsc::UnboundedReceiver<SessionCommand>,
     session_store: Arc<SessionStore>,
     meta: SessionMeta,
@@ -115,7 +116,7 @@ impl SessionActor {
     Self {
       id,
       context: Context::from_messages(messages),
-      event_tx,
+      wire_publisher,
       cmd_rx,
       current_response: String::new(),
       current_thinking: String::new(),
@@ -195,9 +196,9 @@ impl SessionActor {
             "Session {}: Cannot send message while another request is in progress",
             self.id
           );
-          let _ = self.event_tx.send(SessionEvent::Error(
-            "Cannot send message while another request is in progress".to_string(),
-          ));
+          self.wire_publisher.send(WireMessage::Error {
+            message: "Cannot send message while another request is in progress".to_string(),
+          });
           return true;
         }
 
@@ -307,7 +308,9 @@ impl SessionActor {
 
       SessionCommand::Shutdown => {
         info!("Session {}: Shutdown requested", self.id);
-        let _ = self.event_tx.send(SessionEvent::Shutdown);
+        self.wire_publisher.send(WireMessage::Error {
+          message: "Session shutdown".to_string(),
+        });
         false
       }
     }
@@ -333,7 +336,7 @@ impl SessionActor {
         "Session {}: Compaction needed - {} tokens (threshold: {})",
         self.id, trigger.current_tokens, trigger.threshold
       );
-      let _ = self.event_tx.send(SessionEvent::CompactionNeeded {
+      self.wire_publisher.send(WireMessage::CompactionWarning {
         current_tokens: trigger.current_tokens,
         threshold: trigger.threshold,
         max_context_size: trigger.max_context_size,
@@ -355,10 +358,10 @@ impl SessionActor {
       self
         .persistence
         .reset_messages(&self.id, self.context.messages());
-      let _ = self.event_tx.send(SessionEvent::CompactionCompleted {
-        message_count_before: result.message_count_before,
-        message_count_after: result.message_count_after,
-        new_token_count: result.new_token_count,
+      self.wire_publisher.send(WireMessage::CompactionCompleted {
+        before: result.message_count_before,
+        after: result.message_count_after,
+        tokens: result.new_token_count,
       });
     }
   }
@@ -381,11 +384,9 @@ impl SessionActor {
       }
       Err(err) => {
         error!("Session {}: failed to start stream: {}", self.id, err);
-        let _ = self
-          .event_tx
-          .send(SessionEvent::Error(format_user_friendly_error(
-            &err.to_string(),
-          )));
+        self.wire_publisher.send(WireMessage::Error {
+          message: format_user_friendly_error(&err.to_string()),
+        });
       }
     }
   }
@@ -402,9 +403,9 @@ impl SessionActor {
         );
         self.current_response.push_str(chunk);
         // Forward to caller
-        if self.event_tx.send(event).is_err() {
-          error!("Session {}: Failed to forward ContentChunk", self.id);
-        }
+        self.wire_publisher.send(WireMessage::ContentChunk {
+          text: chunk.clone(),
+        });
       }
       SessionEvent::ThinkingChunk(chunk) => {
         let preview: String = chunk.chars().take(100).collect();
@@ -416,9 +417,9 @@ impl SessionActor {
         );
         self.current_thinking.push_str(chunk);
         // Forward to caller without storing in session messages
-        if self.event_tx.send(event).is_err() {
-          error!("Session {}: Failed to forward ThinkingChunk", self.id);
-        }
+        self.wire_publisher.send(WireMessage::ThinkingChunk {
+          text: chunk.clone(),
+        });
       }
       SessionEvent::ToolCallReceived {
         id,
@@ -436,9 +437,11 @@ impl SessionActor {
           .push(ToolCall::new(id, name, arguments));
 
         // Forward to caller
-        if self.event_tx.send(event.clone()).is_err() {
-          error!("Session {}: Failed to forward ToolCallReceived", self.id);
-        }
+        self.wire_publisher.send(WireMessage::ToolCallBegin {
+          id: id.clone(),
+          name: name.clone(),
+          arguments: arguments.clone(),
+        });
       }
       SessionEvent::ToolCallCompleted { name, output } => {
         info!(
@@ -448,9 +451,12 @@ impl SessionActor {
           output.len()
         );
         // Forward to caller
-        if self.event_tx.send(event.clone()).is_err() {
-          error!("Session {}: Failed to forward ToolCallCompleted", self.id);
-        }
+        // Note: id is not available in SessionEvent::ToolCallCompleted, use empty string
+        self.wire_publisher.send(WireMessage::ToolCallEnd {
+          id: String::new(),
+          name: name.clone(),
+          output: output.clone(),
+        });
       }
       SessionEvent::Usage {
         total_tokens,
@@ -466,9 +472,11 @@ impl SessionActor {
         // Check compaction with precise token count
         self.check_and_notify_compaction().await;
         // Forward to caller
-        if self.event_tx.send(event.clone()).is_err() {
-          error!("Session {}: Failed to forward Usage", self.id);
-        }
+        self.wire_publisher.send(WireMessage::Usage {
+          total_tokens: *total_tokens,
+          prompt_tokens: *prompt_tokens,
+          completion_tokens: *completion_tokens,
+        });
       }
       SessionEvent::Completed => {
         // Add the complete assistant message to history (with tool calls if any)
@@ -511,13 +519,11 @@ impl SessionActor {
         {
           info!("Session {}: Executing tool calls", self.id);
           self.execute_tool_calls().await;
-          return; // Don't send Completed yet, we'll continue after tool execution
+          return; // Don't send TurnEnd yet, we'll continue after tool execution
         }
 
         // Forward to caller
-        if self.event_tx.send(event).is_err() {
-          error!("Session {}: Failed to forward Completed event", self.id);
-        }
+        self.wire_publisher.send(WireMessage::TurnEnd);
         info!("Session {}: Stream completed", self.id);
       }
       SessionEvent::StreamInterrupted {
@@ -535,9 +541,9 @@ impl SessionActor {
         if *is_retryable {
           self.start_stream().await;
         } else {
-          let _ = self
-            .event_tx
-            .send(SessionEvent::Error(format_user_friendly_error(error)));
+          self.wire_publisher.send(WireMessage::Error {
+            message: format_user_friendly_error(error),
+          });
         }
       }
       SessionEvent::Error(err) => {
@@ -548,46 +554,63 @@ impl SessionActor {
         self.current_thinking.clear();
         self.pending_tool_calls.clear();
         // Forward to caller
-        if self.event_tx.send(event).is_err() {
-          error!("Session {}: Failed to forward Error event", self.id);
-        }
+        self.wire_publisher.send(WireMessage::Error {
+          message: err.clone(),
+        });
       }
       SessionEvent::Shutdown => {
         // Should not happen, but handle it
-        if self.event_tx.send(event).is_err() {
-          error!("Session {}: Failed to forward Shutdown event", self.id);
-        }
+        self.wire_publisher.send(WireMessage::Error {
+          message: "Session shutdown".to_string(),
+        });
       }
-      SessionEvent::CompactionNeeded { .. } => {
+      SessionEvent::CompactionNeeded {
+        current_tokens,
+        threshold,
+        max_context_size,
+      } => {
         // Forward compaction notification to UI
-        if self.event_tx.send(event).is_err() {
-          error!(
-            "Session {}: Failed to forward CompactionNeeded event",
-            self.id
-          );
-        }
+        self.wire_publisher.send(WireMessage::CompactionWarning {
+          current_tokens: *current_tokens,
+          threshold: *threshold,
+          max_context_size: *max_context_size,
+        });
       }
-      SessionEvent::ApprovalNeeded { .. } => {
+      SessionEvent::ApprovalNeeded {
+        id,
+        name,
+        arguments: _,
+        diff_preview,
+      } => {
         // ApprovalNeeded is never emitted by the stream task,
         // but the match must be exhaustive.
+        self.wire_publisher.send(WireMessage::ApprovalRequest {
+          id: id.clone(),
+          name: name.clone(),
+          diff_preview: diff_preview.clone(),
+        });
       }
-      SessionEvent::QuestionsAsked { .. } => {
+      SessionEvent::QuestionsAsked {
+        tool_call_id,
+        questions,
+      } => {
         // Forward to UI
-        if self.event_tx.send(event).is_err() {
-          error!(
-            "Session {}: Failed to forward QuestionsAsked event",
-            self.id
-          );
-        }
+        self.wire_publisher.send(WireMessage::QuestionsAsked {
+          tool_call_id: tool_call_id.clone(),
+          questions: questions.clone(),
+        });
       }
-      SessionEvent::CompactionCompleted { .. } => {
+      SessionEvent::CompactionCompleted {
+        message_count_before,
+        message_count_after,
+        new_token_count,
+      } => {
         // Forward compaction completion to UI
-        if self.event_tx.send(event).is_err() {
-          error!(
-            "Session {}: Failed to forward CompactionCompleted event",
-            self.id
-          );
-        }
+        self.wire_publisher.send(WireMessage::CompactionCompleted {
+          before: *message_count_before,
+          after: *message_count_after,
+          tokens: *new_token_count,
+        });
       }
     }
   }
@@ -601,7 +624,7 @@ impl SessionActor {
       Some(msg) => msg.tool_calls.clone().unwrap_or_default(),
       None => {
         error!("Session {}: No assistant message with tool calls", self.id);
-        let _ = self.event_tx.send(SessionEvent::Completed);
+        self.wire_publisher.send(WireMessage::TurnEnd);
         return;
       }
     };
@@ -636,7 +659,7 @@ impl SessionActor {
     };
 
     for (i, tool_call) in tool_calls.iter().enumerate().skip(current_index) {
-      let _ = self.event_tx.send(SessionEvent::ToolCallReceived {
+      self.wire_publisher.send(WireMessage::ToolCallBegin {
         id: tool_call.id.clone(),
         name: tool_call.name.clone(),
         arguments: tool_call.arguments.clone(),
@@ -650,7 +673,8 @@ impl SessionActor {
             self.id
           );
           let output = r#"{"answers": {}, "note": "Running in non-interactive (yolo) mode. Make your own decision."}"#.to_string();
-          let _ = self.event_tx.send(SessionEvent::ToolCallCompleted {
+          self.wire_publisher.send(WireMessage::ToolCallEnd {
+            id: tool_call.id.clone(),
             name: tool_call.name.clone(),
             output: output.clone(),
           });
@@ -672,7 +696,7 @@ impl SessionActor {
               current_index: i,
               tool_call_id: tool_call.id.clone(),
             };
-            let _ = self.event_tx.send(SessionEvent::QuestionsAsked {
+            self.wire_publisher.send(WireMessage::QuestionsAsked {
               tool_call_id: tool_call.id.clone(),
               questions,
             });
@@ -684,7 +708,8 @@ impl SessionActor {
               self.id, e
             );
             let error_msg = format!("Error: Invalid AskUserQuestion arguments: {}", e);
-            let _ = self.event_tx.send(SessionEvent::ToolCallCompleted {
+            self.wire_publisher.send(WireMessage::ToolCallEnd {
+              id: tool_call.id.clone(),
               name: tool_call.name.clone(),
               output: error_msg.clone(),
             });
@@ -715,10 +740,9 @@ impl SessionActor {
             tool_calls: tool_calls.clone(),
             current_index: i,
           };
-          let _ = self.event_tx.send(SessionEvent::ApprovalNeeded {
+          self.wire_publisher.send(WireMessage::ApprovalRequest {
             id: tool_call_id,
             name,
-            arguments: tool_call.arguments.clone(),
             diff_preview,
           });
           return;
@@ -764,7 +788,8 @@ impl SessionActor {
       Ok(output) => {
         let output_str = output;
 
-        let _ = self.event_tx.send(SessionEvent::ToolCallCompleted {
+        self.wire_publisher.send(WireMessage::ToolCallEnd {
+          id: tool_call.id.clone(),
           name: tool_call.name.clone(),
           output: output_str.clone(),
         });
@@ -789,7 +814,8 @@ impl SessionActor {
       Err(e) => {
         let error_msg = format!("Error: {}", e);
 
-        let _ = self.event_tx.send(SessionEvent::ToolCallCompleted {
+        self.wire_publisher.send(WireMessage::ToolCallEnd {
+          id: tool_call.id.clone(),
           name: tool_call.name.clone(),
           output: error_msg.clone(),
         });
@@ -847,7 +873,8 @@ impl SessionActor {
         self.id, tool_call.name, denied_msg
       );
 
-      let _ = self.event_tx.send(SessionEvent::ToolCallCompleted {
+      self.wire_publisher.send(WireMessage::ToolCallEnd {
+        id: tool_call.id.clone(),
         name: tool_call.name.clone(),
         output: denied_msg.clone(),
       });
@@ -942,7 +969,8 @@ impl SessionActor {
       output.len()
     );
 
-    let _ = self.event_tx.send(SessionEvent::ToolCallCompleted {
+    self.wire_publisher.send(WireMessage::ToolCallEnd {
+      id: tool_call.id.clone(),
       name: tool_call.name.clone(),
       output: output.clone(),
     });
@@ -1104,16 +1132,11 @@ fn parse_ask_user_question_args(
   serde_json::from_str(arguments).map_err(|e| format!("JSON parse error: {}", e))
 }
 
-/// Handle to receive events from the session
-pub type EventReceiver = mpsc::UnboundedReceiver<SessionEvent>;
-
 /// ChatSession that runs as an actor
 #[derive(Debug)]
 pub struct ChatSession {
   /// Session handle for sending commands
   pub handle: SessionHandle,
-  /// Event receiver
-  pub event_rx: EventReceiver,
 }
 
 impl ChatSession {
@@ -1121,11 +1144,13 @@ impl ChatSession {
     runtime: Arc<Runtime>,
     system_prompt: String,
     session_store: Arc<SessionStore>,
+    wire_publisher: WirePublisher,
   ) -> Result<(Self, Vec<Message>)> {
     let mut meta = SessionMeta::new(generate_session_id(), &system_prompt);
     meta.yolo = runtime.yolo();
     session_store.create(&meta)?;
-    let session = Self::create_with_store(runtime, system_prompt, session_store, meta)?;
+    let session =
+      Self::create_with_store(runtime, system_prompt, session_store, meta, wire_publisher)?;
     Ok((session, Vec::new()))
   }
 
@@ -1135,11 +1160,19 @@ impl ChatSession {
     session_store: Arc<SessionStore>,
     meta: SessionMeta,
     messages: Vec<Message>,
+    wire_publisher: WirePublisher,
   ) -> Result<(Self, Vec<Message>)> {
     let provider = Self::create_provider(&runtime)?;
 
-    let session =
-      Self::start_with_messages(id, provider, messages.clone(), session_store, meta, runtime);
+    let session = Self::start_with_messages(
+      id,
+      provider,
+      messages.clone(),
+      session_store,
+      meta,
+      runtime,
+      wire_publisher,
+    );
     Ok((session, messages))
   }
 
@@ -1151,19 +1184,20 @@ impl ChatSession {
     system_prompt: String,
     session_store: Arc<SessionStore>,
     mode: SessionMode,
+    wire_publisher: WirePublisher,
   ) -> Result<(Self, Vec<Message>)> {
     match mode {
-      SessionMode::New => Self::new_session(runtime, system_prompt, session_store),
+      SessionMode::New => Self::new_session(runtime, system_prompt, session_store, wire_publisher),
       SessionMode::ResumeById(id) => {
         let (meta, messages) = session_store.load(&id)?;
-        Self::resume(id, runtime, session_store, meta, messages)
+        Self::resume(id, runtime, session_store, meta, messages, wire_publisher)
       }
       SessionMode::ResumeLatest => match session_store.latest_id()? {
         Some(id) => {
           let (meta, messages) = session_store.load(&id)?;
-          Self::resume(id, runtime, session_store, meta, messages)
+          Self::resume(id, runtime, session_store, meta, messages, wire_publisher)
         }
-        None => Self::new_session(runtime, system_prompt, session_store),
+        None => Self::new_session(runtime, system_prompt, session_store, wire_publisher),
       },
     }
   }
@@ -1245,6 +1279,7 @@ impl ChatSession {
     system_prompt: impl Into<String>,
     session_store: Arc<SessionStore>,
     meta: SessionMeta,
+    wire_publisher: WirePublisher,
   ) -> Result<Self> {
     let provider = Self::create_provider(&runtime)?;
     let system_prompt = system_prompt.into();
@@ -1257,6 +1292,7 @@ impl ChatSession {
       session_store,
       meta,
       runtime,
+      wire_publisher,
     );
     info!(
       "ChatSession {} created from config with store",
@@ -1273,9 +1309,9 @@ impl ChatSession {
     session_store: Arc<SessionStore>,
     meta: SessionMeta,
     runtime: Arc<Runtime>,
+    wire_publisher: WirePublisher,
   ) -> Self {
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-    let (event_tx, event_rx) = mpsc::unbounded_channel();
 
     let handle = SessionHandle {
       id: id.clone(),
@@ -1286,7 +1322,7 @@ impl ChatSession {
       id,
       provider,
       messages,
-      event_tx,
+      wire_publisher,
       cmd_rx,
       session_store,
       meta,
@@ -1294,20 +1330,11 @@ impl ChatSession {
     );
     tokio::spawn(actor.run());
 
-    Self { handle, event_rx }
+    Self { handle }
   }
 
-  /// Poll for the next event from the session
-  ///
-  /// Returns:
-  /// - `Some(SessionEvent)` - An event occurred
-  /// - `None` - Session has shutdown and no more events
-  pub fn poll_event(&mut self) -> Option<SessionEvent> {
-    self.event_rx.try_recv().ok()
-  }
-
-  #[allow(dead_code)]
   /// Shutdown the session
+  #[allow(dead_code)]
   pub fn shutdown(&self) {
     self.handle.shutdown();
   }

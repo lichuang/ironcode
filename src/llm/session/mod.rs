@@ -79,6 +79,7 @@ pub enum SessionCommand {
 
 /// Events emitted by the chat session
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum SessionEvent {
   /// A chunk of content received from the stream
   ContentChunk(String),

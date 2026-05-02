@@ -1,11 +1,14 @@
 //! WireMessage definitions — the protocol spoken on the wire bus.
 
+use crate::llm::Question;
+
 /// Messages emitted by the session actor and consumed by the UI layer.
 ///
 /// WireMessage replaces the direct `mpsc::UnboundedSender<SessionEvent>`
 /// coupling between `SessionActor` and `App`, allowing the same core to
 /// drive multiple front-ends (TUI, print mode, web UI, etc.).
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum WireMessage {
   /// A new user/assistant turn has started.
   TurnBegin,
@@ -32,6 +35,8 @@ pub enum WireMessage {
   ToolCallEnd {
     /// Tool call ID.
     id: String,
+    /// Tool name.
+    name: String,
     /// Tool output.
     output: String,
   },
@@ -44,10 +49,19 @@ pub enum WireMessage {
     /// Optional diff preview for file-modifying tools.
     diff_preview: Option<String>,
   },
+  /// Structured questions need to be presented to the user.
+  QuestionsAsked {
+    /// Tool call ID.
+    tool_call_id: String,
+    /// Questions to present.
+    questions: Vec<Question>,
+  },
   /// Compaction threshold crossed — context is approaching token limit.
   CompactionWarning {
     /// Current estimated token count.
     current_tokens: usize,
+    /// Token threshold that triggered the warning.
+    threshold: usize,
     /// Maximum context size for the current model.
     max_context_size: usize,
   },
@@ -59,6 +73,15 @@ pub enum WireMessage {
     after: usize,
     /// New estimated token count.
     tokens: usize,
+  },
+  /// Token usage information from the API.
+  Usage {
+    /// Total tokens in the conversation.
+    total_tokens: u32,
+    /// Tokens in the prompt.
+    prompt_tokens: u32,
+    /// Tokens in the completion.
+    completion_tokens: u32,
   },
   /// The current turn has ended.
   TurnEnd,
