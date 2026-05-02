@@ -23,7 +23,7 @@ use crate::error::{Error, LlmError, Result, StreamErrorCategory};
 use crate::llm::compaction::{Compaction, calculate_threshold, should_auto_compact};
 use crate::llm::provider::LLMProvider;
 use crate::llm::providers::KimiProvider;
-use crate::llm::types::{ChatConfig, Message, Role, ToolCall};
+use crate::llm::types::{ChatConfig, Message, ToolCall};
 use crate::session::{SessionMeta, SessionMode, SessionStore};
 use crate::tools::{ToolInvocation, ToolPayload};
 use crate::utils::token_counter::estimate_llm_messages_tokens;
@@ -55,6 +55,7 @@ pub(crate) fn generate_session_id() -> String {
   )
 }
 
+use super::context::Context;
 use super::{Question, QuestionOption, SessionCommand, SessionEvent, SessionHandle};
 
 /// Internal state of the session actor
@@ -63,8 +64,8 @@ struct SessionActor {
   id: String,
   /// The LLM provider
   provider: Box<dyn LLMProvider>,
-  /// Message history (including system, user, and assistant messages)
-  messages: Vec<Message>,
+  /// Message history managed by Context
+  context: Context,
   /// Channel to send events back to the caller
   event_tx: mpsc::UnboundedSender<SessionEvent>,
   /// Channel to receive commands
@@ -141,7 +142,7 @@ impl SessionActor {
     Self {
       id,
       provider,
-      messages,
+      context: Context::from_messages(messages),
       event_tx,
       cmd_rx,
       current_response: String::new(),
@@ -227,8 +228,7 @@ impl SessionActor {
         }
 
         // Add user message to history
-        let user_msg = Message::user(&content);
-        self.messages.push(user_msg.clone());
+        let user_msg = self.context.push_user(&content).clone();
         let _ = self.session_store.append_message(&self.id, &user_msg);
         self.meta.update_title_from_message(&user_msg);
         self.meta.updated_at = Local::now();
@@ -242,7 +242,7 @@ impl SessionActor {
 
         // Log current message history for debugging
         info!("Session {}: Current message history:", self.id);
-        for (i, msg) in self.messages.iter().enumerate() {
+        for (i, msg) in self.context.messages().iter().enumerate() {
           let content_preview: String = msg.content.chars().take(100).collect();
           let tool_calls_info = if let Some(ref tc) = msg.tool_calls {
             format!(" [tool_calls: {}]", tc.len())
@@ -278,22 +278,12 @@ impl SessionActor {
 
       SessionCommand::ClearHistory => {
         info!("Session {}: Clearing history", self.id);
-        // Keep only the system message if it exists
-        let system_msg = self.messages.first().and_then(|m| {
-          if m.role == Role::System {
-            Some(m.clone())
-          } else {
-            None
-          }
-        });
-
-        self.messages.clear();
-        if let Some(sys) = system_msg {
-          self.messages.push(sys);
-        }
+        self.context.clear_non_system();
 
         self.meta.updated_at = Local::now();
-        let _ = self.session_store.reset_messages(&self.id, &self.messages);
+        let _ = self
+          .session_store
+          .reset_messages(&self.id, self.context.messages());
         let _ = self.session_store.update_meta(&self.meta);
 
         self.current_response.clear();
@@ -355,8 +345,9 @@ impl SessionActor {
 
     // Estimate current token count
     let current_tokens = if let Some(precise) = self.precise_token_count {
-      let recent_tokens =
-        estimate_llm_messages_tokens(&self.messages[self.messages.len().saturating_sub(2)..]);
+      let recent_tokens = estimate_llm_messages_tokens(
+        &self.context.messages()[self.context.len().saturating_sub(2)..],
+      );
       log::info!(
         "check_and_notify_compaction: precise={}, recent={}, total={}",
         precise,
@@ -365,7 +356,7 @@ impl SessionActor {
       );
       precise as usize + recent_tokens
     } else {
-      let estimated = estimate_llm_messages_tokens(&self.messages);
+      let estimated = self.context.estimate_tokens();
       log::info!(
         "check_and_notify_compaction: no precise count, estimated={}",
         estimated
@@ -420,10 +411,10 @@ impl SessionActor {
   /// Uses the configured compaction strategy to compress message history.
   /// Updates the session store and notifies the UI of completion.
   async fn execute_compaction(&mut self) {
-    let message_count_before = self.messages.len();
+    let message_count_before = self.context.len();
 
     // Check if compaction should be performed
-    if !self.compaction.should_compact(&self.messages) {
+    if !self.compaction.should_compact(self.context.messages()) {
       log::info!(
         "Session {}: Compaction strategy decided not to compact ({} messages)",
         self.id,
@@ -434,7 +425,7 @@ impl SessionActor {
 
     // Perform compaction
     log::info!("Session {}: Executing compaction...", self.id);
-    let result = self.compaction.compact(&self.messages);
+    let result = self.compaction.compact(self.context.messages());
 
     if !result.did_compact {
       log::info!("Session {}: No compaction performed by strategy", self.id);
@@ -442,11 +433,11 @@ impl SessionActor {
     }
 
     // Update messages
-    self.messages = result.messages;
-    let message_count_after = self.messages.len();
+    *self.context.messages_mut() = result.messages;
+    let message_count_after = self.context.len();
 
     // Estimate new token count
-    let new_token_count = estimate_llm_messages_tokens(&self.messages);
+    let new_token_count = self.context.estimate_tokens();
 
     log::info!(
       "Session {}: Compaction completed - {} messages -> {} messages, ~{} tokens",
@@ -457,7 +448,10 @@ impl SessionActor {
     );
 
     // Save compacted messages to session store
-    if let Err(e) = self.session_store.reset_messages(&self.id, &self.messages) {
+    if let Err(e) = self
+      .session_store
+      .reset_messages(&self.id, self.context.messages())
+    {
       error!(
         "Session {}: Failed to save compacted messages: {}",
         self.id, e
@@ -567,7 +561,11 @@ impl SessionActor {
   async fn run_chat_stream_with_recovery(
     &mut self,
   ) -> std::result::Result<ChatCompletionResponseStream, (Error, bool)> {
-    match self.provider.chat_stream(self.messages.clone()).await {
+    match self
+      .provider
+      .chat_stream(self.context.messages().to_vec())
+      .await
+    {
       Ok(stream) => Ok(stream),
       Err(err) => {
         let is_connection_error = matches!(
@@ -589,7 +587,11 @@ impl SessionActor {
             self.provider.on_retryable_error(llm_err).await;
           }
 
-          match self.provider.chat_stream(self.messages.clone()).await {
+          match self
+            .provider
+            .chat_stream(self.context.messages().to_vec())
+            .await
+          {
             Ok(stream) => {
               info!("Session {}: connection recovery succeeded", self.id);
               Ok(stream)
@@ -712,21 +714,15 @@ impl SessionActor {
         let has_tool_calls = !tool_calls.is_empty();
 
         if has_content || has_tool_calls {
-          // Build message content (include thinking if present)
-          let content = if !thinking.is_empty() {
-            format!("<think>{}</think>{}", thinking, response)
+          let thinking_opt = if thinking.is_empty() {
+            None
           } else {
-            response
+            Some(thinking)
           };
-
-          // Create assistant message with or without tool calls
-          let assistant_msg = if has_tool_calls {
-            Message::assistant_with_tools(content, tool_calls)
-          } else {
-            Message::assistant(content)
-          };
-
-          self.messages.push(assistant_msg.clone());
+          let assistant_msg = self
+            .context
+            .push_assistant(response, thinking_opt, tool_calls)
+            .clone();
           let _ = self.session_store.append_message(&self.id, &assistant_msg);
           self.meta.updated_at = Local::now();
           let _ = self.session_store.update_meta(&self.meta);
@@ -742,7 +738,7 @@ impl SessionActor {
         self.stream_rx = None;
 
         // Check if we have tool calls to execute
-        if let Some(msg) = self.messages.last()
+        if let Some(msg) = self.context.messages().last()
           && msg.tool_calls.is_some()
           && !msg.tool_calls.as_ref().unwrap().is_empty()
         {
@@ -839,7 +835,7 @@ impl SessionActor {
   /// If YOLO mode is off and a tool is not in the auto-approve list,
   /// execution pauses and an `ApprovalNeeded` event is sent to the UI.
   async fn execute_tool_calls(&mut self) {
-    let tool_calls = match self.messages.last() {
+    let tool_calls = match self.context.messages().last() {
       Some(msg) => msg.tool_calls.clone().unwrap_or_default(),
       None => {
         error!("Session {}: No assistant message with tool calls", self.id);
@@ -894,8 +890,8 @@ impl SessionActor {
             name: tool_call.name.clone(),
             output: output.clone(),
           });
+          self.context.push_tool_result(&tool_call.id, &output);
           let tool_msg = Message::tool(&output, &tool_call.id);
-          self.messages.push(tool_msg.clone());
           let _ = self.session_store.append_message(&self.id, &tool_msg);
           continue;
         }
@@ -929,8 +925,8 @@ impl SessionActor {
               name: tool_call.name.clone(),
               output: error_msg.clone(),
             });
+            self.context.push_tool_result(&tool_call.id, &error_msg);
             let tool_msg = Message::tool(&error_msg, &tool_call.id);
-            self.messages.push(tool_msg.clone());
             let _ = self.session_store.append_message(&self.id, &tool_msg);
             continue;
           }
@@ -975,7 +971,7 @@ impl SessionActor {
       "Session {}: Updated message history for next request:",
       self.id
     );
-    for (i, msg) in self.messages.iter().enumerate() {
+    for (i, msg) in self.context.messages().iter().enumerate() {
       let content_preview: String = msg.content.chars().take(100).collect();
       let tool_calls_info = if let Some(ref tc) = msg.tool_calls {
         format!(" [tool_calls: {}]", tc.len())
@@ -1017,14 +1013,14 @@ impl SessionActor {
           output: output_str.clone(),
         });
 
-        let tool_msg = Message::tool(&output_str, &tool_call.id);
         info!(
           "Session {}: Adding tool result message: tool_call_id={}, output_preview={}...",
           self.id,
           tool_call.id,
           output_str.chars().take(100).collect::<String>()
         );
-        self.messages.push(tool_msg.clone());
+        self.context.push_tool_result(&tool_call.id, &output_str);
+        let tool_msg = Message::tool(&output_str, &tool_call.id);
         let _ = self.session_store.append_message(&self.id, &tool_msg);
         info!(
           "Session {}: Tool {} executed successfully, output_len={}",
@@ -1041,12 +1037,12 @@ impl SessionActor {
           output: error_msg.clone(),
         });
 
-        let tool_msg = Message::tool(&error_msg, &tool_call.id);
         info!(
           "Session {}: Adding tool error message: tool_call_id={}, error={}",
           self.id, tool_call.id, error_msg
         );
-        self.messages.push(tool_msg.clone());
+        self.context.push_tool_result(&tool_call.id, &error_msg);
+        let tool_msg = Message::tool(&error_msg, &tool_call.id);
         let _ = self.session_store.append_message(&self.id, &tool_msg);
         error!("Session {}: Tool {} failed: {}", self.id, tool_call.name, e);
       }
@@ -1093,8 +1089,8 @@ impl SessionActor {
         output: denied_msg.clone(),
       });
 
+      self.context.push_tool_result(&tool_call.id, &denied_msg);
       let tool_msg = Message::tool(&denied_msg, &tool_call.id);
-      self.messages.push(tool_msg.clone());
       let _ = self.session_store.append_message(&self.id, &tool_msg);
     }
 
@@ -1192,8 +1188,8 @@ impl SessionActor {
       output: output.clone(),
     });
 
+    self.context.push_tool_result(&tool_call.id, &output);
     let tool_msg = Message::tool(&output, &tool_call.id);
-    self.messages.push(tool_msg.clone());
     let _ = self.session_store.append_message(&self.id, &tool_msg);
 
     let next_index = current_index + 1;
