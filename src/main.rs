@@ -8,6 +8,7 @@ mod tools;
 mod tui;
 mod utils;
 mod view;
+mod wire;
 
 use std::env;
 use std::fs::{self, OpenOptions};
