@@ -13,7 +13,7 @@ use ratatui::{
 
 use crate::cli::AppData;
 use crate::cli::app::PendingQuestions;
-use crate::config::global_config;
+use crate::cli::runtime::Runtime;
 use crate::history::InputHistoryManager;
 use crate::llm::SessionHandle;
 use crate::llm::types::Message;
@@ -238,7 +238,7 @@ impl ChatView {
   /// # Arguments
   /// * `data` - Application data for determining initial state
   /// * `session_handle` - Handle to the chat session (must be valid)
-  pub fn new(data: &AppData, session_handle: SessionHandle) -> Self {
+  pub fn new(data: &AppData, session_handle: SessionHandle, runtime: &Runtime) -> Self {
     let prompt = Self::build_prompt();
 
     // Check if waiting for AI response (last message is from user)
@@ -265,7 +265,7 @@ impl ChatView {
     log::debug!("ChatView created with initial state: {:?}", state);
 
     // Initialize status bar info
-    let status_bar_info = StatusBarInfo::from_app_data(data, &session_handle.id, state);
+    let status_bar_info = StatusBarInfo::from_app_data(data, &session_handle.id, state, runtime);
 
     Self {
       input: String::new(),
@@ -279,7 +279,7 @@ impl ChatView {
       moon_frame: 0,
       state,
       session_handle,
-      history: InputHistoryManager::with_config(global_config()),
+      history: InputHistoryManager::with_config(runtime),
       status_bar_info,
     }
   }
@@ -1684,25 +1684,16 @@ impl View for ChatView {
 
 #[cfg(test)]
 mod tests {
-  use std::sync::Once;
-
   use crossterm::event::{KeyCode, KeyEvent};
   use tokio::sync::mpsc;
 
   use crate::cli::app::PendingQuestions;
-  use crate::config::{Config, init_global_config};
+  use crate::cli::runtime::Runtime;
+  use crate::config::Config;
   use crate::llm::Question;
   use crate::llm::session::SessionCommand;
 
   use super::*;
-
-  static INIT_CONFIG: Once = Once::new();
-
-  fn init_test_config() {
-    INIT_CONFIG.call_once(|| {
-      init_global_config(Config::default());
-    });
-  }
 
   fn make_session_handle() -> (SessionHandle, mpsc::UnboundedReceiver<SessionCommand>) {
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
@@ -1761,10 +1752,9 @@ mod tests {
 
   #[test]
   fn test_question_keyboard_down_navigation() {
-    init_test_config();
     let (session_handle, mut cmd_rx) = make_session_handle();
     let mut data = AppData::new();
-    let mut view = ChatView::new(&data, session_handle);
+    let mut view = ChatView::new(&data, session_handle, &Runtime::for_test(Config::default()));
     data.pending_questions = Some(make_pending_questions());
 
     // Press Down to move from option 0 to option 1
@@ -1777,10 +1767,9 @@ mod tests {
 
   #[test]
   fn test_question_single_select_enter() {
-    init_test_config();
     let (session_handle, _cmd_rx) = make_session_handle();
     let mut data = AppData::new();
-    let mut view = ChatView::new(&data, session_handle);
+    let mut view = ChatView::new(&data, session_handle, &Runtime::for_test(Config::default()));
     data.pending_questions = Some(make_pending_questions());
 
     // Press Enter to confirm first question (single-select)
@@ -1795,10 +1784,9 @@ mod tests {
 
   #[test]
   fn test_question_multi_select_toggle() {
-    init_test_config();
     let (session_handle, _cmd_rx) = make_session_handle();
     let mut data = AppData::new();
-    let mut view = ChatView::new(&data, session_handle);
+    let mut view = ChatView::new(&data, session_handle, &Runtime::for_test(Config::default()));
     data.pending_questions = Some(make_pending_questions());
 
     // Move to second question (multi-select)
@@ -1832,10 +1820,9 @@ mod tests {
 
   #[test]
   fn test_question_complete_all_and_submit() {
-    init_test_config();
     let (session_handle, mut cmd_rx) = make_session_handle();
     let mut data = AppData::new();
-    let mut view = ChatView::new(&data, session_handle);
+    let mut view = ChatView::new(&data, session_handle, &Runtime::for_test(Config::default()));
     data.pending_questions = Some(make_pending_questions());
 
     // Answer first question (single-select, option 1)
@@ -1867,10 +1854,9 @@ mod tests {
 
   #[test]
   fn test_question_dismiss_with_q() {
-    init_test_config();
     let (session_handle, mut cmd_rx) = make_session_handle();
     let mut data = AppData::new();
-    let mut view = ChatView::new(&data, session_handle);
+    let mut view = ChatView::new(&data, session_handle, &Runtime::for_test(Config::default()));
     data.pending_questions = Some(make_pending_questions());
 
     view.handle_key(&mut data, KeyEvent::from(KeyCode::Char('q')));
@@ -1893,10 +1879,9 @@ mod tests {
 
   #[test]
   fn test_question_dismiss_with_esc() {
-    init_test_config();
     let (session_handle, mut cmd_rx) = make_session_handle();
     let mut data = AppData::new();
-    let mut view = ChatView::new(&data, session_handle);
+    let mut view = ChatView::new(&data, session_handle, &Runtime::for_test(Config::default()));
     data.pending_questions = Some(make_pending_questions());
 
     view.handle_key(&mut data, KeyEvent::from(KeyCode::Esc));
@@ -1919,10 +1904,9 @@ mod tests {
 
   #[test]
   fn test_question_digit_quick_select() {
-    init_test_config();
     let (session_handle, _cmd_rx) = make_session_handle();
     let mut data = AppData::new();
-    let mut view = ChatView::new(&data, session_handle);
+    let mut view = ChatView::new(&data, session_handle, &Runtime::for_test(Config::default()));
     data.pending_questions = Some(make_pending_questions());
 
     // Press '2' to select option 1 (0-indexed) and auto-confirm single-select
@@ -1962,10 +1946,9 @@ mod tests {
 
   #[test]
   fn test_question_confirmation_yes() {
-    init_test_config();
     let (session_handle, mut cmd_rx) = make_session_handle();
     let mut data = AppData::new();
-    let mut view = ChatView::new(&data, session_handle);
+    let mut view = ChatView::new(&data, session_handle, &Runtime::for_test(Config::default()));
     data.pending_questions = Some(make_confirmation_question());
 
     view.handle_key(&mut data, KeyEvent::from(KeyCode::Char('y')));
@@ -1988,10 +1971,9 @@ mod tests {
 
   #[test]
   fn test_question_confirmation_no() {
-    init_test_config();
     let (session_handle, mut cmd_rx) = make_session_handle();
     let mut data = AppData::new();
-    let mut view = ChatView::new(&data, session_handle);
+    let mut view = ChatView::new(&data, session_handle, &Runtime::for_test(Config::default()));
     data.pending_questions = Some(make_confirmation_question());
 
     view.handle_key(&mut data, KeyEvent::from(KeyCode::Char('n')));
@@ -2014,10 +1996,9 @@ mod tests {
 
   #[test]
   fn test_question_default_value_preselected() {
-    init_test_config();
     let (session_handle, _cmd_rx) = make_session_handle();
     let mut data = AppData::new();
-    let mut view = ChatView::new(&data, session_handle);
+    let mut view = ChatView::new(&data, session_handle, &Runtime::for_test(Config::default()));
     data.pending_questions = Some(PendingQuestions {
       tool_call_id: "call-def".to_string(),
       questions: vec![Question {
@@ -2052,10 +2033,9 @@ mod tests {
 
   #[test]
   fn test_question_required_blocks_empty() {
-    init_test_config();
     let (session_handle, _cmd_rx) = make_session_handle();
     let mut data = AppData::new();
-    let mut view = ChatView::new(&data, session_handle);
+    let mut view = ChatView::new(&data, session_handle, &Runtime::for_test(Config::default()));
     data.pending_questions = Some(PendingQuestions {
       tool_call_id: "call-req".to_string(),
       questions: vec![Question {

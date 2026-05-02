@@ -27,7 +27,8 @@ use std::result::Result as StdResult;
 use crate::error::{LlmError, Result, StreamErrorCategory};
 use crate::llm::provider::LLMProvider;
 use crate::llm::types::{ChatConfig, Message, Role};
-use crate::tools::{Tool, global_tool_registry};
+use crate::tools::Tool;
+use std::sync::Arc;
 
 /// Custom delta that includes reasoning_content for Kimi API
 #[derive(Debug, Clone, Deserialize)]
@@ -202,6 +203,7 @@ pub struct KimiProvider {
   api_key: String,
   coding_agent: bool,
   max_context_size: usize,
+  tool_registry: Arc<crate::tools::ToolRegistry>,
 }
 
 impl std::fmt::Debug for KimiProvider {
@@ -225,6 +227,7 @@ impl Clone for KimiProvider {
       api_key: self.api_key.clone(),
       coding_agent: self.coding_agent,
       max_context_size: self.max_context_size,
+      tool_registry: self.tool_registry.clone(),
     }
   }
 }
@@ -244,6 +247,7 @@ impl KimiProvider {
     config: ChatConfig,
     coding_agent: bool,
     max_context_size: usize,
+    tool_registry: Arc<crate::tools::ToolRegistry>,
   ) -> Result<Self> {
     let base_url = base_url.into();
     let api_key = api_key.into();
@@ -257,6 +261,7 @@ impl KimiProvider {
       api_key,
       coding_agent,
       max_context_size,
+      tool_registry,
     })
   }
 
@@ -493,9 +498,8 @@ impl LLMProvider for KimiProvider {
     }
 
     // Add tools if any
-    let tool_registry = global_tool_registry();
-    if !tool_registry.is_empty() {
-      let tools = tool_registry.all();
+    if !self.tool_registry.is_empty() {
+      let tools = self.tool_registry.all();
       request.tools = Some(Self::convert_tools(&tools));
       log::info!("KimiProvider: Added {} tools to request", tools.len());
     }

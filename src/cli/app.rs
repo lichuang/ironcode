@@ -7,7 +7,6 @@ use ratatui::Frame;
 
 use crate::cli::Args;
 use crate::cli::runtime::Runtime;
-use crate::config::global_config;
 use crate::error::Result;
 use crate::llm::{ChatSession, Question, SessionEvent};
 use crate::session::{SessionMode, SessionStore};
@@ -113,9 +112,9 @@ pub struct App {
   pub view: Box<dyn View>,
   /// Frame requester for animation scheduling
   frame_requester: Option<FrameRequester>,
-  /// Runtime data loaded at startup
+  /// Runtime data loaded at startup (read-only application context)
   #[allow(dead_code)]
-  pub(crate) runtime: Runtime,
+  pub(crate) runtime: Arc<Runtime>,
 
   /// Chat session for LLM communication (initialized when first chat starts)
   chat_session: Option<ChatSession>,
@@ -131,8 +130,7 @@ impl App {
   /// * `data_dir` - The data directory for loading system prompt (data_dir/prompts/system.md)
   /// * `args` - Command line arguments for session control
   /// * `session_store` - Persistent session storage
-  pub fn new(data_dir: &Path, args: &Args) -> Result<Self> {
-    let runtime = Runtime::new(data_dir)?;
+  pub fn new(data_dir: &Path, args: &Args, runtime: Arc<Runtime>) -> Result<Self> {
     let mut data = AppData::new();
 
     let system_prompt = runtime.render_system_prompt();
@@ -147,13 +145,13 @@ impl App {
 
     let session_store = Arc::new(SessionStore::new(data_dir));
     let (chat_session, messages) =
-      ChatSession::create_or_resume(global_config(), system_prompt, session_store, mode)?;
+      ChatSession::create_or_resume(runtime.clone(), system_prompt, session_store, mode)?;
 
     data.chat_history = llm_messages_to_chat_history(&messages);
     let session_handle = chat_session.handle.clone();
 
     // Create ChatView directly
-    let chat_view = ChatView::new(&data, session_handle);
+    let chat_view = ChatView::new(&data, session_handle, &runtime);
 
     Ok(Self {
       data,

@@ -27,7 +27,6 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -319,36 +318,16 @@ where
 }
 
 // ============================================================================
-// Global Tool Registry Access
+// Global Tool Registry Access (DEPRECATED - use dependency injection instead)
 // ============================================================================
-
-static GLOBAL_TOOL_REGISTRY: OnceLock<ToolRegistry> = OnceLock::new();
-static GLOBAL_EXECUTABLE_TOOL_REGISTRY: OnceLock<ExecutableToolRegistry> = OnceLock::new();
-
-/// Initialize the global tool registry.
-/// Should be called once during application startup (in Runtime::new).
-pub fn init_global_tool_registry(registry: ToolRegistry) {
-  let _ = GLOBAL_TOOL_REGISTRY.set(registry);
-}
-
-/// Initialize the global executable tool registry.
-/// Should be called once during application startup (in Runtime::new).
-pub fn init_global_executable_tool_registry(registry: ExecutableToolRegistry) {
-  let _ = GLOBAL_EXECUTABLE_TOOL_REGISTRY.set(registry);
-}
-
-/// Access the global tool registry.
-/// Panics if called before `init_global_tool_registry`.
-pub fn global_tool_registry() -> &'static ToolRegistry {
-  GLOBAL_TOOL_REGISTRY
-    .get()
-    .expect("global tool registry not initialized")
-}
-
-/// Access the global executable tool registry.
-/// Panics if called before `init_global_executable_tool_registry`.
-pub fn global_executable_tool_registry() -> &'static ExecutableToolRegistry {
-  GLOBAL_EXECUTABLE_TOOL_REGISTRY
-    .get()
-    .expect("global executable tool registry not initialized")
-}
+//
+// The old GLOBAL_TOOL_REGISTRY and GLOBAL_EXECUTABLE_TOOL_REGISTRY OnceLock
+// globals have been removed as part of Phase 2 refactoring. Tool registries
+// are now created in Runtime::new() and passed explicitly through the
+// dependency chain:
+//   main() -> App::new(runtime, tool_registry, executable_registry, ...)
+//   -> ChatSession::create_or_resume(..., tool_registry, executable_registry)
+//   -> SessionActor::new(..., executable_registry)
+//   -> KimiProvider::new(..., tool_registry)
+//
+// This eliminates hidden global state and makes testing much easier.

@@ -21,9 +21,10 @@ use crossterm::event::KeyEventKind;
 use futures::StreamExt;
 use log::{info, warn};
 
-use cli::{App, Args};
+use cli::{App, Args, runtime::Runtime};
 use config::Config;
-use config::loader::{data_dir, load_config_from_dir, resolve_mcp_config};
+use config::loader::{data_dir, load_config_from_dir};
+use std::sync::Arc;
 use tui::{Tui, TuiEvent, init_terminal, restore_terminal};
 
 // Re-export error types for convenience
@@ -98,18 +99,20 @@ async fn main() -> Result<()> {
   let args = Args::parse();
 
   // Load configuration
-  // First, get the config file directory (either from -c arg or default ~/.ironcode/)
   let config_file_dir = args.config_dir();
-  let mut config = load_config_from_dir(&config_file_dir)?;
+  let user_config = load_config_from_dir(&config_file_dir)?;
 
-  // Apply CLI overrides before making config globally available
-  config.yolo = config.yolo || args.yolo;
-
-  // Resolve MCP configuration (inline TOML + external JSON + CLI override)
-  config.mcp = resolve_mcp_config(&config.mcp, args.mcp_config_file.as_deref())?;
-
-  // Initialize global configuration for read-only access across the application
-  config::init_global_config(config.clone());
+  // Build layered configuration (user config + CLI overrides)
+  let app_config = config::AppConfig {
+    user: user_config,
+    overrides: config::CliOverrides {
+      yolo: if args.yolo { Some(true) } else { None },
+      mcp_config_file: args.mcp_config_file.clone(),
+      session_id: args.session.clone(),
+      r#continue: args.r#continue,
+    },
+  };
+  let config = app_config.effective();
 
   // Get the data directory from config (defaults to ~/.ironcode/ if not specified)
   let data_dir = data_dir(&config);
@@ -128,9 +131,11 @@ async fn main() -> Result<()> {
   // Create TUI infrastructure
   let mut tui = Tui::new()?;
 
+  // Create runtime (loads system prompt, tool registries, etc.)
+  let runtime = Arc::new(Runtime::new(&data_dir, Arc::new(config))?);
+
   // Create app state
-  // Pass data_dir for loading system prompt from data_dir/prompts/system.md
-  let mut app = App::new(&data_dir, &args)?;
+  let mut app = App::new(&data_dir, &args, runtime)?;
 
   // Give the view a frame requester for animations
   app.set_frame_requester(tui.frame_requester());

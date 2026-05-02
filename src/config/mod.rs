@@ -427,6 +427,71 @@ pub enum McpTransport {
 }
 
 // ---------------------------------------------------------------------------
+// Configuration layering: user config + CLI overrides
+// ---------------------------------------------------------------------------
+
+/// CLI argument overrides for configuration.
+///
+/// These are temporary, non-persistent overrides provided via command-line
+/// arguments. They are kept separate from `Config` so that:
+/// 1. The user's on-disk config file is never polluted with temporary flags.
+/// 2. The application can distinguish between "what the user saved" and
+///    "what the user asked for this one run".
+/// 3. Session persistence stores the original `Config`, not the CLI overrides.
+#[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
+pub struct CliOverrides {
+  /// Override YOLO mode from CLI
+  pub yolo: Option<bool>,
+  /// Override MCP config file from CLI
+  pub mcp_config_file: Option<PathBuf>,
+  /// Session ID override
+  pub session_id: Option<String>,
+  /// Continue latest session flag
+  pub r#continue: bool,
+}
+
+/// Holds the raw user configuration plus CLI overrides.
+///
+/// `AppConfig` is the bridge between two sources of truth:
+/// - `user`: The configuration loaded from the user's `config.toml`. This is
+///   persistent and may be written back to disk.
+/// - `overrides`: Temporary CLI arguments that should only affect this single
+///   process lifetime.
+///
+/// Call `effective()` to merge them into a single runtime configuration. The
+/// merged result is never stored back to disk, ensuring CLI flags like `--yolo`
+/// do not accidentally persist across runs.
+#[derive(Debug, Clone)]
+pub struct AppConfig {
+  /// Configuration loaded from the user's config file (persistent).
+  pub user: Config,
+  /// CLI-provided overrides (temporary, single-run only).
+  pub overrides: CliOverrides,
+}
+
+impl AppConfig {
+  /// Build the effective configuration by applying CLI overrides on top of
+  /// the user configuration. The returned `Config` can be passed downstream
+  /// and is never stored back to disk, preventing CLI flags from persisting.
+  pub fn effective(&self) -> Config {
+    let mut config = self.user.clone();
+
+    if let Some(yolo) = self.overrides.yolo {
+      config.yolo = yolo;
+    }
+
+    if let Some(ref mcp_file) = self.overrides.mcp_config_file
+      && let Ok(resolved) = loader::resolve_mcp_config(&config.mcp, Some(mcp_file))
+    {
+      config.mcp = resolved;
+    }
+
+    config
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Configuration errors
 // ---------------------------------------------------------------------------
 
@@ -520,27 +585,14 @@ impl Error {
 }
 
 // ---------------------------------------------------------------------------
-// Global configuration
+// Global configuration (DEPRECATED - use dependency injection instead)
 // ---------------------------------------------------------------------------
-
-use std::sync::OnceLock;
-
-static GLOBAL_CONFIG: OnceLock<Config> = OnceLock::new();
-
-/// Initialize the global configuration.
-///
-/// Must be called exactly once at program startup, after loading the
-/// configuration from file.
-pub fn init_global_config(config: Config) {
-  if GLOBAL_CONFIG.set(config).is_err() {
-    panic!("global config already initialized");
-  }
-}
-
-/// Access the global configuration.
-///
-/// # Panics
-/// Panics if called before `init_global_config`.
-pub fn global_config() -> &'static Config {
-  GLOBAL_CONFIG.get().expect("global config not initialized")
-}
+//
+// The old GLOBAL_CONFIG OnceLock and global_config() accessor have been
+// removed as part of Phase 2 refactoring. Configuration is now passed
+// explicitly through the dependency chain:
+//   main() -> App::new(config) -> ChatSession::create_or_resume(config, ...)
+//   -> SessionActor::new(config, ...)
+//
+// This eliminates hidden global state and makes testing and configuration
+// layering much easier.

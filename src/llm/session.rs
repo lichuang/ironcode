@@ -18,14 +18,14 @@ use log::{debug, error, info, warn};
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
-use crate::config::{Config, global_config};
+use crate::cli::runtime::Runtime;
 use crate::error::{Error, LlmError, Result, StreamErrorCategory};
 use crate::llm::compaction::{Compaction, calculate_threshold, should_auto_compact};
 use crate::llm::provider::LLMProvider;
 use crate::llm::providers::KimiProvider;
 use crate::llm::types::{ChatConfig, Message, Role, ToolCall};
 use crate::session::{SessionMeta, SessionMode, SessionStore};
-use crate::tools::{ToolInvocation, ToolPayload, global_executable_tool_registry};
+use crate::tools::{ToolInvocation, ToolPayload};
 use crate::utils::token_counter::estimate_llm_messages_tokens;
 
 /// Maximum characters to display in user input log preview
@@ -292,6 +292,8 @@ struct SessionActor {
   yolo: bool,
   /// List of tools to auto-approve when YOLO is off
   auto_approve: Vec<String>,
+  /// Runtime context (config, tool registries, etc.)
+  runtime: Arc<Runtime>,
   /// State for resuming tool call execution after approval
   tool_call_execution_state: Option<ToolCallExecutionState>,
   /// State for resuming after user answers structured questions
@@ -326,6 +328,7 @@ impl SessionActor {
     meta: SessionMeta,
     yolo: bool,
     auto_approve: Vec<String>,
+    runtime: Arc<Runtime>,
   ) -> Self {
     let max_context_size = provider.max_context_size();
     Self {
@@ -349,6 +352,7 @@ impl SessionActor {
       compaction_notified: false,
       yolo,
       auto_approve,
+      runtime,
       tool_call_execution_state: None,
       pending_answers_state: None,
     }
@@ -566,14 +570,14 @@ impl SessionActor {
       "check_and_notify_compaction: current_tokens={}, max_context_size={}, compaction_config.enabled={}",
       current_tokens,
       self.max_context_size,
-      global_config().compaction.enabled
+      self.runtime.config.compaction.enabled
     );
 
     // Check if we should trigger compaction
     let should_compact = should_auto_compact(
       current_tokens,
       self.max_context_size,
-      &global_config().compaction,
+      &self.runtime.config.compaction,
     );
     log::info!(
       "check_and_notify_compaction: should_auto_compact={}",
@@ -582,7 +586,7 @@ impl SessionActor {
 
     if should_compact {
       if !self.compaction_notified {
-        let threshold = calculate_threshold(self.max_context_size, &global_config().compaction);
+        let threshold = calculate_threshold(self.max_context_size, &self.runtime.config.compaction);
         info!(
           "Session {}: Compaction needed - {} tokens (threshold: {})",
           self.id, current_tokens, threshold
@@ -683,7 +687,7 @@ impl SessionActor {
   /// so that the total number of retries for a single step never exceeds
   /// `retry_config.max_attempts`.
   async fn attempt_chat_stream(&mut self, context: &str) {
-    let max_attempts = global_config().retry.max_attempts.max(1);
+    let max_attempts = self.runtime.config.retry.max_attempts.max(1);
 
     while self.stream_retry_attempt < max_attempts {
       match self.run_chat_stream_with_recovery().await {
@@ -733,7 +737,9 @@ impl SessionActor {
             return;
           }
 
-          let delay = global_config()
+          let delay = self
+            .runtime
+            .config
             .retry
             .delay_for_attempt(self.stream_retry_attempt - 1);
           warn!(
@@ -1137,7 +1143,7 @@ impl SessionActor {
           },
           &self.cwd,
         );
-        let diff_preview = global_executable_tool_registry().preview(&invocation).await;
+        let diff_preview = self.runtime.executable_registry.preview(&invocation).await;
         self.tool_call_execution_state = Some(ToolCallExecutionState {
           tool_calls: state.tool_calls.clone(),
           current_index: i,
@@ -1196,7 +1202,7 @@ impl SessionActor {
       &self.cwd,
     );
 
-    match global_executable_tool_registry().dispatch(invocation).await {
+    match self.runtime.executable_registry.dispatch(invocation).await {
       Ok(output) => {
         let output_str = output.into_response();
 
@@ -1550,25 +1556,27 @@ pub struct ChatSession {
 
 impl ChatSession {
   fn new_session(
-    config: &Config,
+    runtime: Arc<Runtime>,
     system_prompt: String,
     session_store: Arc<SessionStore>,
   ) -> Result<(Self, Vec<Message>)> {
+    let config = &runtime.config;
     let mut meta = SessionMeta::new(generate_session_id(), &system_prompt);
     meta.yolo = config.yolo;
     session_store.create(&meta)?;
-    let session = Self::create_with_store(config, system_prompt, session_store, meta)?;
+    let session = Self::create_with_store(runtime, system_prompt, session_store, meta)?;
     Ok((session, Vec::new()))
   }
 
   fn resume(
     id: String,
-    config: &Config,
+    runtime: Arc<Runtime>,
     session_store: Arc<SessionStore>,
     meta: SessionMeta,
     messages: Vec<Message>,
   ) -> Result<(Self, Vec<Message>)> {
-    let provider = Self::create_provider(config)?;
+    let config = &runtime.config;
+    let provider = Self::create_provider(&runtime)?;
 
     let yolo = meta.yolo;
     let session = Self::start_with_messages(
@@ -1579,6 +1587,7 @@ impl ChatSession {
       meta,
       yolo,
       config.auto_approve.clone(),
+      runtime,
     );
     Ok((session, messages))
   }
@@ -1587,23 +1596,23 @@ impl ChatSession {
   ///
   /// Returns the session and the loaded message history (empty for new sessions).
   pub fn create_or_resume(
-    config: &Config,
+    runtime: Arc<Runtime>,
     system_prompt: String,
     session_store: Arc<SessionStore>,
     mode: SessionMode,
   ) -> Result<(Self, Vec<Message>)> {
     match mode {
-      SessionMode::New => Self::new_session(config, system_prompt, session_store),
+      SessionMode::New => Self::new_session(runtime, system_prompt, session_store),
       SessionMode::ResumeById(id) => {
         let (meta, messages) = session_store.load(&id)?;
-        Self::resume(id, config, session_store, meta, messages)
+        Self::resume(id, runtime, session_store, meta, messages)
       }
       SessionMode::ResumeLatest => match session_store.latest_id()? {
         Some(id) => {
           let (meta, messages) = session_store.load(&id)?;
-          Self::resume(id, config, session_store, meta, messages)
+          Self::resume(id, runtime, session_store, meta, messages)
         }
-        None => Self::new_session(config, system_prompt, session_store),
+        None => Self::new_session(runtime, system_prompt, session_store),
       },
     }
   }
@@ -1612,7 +1621,10 @@ impl ChatSession {
   ///
   /// # Arguments
   /// * `config` - The application configuration
-  pub(crate) fn create_provider(config: &Config) -> Result<Box<dyn LLMProvider>> {
+  pub(crate) fn create_provider(runtime: &Runtime) -> Result<Box<dyn LLMProvider>> {
+    let config = &runtime.config;
+    let tool_registry = runtime.tool_registry.clone();
+
     // Get default model configuration
     let model_config = config
       .default_model_config()
@@ -1661,6 +1673,7 @@ impl ChatSession {
         chat_config,
         coding_agent,
         max_context_size,
+        tool_registry,
       )?),
       _ => {
         return Err(
@@ -1678,12 +1691,13 @@ impl ChatSession {
 
   /// Start a new chat session from configuration with persistence
   fn create_with_store(
-    config: &Config,
+    runtime: Arc<Runtime>,
     system_prompt: impl Into<String>,
     session_store: Arc<SessionStore>,
     meta: SessionMeta,
   ) -> Result<Self> {
-    let provider = Self::create_provider(config)?;
+    let config = &runtime.config;
+    let provider = Self::create_provider(&runtime)?;
     let system_prompt = system_prompt.into();
     let messages = vec![Message::system(system_prompt.clone())];
 
@@ -1696,6 +1710,7 @@ impl ChatSession {
       meta,
       yolo,
       config.auto_approve.clone(),
+      runtime,
     );
     info!(
       "ChatSession {} created from config with store",
@@ -1714,6 +1729,7 @@ impl ChatSession {
     meta: SessionMeta,
     yolo: bool,
     auto_approve: Vec<String>,
+    runtime: Arc<Runtime>,
   ) -> Self {
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
     let (event_tx, event_rx) = mpsc::unbounded_channel();
@@ -1733,6 +1749,7 @@ impl ChatSession {
       meta,
       yolo,
       auto_approve,
+      runtime,
     );
     tokio::spawn(actor.run());
 

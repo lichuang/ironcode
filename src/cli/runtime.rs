@@ -1,20 +1,19 @@
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use chrono::Local;
 use log::{debug, info, warn};
 
+use crate::config::Config;
 use crate::config::loader::system_prompt_path;
 use crate::error::Result;
 use crate::tools::handlers::{
   AskUserQuestionHandler, FetchURLHandler, GlobHandler, GrepHandler, ReadFileHandler,
   ReplaceFileHandler, SearchWebHandler, SetTodoListHandler, WriteFileHandler,
 };
-use crate::tools::{
-  ExecutableToolRegistry, ToolRegistry, init_global_executable_tool_registry,
-  init_global_tool_registry,
-};
+use crate::tools::{ExecutableToolRegistry, ToolRegistry};
 
 // Import platform-specific shell handlers
 #[cfg(not(target_os = "windows"))]
@@ -177,15 +176,21 @@ impl RuntimeArgs {
   }
 }
 
-/// Runtime holds the system prompt template and arguments for rendering.
-/// Tool registries are initialized globally via `init_global_*` and accessed
-/// through `global_tool_registry()` / `global_executable_tool_registry()`.
+/// Runtime holds the effective configuration, system prompt template, arguments,
+/// and tool registries. All fields are loaded at startup and are read-only during
+/// the session.
 #[derive(Debug, Clone)]
 pub(crate) struct Runtime {
+  /// Effective configuration (user config + CLI overrides applied)
+  pub config: Arc<Config>,
   /// Template arguments for substitution
   pub args: RuntimeArgs,
   /// The raw system prompt template (before substitution)
   pub system_prompt_template: String,
+  /// Tool definitions registry (loaded from Markdown files)
+  pub tool_registry: Arc<ToolRegistry>,
+  /// Executable tool registry for dispatching and previewing tool calls
+  pub executable_registry: Arc<ExecutableToolRegistry>,
 }
 
 impl Runtime {
@@ -194,27 +199,45 @@ impl Runtime {
   /// Loads system prompt from data_dir/prompts/system.md
   /// Loads tools from data_dir/prompts/tools/
   /// Returns empty string if prompt file doesn't exist
-  pub(crate) fn new(data_dir: &Path) -> Result<Self> {
+  pub(crate) fn new(data_dir: &Path, config: Arc<Config>) -> Result<Self> {
     let system_prompt_template = Self::load_system_prompt_template(data_dir);
     let args = RuntimeArgs::new()?;
 
     // Load executable tool registry first (handlers must be registered before checking)
-    let executable_tool_registry = Self::load_executable_tools();
+    let executable_registry = Arc::new(Self::load_executable_tools());
 
     // Load tool definitions from Markdown files
-    let tool_registry = Self::load_tools(data_dir)?;
+    let tool_registry = Arc::new(Self::load_tools(data_dir)?);
 
     // Check that all defined tools have corresponding handlers
-    Self::validate_tool_handlers(&tool_registry, &executable_tool_registry)?;
-
-    // Initialize global registries for read-only access across the application
-    init_global_tool_registry(tool_registry);
-    init_global_executable_tool_registry(executable_tool_registry);
+    Self::validate_tool_handlers(&tool_registry, &executable_registry)?;
 
     Ok(Self {
+      config,
       args,
       system_prompt_template,
+      tool_registry,
+      executable_registry,
     })
+  }
+
+  #[cfg(test)]
+  pub(crate) fn for_test(config: Config) -> Self {
+    Self {
+      config: Arc::new(config),
+      args: RuntimeArgs {
+        now: String::new(),
+        work_dir: String::new(),
+        work_dir_ls: String::new(),
+        additional_dirs_info: String::new(),
+        agents_md: String::new(),
+        skills: String::new(),
+        role_additional: String::new(),
+      },
+      system_prompt_template: String::new(),
+      tool_registry: Arc::new(ToolRegistry::default()),
+      executable_registry: Arc::new(ExecutableToolRegistry::new()),
+    }
   }
 
   /// Load and initialize the executable tool registry with all handlers

@@ -10,6 +10,7 @@ use ratatui::{
 
 use crate::cli::AppData;
 use crate::cli::app::CompactionWarning;
+use crate::cli::runtime::Runtime;
 use crate::config::DEFAULT_MAX_CONTEXT_SIZE;
 use crate::utils::colors::{CRITICAL, MUTED, PRIMARY, SUBTLE, TEXT, WARNING};
 use crate::utils::token_counter::estimate_chat_messages_tokens;
@@ -96,12 +97,17 @@ pub struct StatusBarInfo {
 
 impl StatusBarInfo {
   /// Create status bar info from AppData
-  pub fn from_app_data(data: &AppData, session_id: &str, state: ChatDisplayState) -> Self {
+  pub fn from_app_data(
+    data: &AppData,
+    session_id: &str,
+    state: ChatDisplayState,
+    runtime: &Runtime,
+  ) -> Self {
+    let config = &runtime.config;
     // Get short session ID (first 8 characters)
     let short_id = session_id.chars().take(8).collect();
 
-    // Get model name and max context size from global config
-    let config = crate::config::global_config();
+    // Get model name and max context size from config
     let model_name = config.default_model.clone();
     let max_context_size = config
       .default_model_config()

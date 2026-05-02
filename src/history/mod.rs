@@ -13,8 +13,9 @@ use fs4::fs_std::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{from_str, to_string};
 
+use crate::cli::runtime::Runtime;
+use crate::config::HistoryConfig;
 use crate::config::loader::data_dir;
-use crate::config::{Config, HistoryConfig};
 
 /// Filename for storing input history.
 const HISTORY_FILENAME: &str = "history.jsonl";
@@ -90,9 +91,9 @@ impl InputHistoryManager {
     }
   }
 
-  /// Create with config for persistence.
-  pub fn with_config(config: &Config) -> Self {
-    let storage = InputHistoryStorage::new(config);
+  /// Create with runtime for persistence.
+  pub fn with_config(runtime: &Runtime) -> Self {
+    let storage = InputHistoryStorage::new(runtime);
     let entries = storage.load_entries();
     Self {
       entries,
@@ -236,8 +237,9 @@ pub struct InputHistoryStorage {
 }
 
 impl InputHistoryStorage {
-  /// Create a new history storage from config.
-  pub fn new(config: &Config) -> Self {
+  /// Create a new history storage from runtime.
+  pub fn new(runtime: &Runtime) -> Self {
+    let config = &runtime.config;
     let path = data_dir(config).join(HISTORY_FILENAME);
     Self {
       path,
@@ -488,15 +490,15 @@ impl InputHistoryStorage {
 
 #[allow(dead_code)]
 /// Convenience function to append an entry to history.
-pub fn save_input(text: impl Into<String>, config: &Config) -> std::io::Result<()> {
-  let storage = InputHistoryStorage::new(config);
+pub fn save_input(text: impl Into<String>, runtime: &Runtime) -> std::io::Result<()> {
+  let storage = InputHistoryStorage::new(runtime);
   storage.append_entry(text)
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::config::{CompactionConfig, HistoryConfig, LoggingConfig, RetryConfig};
+  use crate::config::{CompactionConfig, Config, HistoryConfig, LoggingConfig, RetryConfig};
   use std::collections::HashMap;
   use tempfile::TempDir;
 
@@ -706,7 +708,8 @@ mod tests {
   fn test_storage_load_save() {
     let temp_dir = TempDir::new().unwrap();
     let config = create_test_config(&temp_dir);
-    let storage = InputHistoryStorage::new(&config);
+    let runtime = Runtime::for_test(config.clone());
+    let storage = InputHistoryStorage::new(&runtime);
 
     // Initially empty
     let entries = storage.load_entries();
@@ -730,7 +733,8 @@ mod tests {
     let temp_dir = TempDir::new().unwrap();
     // Create config with max_entries=2 and max_size=0 (unlimited)
     let config = create_test_config_with_history(&temp_dir, 0, 2);
-    let storage = InputHistoryStorage::new(&config);
+    let runtime = Runtime::for_test(config.clone());
+    let storage = InputHistoryStorage::new(&runtime);
 
     // Add 5 entries
     for i in 0..5 {
@@ -749,7 +753,8 @@ mod tests {
     let temp_dir = TempDir::new().unwrap();
     // Create config with max_size=100 bytes and max_entries=0 (unlimited)
     let config = create_test_config_with_history(&temp_dir, 100, 0);
-    let storage = InputHistoryStorage::new(&config);
+    let runtime = Runtime::for_test(config.clone());
+    let storage = InputHistoryStorage::new(&runtime);
 
     // Add entries that will exceed size limit
     storage.append_entry("short").unwrap();
@@ -773,7 +778,8 @@ mod tests {
   fn test_storage_clear() {
     let temp_dir = TempDir::new().unwrap();
     let config = create_test_config(&temp_dir);
-    let storage = InputHistoryStorage::new(&config);
+    let runtime = Runtime::for_test(config.clone());
+    let storage = InputHistoryStorage::new(&runtime);
 
     storage.append_entry("test").unwrap();
     assert!(storage.path().exists());
@@ -786,11 +792,12 @@ mod tests {
   fn test_save_input_convenience() {
     let temp_dir = TempDir::new().unwrap();
     let config = create_test_config(&temp_dir);
+    let runtime = Runtime::for_test(config);
 
-    save_input("hello", &config).unwrap();
-    save_input("world", &config).unwrap();
+    save_input("hello", &runtime).unwrap();
+    save_input("world", &runtime).unwrap();
 
-    let storage = InputHistoryStorage::new(&config);
+    let storage = InputHistoryStorage::new(&runtime);
     let entries = storage.load_entries();
     assert_eq!(entries.len(), 2);
   }
