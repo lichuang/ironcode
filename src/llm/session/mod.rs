@@ -8,6 +8,7 @@ pub mod actor;
 pub mod context;
 pub mod persistence;
 pub mod stream;
+pub mod tool_exec;
 
 pub use actor::ChatSession;
 

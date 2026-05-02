@@ -20,7 +20,6 @@ use crate::llm::provider::LLMProvider;
 use crate::llm::providers::KimiProvider;
 use crate::llm::types::{ChatConfig, Message, ToolCall};
 use crate::session::{SessionMeta, SessionMode, SessionStore};
-use crate::tools::{ToolInvocation, ToolPayload};
 use crate::utils::token_counter::estimate_llm_messages_tokens;
 
 /// Maximum characters to display in user input log preview
@@ -53,6 +52,7 @@ pub(crate) fn generate_session_id() -> String {
 use super::context::Context;
 use super::persistence::SessionPersistence;
 use super::stream::{StreamManager, format_user_friendly_error};
+use super::tool_exec::ToolExecutor;
 use super::{Question, QuestionOption, SessionCommand, SessionEvent, SessionHandle};
 
 /// Internal state of the session actor
@@ -77,8 +77,6 @@ struct SessionActor {
   stream_manager: StreamManager,
   /// Tool call buffer for accumulating tool calls during streaming
   pending_tool_calls: Vec<ToolCall>,
-  /// Working directory for tool execution
-  cwd: PathBuf,
   /// Precise token count from API usage (if available)
   precise_token_count: Option<u32>,
   /// Buffered persistence layer
@@ -95,6 +93,8 @@ struct SessionActor {
   yolo: bool,
   /// List of tools to auto-approve when YOLO is off
   auto_approve: Vec<String>,
+  /// Tool executor for dispatching and previewing tool calls
+  tool_executor: ToolExecutor,
   /// Runtime context (config, tool registries, etc.)
   runtime: Arc<Runtime>,
   /// State for resuming tool call execution after approval
@@ -145,7 +145,6 @@ impl SessionActor {
       stream_rx: None,
       stream_manager: StreamManager::new(provider, runtime.retry_config()),
       pending_tool_calls: Vec::new(),
-      cwd: env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
       persistence: SessionPersistence::new(session_store),
       meta,
       precise_token_count: None,
@@ -154,6 +153,10 @@ impl SessionActor {
       compaction_notified: false,
       yolo,
       auto_approve,
+      tool_executor: ToolExecutor::new(
+        env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        runtime.executable_registry.clone(),
+      ),
       runtime,
       tool_call_execution_state: None,
       pending_answers_state: None,
@@ -804,14 +807,7 @@ impl SessionActor {
           "Session {}: Tool {} requires approval, pausing execution",
           self.id, tool_call.name
         );
-        let invocation = ToolInvocation::new(
-          &tool_call.id,
-          ToolPayload::Function {
-            arguments: tool_call.arguments.clone(),
-          },
-          &self.cwd,
-        );
-        let diff_preview = self.runtime.executable_registry.preview(&invocation).await;
+        let diff_preview = self.tool_executor.preview(tool_call).await;
         self.tool_call_execution_state = Some(ToolCallExecutionState {
           tool_calls: state.tool_calls.clone(),
           current_index: i,
@@ -862,17 +858,9 @@ impl SessionActor {
 
   /// Execute a single tool call and store the result.
   async fn execute_single_tool_call(&mut self, tool_call: &ToolCall) {
-    let invocation = ToolInvocation::new(
-      &tool_call.id,
-      ToolPayload::Function {
-        arguments: tool_call.arguments.clone(),
-      },
-      &self.cwd,
-    );
-
-    match self.runtime.executable_registry.dispatch(invocation).await {
+    match self.tool_executor.execute(tool_call).await {
       Ok(output) => {
-        let output_str = output.into_response();
+        let output_str = output;
 
         let _ = self.event_tx.send(SessionEvent::ToolCallCompleted {
           name: tool_call.name.clone(),
