@@ -338,6 +338,7 @@ impl Runtime {
   }
 
   /// Whether automatic compaction is enabled.
+  #[allow(dead_code)]
   pub fn enable_compaction(&self) -> bool {
     self.config.compaction.enabled
   }

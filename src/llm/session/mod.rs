@@ -5,6 +5,8 @@
 use tokio::sync::mpsc;
 
 pub mod actor;
+pub mod approval;
+pub mod compaction;
 pub mod context;
 pub mod persistence;
 pub mod stream;

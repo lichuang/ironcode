@@ -13,9 +13,10 @@ use chrono::{Datelike, Local, Timelike};
 use log::{debug, error, info};
 use tokio::sync::mpsc;
 
+use super::approval::{ApprovalDecision, ApprovalService};
+use super::compaction::CompactionService;
 use crate::cli::runtime::Runtime;
 use crate::error::Result;
-use crate::llm::compaction::{Compaction, calculate_threshold, should_auto_compact};
 use crate::llm::provider::LLMProvider;
 use crate::llm::providers::KimiProvider;
 use crate::llm::types::{ChatConfig, Message, ToolCall};
@@ -85,17 +86,14 @@ struct SessionActor {
   meta: SessionMeta,
   /// Maximum context size for the current model (read from global config at creation)
   max_context_size: usize,
-  /// Compaction handler (used for actual compaction)
-  compaction: Compaction,
-  /// Whether compaction has been notified for current threshold
-  compaction_notified: bool,
-  /// YOLO mode: auto-approve all tool calls
-  yolo: bool,
-  /// List of tools to auto-approve when YOLO is off
-  auto_approve: Vec<String>,
   /// Tool executor for dispatching and previewing tool calls
   tool_executor: ToolExecutor,
+  /// Approval policy service for tool call decisions
+  approval_service: ApprovalService,
+  /// Compaction monitoring and execution service
+  compaction_service: CompactionService,
   /// Runtime context (config, tool registries, etc.)
+  #[allow(dead_code)]
   runtime: Arc<Runtime>,
   /// State for resuming tool call execution after approval
   tool_call_execution_state: Option<ToolCallExecutionState>,
@@ -129,11 +127,10 @@ impl SessionActor {
     cmd_rx: mpsc::UnboundedReceiver<SessionCommand>,
     session_store: Arc<SessionStore>,
     meta: SessionMeta,
-    yolo: bool,
-    auto_approve: Vec<String>,
     runtime: Arc<Runtime>,
   ) -> Self {
     let max_context_size = provider.max_context_size();
+    let yolo = meta.yolo;
     Self {
       id,
       context: Context::from_messages(messages),
@@ -149,14 +146,12 @@ impl SessionActor {
       meta,
       precise_token_count: None,
       max_context_size,
-      compaction: Compaction::default(),
-      compaction_notified: false,
-      yolo,
-      auto_approve,
       tool_executor: ToolExecutor::new(
         env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         runtime.executable_registry.clone(),
       ),
+      approval_service: ApprovalService::new(yolo, runtime.auto_approve()),
+      compaction_service: CompactionService::new(runtime.compaction_config().clone()),
       runtime,
       tool_call_execution_state: None,
       pending_answers_state: None,
@@ -316,7 +311,7 @@ impl SessionActor {
 
       SessionCommand::EnableSessionYolo => {
         info!("Session {}: Enabling YOLO mode for this session", self.id);
-        self.yolo = true;
+        self.approval_service.set_yolo(true);
         self.meta.yolo = true;
         self.persistence.stage_meta(&self.meta);
         if let Err(e) = self.persistence.flush() {
@@ -338,71 +333,30 @@ impl SessionActor {
 
   /// Check if compaction is needed and send notification if so.
   async fn check_and_notify_compaction(&mut self) {
-    if self.max_context_size == 0 {
-      log::info!("check_and_notify_compaction: max_context_size is 0, skipping");
-      return;
-    }
-
     // Estimate current token count
     let current_tokens = if let Some(precise) = self.precise_token_count {
       let recent_tokens = estimate_llm_messages_tokens(
         &self.context.messages()[self.context.len().saturating_sub(2)..],
       );
-      log::info!(
-        "check_and_notify_compaction: precise={}, recent={}, total={}",
-        precise,
-        recent_tokens,
-        precise as usize + recent_tokens
-      );
       precise as usize + recent_tokens
     } else {
-      let estimated = self.context.estimate_tokens();
-      log::info!(
-        "check_and_notify_compaction: no precise count, estimated={}",
-        estimated
-      );
-      estimated
+      self.context.estimate_tokens()
     };
 
-    log::info!(
-      "check_and_notify_compaction: current_tokens={}, max_context_size={}, compaction_config.enabled={}",
-      current_tokens,
-      self.max_context_size,
-      self.runtime.enable_compaction()
-    );
-
-    // Check if we should trigger compaction
-    let should_compact = should_auto_compact(
-      current_tokens,
-      self.max_context_size,
-      self.runtime.compaction_config(),
-    );
-    log::info!(
-      "check_and_notify_compaction: should_auto_compact={}",
-      should_compact
-    );
-
-    if should_compact {
-      if !self.compaction_notified {
-        let threshold =
-          calculate_threshold(self.max_context_size, self.runtime.compaction_config());
-        info!(
-          "Session {}: Compaction needed - {} tokens (threshold: {})",
-          self.id, current_tokens, threshold
-        );
-        let _ = self.event_tx.send(SessionEvent::CompactionNeeded {
-          current_tokens,
-          threshold,
-          max_context_size: self.max_context_size,
-        });
-        self.compaction_notified = true;
-
-        // Execute compaction immediately
-        self.execute_compaction().await;
-      }
-    } else {
-      // Reset notification flag when below threshold
-      self.compaction_notified = false;
+    if let Some(trigger) = self
+      .compaction_service
+      .check(current_tokens, self.max_context_size)
+    {
+      info!(
+        "Session {}: Compaction needed - {} tokens (threshold: {})",
+        self.id, trigger.current_tokens, trigger.threshold
+      );
+      let _ = self.event_tx.send(SessionEvent::CompactionNeeded {
+        current_tokens: trigger.current_tokens,
+        threshold: trigger.threshold,
+        max_context_size: trigger.max_context_size,
+      });
+      self.execute_compaction().await;
     }
   }
 
@@ -411,56 +365,20 @@ impl SessionActor {
   /// Uses the configured compaction strategy to compress message history.
   /// Updates the session store and notifies the UI of completion.
   async fn execute_compaction(&mut self) {
-    let message_count_before = self.context.len();
-
-    // Check if compaction should be performed
-    if !self.compaction.should_compact(self.context.messages()) {
-      log::info!(
-        "Session {}: Compaction strategy decided not to compact ({} messages)",
-        self.id,
-        message_count_before
+    if let Some(result) = self.compaction_service.execute(self.context.messages_mut()) {
+      info!(
+        "Session {}: Compaction completed - {} messages -> {} messages, ~{} tokens",
+        self.id, result.message_count_before, result.message_count_after, result.new_token_count
       );
-      return;
+      self
+        .persistence
+        .reset_messages(&self.id, self.context.messages());
+      let _ = self.event_tx.send(SessionEvent::CompactionCompleted {
+        message_count_before: result.message_count_before,
+        message_count_after: result.message_count_after,
+        new_token_count: result.new_token_count,
+      });
     }
-
-    // Perform compaction
-    log::info!("Session {}: Executing compaction...", self.id);
-    let result = self.compaction.compact(self.context.messages());
-
-    if !result.did_compact {
-      log::info!("Session {}: No compaction performed by strategy", self.id);
-      return;
-    }
-
-    // Update messages
-    *self.context.messages_mut() = result.messages;
-    let message_count_after = self.context.len();
-
-    // Estimate new token count
-    let new_token_count = self.context.estimate_tokens();
-
-    log::info!(
-      "Session {}: Compaction completed - {} messages -> {} messages, ~{} tokens",
-      self.id,
-      message_count_before,
-      message_count_after,
-      new_token_count
-    );
-
-    // Save compacted messages to session store
-    self
-      .persistence
-      .reset_messages(&self.id, self.context.messages());
-
-    // Notify UI
-    let _ = self.event_tx.send(SessionEvent::CompactionCompleted {
-      message_count_before,
-      message_count_after,
-      new_token_count,
-    });
-
-    // Reset the notification flag since we've compacted
-    self.compaction_notified = false;
   }
 
   /// Start a chat stream with the current messages, with retry support.
@@ -692,11 +610,6 @@ impl SessionActor {
     }
   }
 
-  /// Check whether a tool call should be executed without user confirmation.
-  fn should_auto_approve(&self, tool_name: &str) -> bool {
-    self.yolo || self.auto_approve.iter().any(|n| n == tool_name)
-  }
-
   /// Execute pending tool calls and continue the conversation.
   ///
   /// If YOLO mode is off and a tool is not in the auto-approve list,
@@ -747,7 +660,7 @@ impl SessionActor {
 
       // Special handling for AskUserQuestion: pause execution and wait for answers
       if tool_call.name == "AskUserQuestion" {
-        if self.yolo {
+        if self.approval_service.is_yolo() {
           info!(
             "Session {}: AskUserQuestion in YOLO mode, auto-dismissing",
             self.id
@@ -802,26 +715,33 @@ impl SessionActor {
         }
       }
 
-      if !self.should_auto_approve(&tool_call.name) {
-        info!(
-          "Session {}: Tool {} requires approval, pausing execution",
-          self.id, tool_call.name
-        );
-        let diff_preview = self.tool_executor.preview(tool_call).await;
-        self.tool_call_execution_state = Some(ToolCallExecutionState {
-          tool_calls: state.tool_calls.clone(),
-          current_index: i,
-        });
-        let _ = self.event_tx.send(SessionEvent::ApprovalNeeded {
-          id: tool_call.id.clone(),
-          name: tool_call.name.clone(),
-          arguments: tool_call.arguments.clone(),
+      let diff_preview = self.tool_executor.preview(tool_call).await;
+      match self.approval_service.decide(tool_call, diff_preview) {
+        ApprovalDecision::Approved => {
+          self.execute_single_tool_call(tool_call).await;
+        }
+        ApprovalDecision::NeedsApproval {
+          tool_call_id,
+          name,
           diff_preview,
-        });
-        return;
+        } => {
+          info!(
+            "Session {}: Tool {} requires approval, pausing execution",
+            self.id, name
+          );
+          self.tool_call_execution_state = Some(ToolCallExecutionState {
+            tool_calls: state.tool_calls.clone(),
+            current_index: i,
+          });
+          let _ = self.event_tx.send(SessionEvent::ApprovalNeeded {
+            id: tool_call_id,
+            name,
+            arguments: tool_call.arguments.clone(),
+            diff_preview,
+          });
+          return;
+        }
       }
-
-      self.execute_single_tool_call(tool_call).await;
     }
 
     info!(
@@ -1236,17 +1156,8 @@ impl ChatSession {
   ) -> Result<(Self, Vec<Message>)> {
     let provider = Self::create_provider(&runtime)?;
 
-    let yolo = meta.yolo;
-    let session = Self::start_with_messages(
-      id,
-      provider,
-      messages.clone(),
-      session_store,
-      meta,
-      yolo,
-      runtime.auto_approve(),
-      runtime,
-    );
+    let session =
+      Self::start_with_messages(id, provider, messages.clone(), session_store, meta, runtime);
     Ok((session, messages))
   }
 
@@ -1357,15 +1268,12 @@ impl ChatSession {
     let system_prompt = system_prompt.into();
     let messages = vec![Message::system(system_prompt.clone())];
 
-    let yolo = meta.yolo;
     let session = Self::start_with_messages(
       meta.id.clone(),
       provider,
       messages,
       session_store,
       meta,
-      yolo,
-      runtime.auto_approve(),
       runtime,
     );
     info!(
@@ -1376,15 +1284,12 @@ impl ChatSession {
   }
 
   /// Internal: start session with given messages and persistence
-  #[allow(clippy::too_many_arguments)]
   fn start_with_messages(
     id: String,
     provider: Box<dyn LLMProvider>,
     messages: Vec<Message>,
     session_store: Arc<SessionStore>,
     meta: SessionMeta,
-    yolo: bool,
-    auto_approve: Vec<String>,
     runtime: Arc<Runtime>,
   ) -> Self {
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
@@ -1403,8 +1308,6 @@ impl ChatSession {
       cmd_rx,
       session_store,
       meta,
-      yolo,
-      auto_approve,
       runtime,
     );
     tokio::spawn(actor.run());
