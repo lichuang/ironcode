@@ -354,7 +354,8 @@ mod tests {
       status_code: None,
       message: "parse error".to_string(),
     });
-    assert!(!is_error_retryable(&err));
+    // Parse errors are retryable: a corrupted SSE chunk may succeed on retry.
+    assert!(is_error_retryable(&err));
   }
 
   #[test]

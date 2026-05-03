@@ -5,6 +5,7 @@
 //! convenient error handling at the application boundaries.
 
 use async_openai::error::OpenAIError;
+use log::warn;
 
 /// Result type alias using our Error type
 pub type Result<T> = std::result::Result<T, Error>;
@@ -153,9 +154,16 @@ impl LlmError {
       } => match category {
         StreamErrorCategory::Timeout => true,
         StreamErrorCategory::Disconnected => true,
-        StreamErrorCategory::Http => is_http_status_retryable(status_code.unwrap_or(0)),
+        StreamErrorCategory::Http => {
+          let status = status_code.unwrap_or(0);
+          let retry = is_http_status_retryable(status);
+          if !retry && status != 0 {
+            warn!("HTTP {} error classified as non-retryable", status);
+          }
+          retry
+        }
         StreamErrorCategory::Transport => true,
-        StreamErrorCategory::Parse => false,
+        StreamErrorCategory::Parse => true,
       },
       LlmError::EmptyResponse => true,
       LlmError::InvalidConfig(_) => false,
@@ -167,9 +175,16 @@ impl LlmError {
 
 /// Check if an HTTP status code is retryable.
 ///
-/// Matches kimi-cli's classification: 429 (rate limit) and 5xx (server errors).
+/// Classification:
+/// - Always retry: 429 (rate limit), 5xx (server errors)
+/// - Never retry: 400/422 (client request error), 401/403 (auth error)
+/// - Conservative: unknown status codes are retried
 fn is_http_status_retryable(status: u16) -> bool {
-  matches!(status, 429 | 500 | 502 | 503 | 504)
+  match status {
+    429 | 500 | 502 | 503 | 504 => true,
+    400 | 401 | 403 | 422 => false,
+    _ => true, // conservative: retry unknown status codes
+  }
 }
 
 /// Fallback classification for async-openai `OpenAIError` variants.
@@ -179,7 +194,14 @@ fn is_http_status_retryable(status: u16) -> bool {
 fn is_openai_error_retryable(err: &OpenAIError) -> bool {
   match err {
     OpenAIError::Reqwest(reqwest_err) => {
-      reqwest_err.is_timeout() || reqwest_err.is_connect() || reqwest_err.is_request()
+      // If the error carries an HTTP status code, use the same rules as
+      // our native HTTP classification.  This prevents 401/403/400 from
+      // being incorrectly retried because `is_request()` returns true.
+      if let Some(status) = reqwest_err.status() {
+        return is_http_status_retryable(status.as_u16());
+      }
+      // Network-level errors without a status code (timeout, connection reset).
+      reqwest_err.is_timeout() || reqwest_err.is_connect()
     }
     OpenAIError::StreamError(_) => true,
     _ => false,
