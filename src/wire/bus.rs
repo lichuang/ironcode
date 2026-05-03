@@ -4,6 +4,8 @@ use tokio::sync::broadcast;
 
 use super::protocol::WireMessage;
 
+const MIN_CAPACITY: usize = 1024;
+
 /// Broadcast bus for distributing WireMessages from producers to consumers.
 ///
 /// Backed by `tokio::sync::broadcast` so that multiple subscribers can
@@ -13,10 +15,15 @@ pub struct WireBus {
 }
 
 impl WireBus {
+  /// Default capacity used when creating a new bus.
+  pub const DEFAULT_CAPACITY: usize = 4096;
+
   /// Create a new bus with the given channel capacity.
   ///
   /// When the channel is full, the oldest message is dropped.
+  /// Capacity is clamped to at least `MIN_CAPACITY` to reduce message loss under load.
   pub fn new(capacity: usize) -> Self {
+    let capacity = capacity.max(MIN_CAPACITY);
     let (tx, _) = broadcast::channel(capacity);
     Self { tx }
   }

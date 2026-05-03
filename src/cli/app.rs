@@ -149,7 +149,7 @@ impl App {
     let session_store = Arc::new(SessionStore::new(data_dir));
 
     // Create wire bus for decoupling session actor from UI
-    let wire_bus = WireBus::new(256);
+    let wire_bus = WireBus::new(WireBus::DEFAULT_CAPACITY);
     let wire_publisher = wire_bus.publisher();
     let wire_subscriber = wire_bus.subscriber();
 
@@ -223,9 +223,18 @@ impl App {
     let mut updated = false;
 
     let session_id = self.chat_session.as_ref().map(|s| s.handle.id.clone());
-    while let Ok(msg) = self.wire_subscriber.try_recv() {
-      updated = true;
-      self.handle_wire_message(msg, session_id.as_deref());
+    loop {
+      match self.wire_subscriber.try_recv() {
+        Ok(msg) => {
+          updated = true;
+          self.handle_wire_message(msg, session_id.as_deref());
+        }
+        Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
+          log::warn!("Wire bus lagged, dropped {} messages", n);
+          continue;
+        }
+        Err(_) => break,
+      }
     }
 
     if updated && let Some(ref fr) = self.frame_requester {
