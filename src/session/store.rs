@@ -4,6 +4,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use log::warn;
 use serde_json::{from_str, to_string, to_string_pretty};
 
 use crate::error::Result;
@@ -48,27 +49,45 @@ impl SessionStore {
     Ok(())
   }
 
-  /// Append a single message to the session's context.jsonl
+  /// Append a single message to the session's context.jsonl atomically.
+  ///
+  /// Uses write-to-temp + rename to ensure the file is never left in a
+  /// partially-written state even if the process crashes mid-write.
   pub fn append_message(&self, id: &str, message: &Message) -> Result<()> {
-    let mut files = self.files.lock().unwrap();
-
-    let file = if let Some(f) = files.get_mut(id) {
-      f
-    } else {
-      let session_dir = self.session_dir(id)?;
-      let context_path = session_dir.join(CONTEXT_FILE);
-      let f = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .append(true)
-        .open(&context_path)?;
-      files.entry(id.to_string()).or_insert(f)
-    };
+    let session_dir = self.session_dir(id)?;
+    let context_path = session_dir.join(CONTEXT_FILE);
+    let temp_path = session_dir.join(".context.jsonl.tmp");
 
     let line =
       to_string(message).map_err(|e| crate::session::Error::SerializeMessage { source: e })?;
 
-    writeln!(file, "{}", line)?;
+    // Copy existing content into temp file, then append the new line.
+    let mut temp_file = OpenOptions::new()
+      .create(true)
+      .truncate(true)
+      .write(true)
+      .open(&temp_path)?;
+
+    if context_path.exists() {
+      let mut existing = File::open(&context_path)?;
+      std::io::copy(&mut existing, &mut temp_file)?;
+    }
+
+    writeln!(temp_file, "{}", line)?;
+    temp_file.sync_all()?;
+    drop(temp_file);
+
+    // Atomic rename guarantees readers see either the old or the new file,
+    // never a partially-written one.
+    fs::rename(&temp_path, &context_path)?;
+
+    // Refresh the cached file handle so subsequent appends use the new inode.
+    let file = OpenOptions::new()
+      .create(true)
+      .truncate(false)
+      .append(true)
+      .open(&context_path)?;
+    self.files.lock().unwrap().insert(id.to_string(), file);
 
     Ok(())
   }
@@ -100,9 +119,13 @@ impl SessionStore {
         if line.trim().is_empty() {
           continue;
         }
-        let message: Message =
-          from_str(&line).map_err(|e| crate::session::Error::DeserializeMessage { source: e })?;
-        messages.push(message);
+        match from_str::<Message>(&line) {
+          Ok(message) => messages.push(message),
+          Err(e) => {
+            warn!("Skipping corrupted message line in session {}: {}", id, e);
+            // Continue loading subsequent messages rather than failing entirely.
+          }
+        }
       }
     }
 
@@ -190,9 +213,16 @@ impl SessionStore {
 
   fn write_meta(&self, session_dir: &Path, meta: &SessionMeta) -> Result<()> {
     let meta_path = session_dir.join(META_FILE);
+    let temp_path = session_dir.join(".meta.json.tmp");
+
     let content =
       to_string_pretty(meta).map_err(|e| crate::session::Error::SerializeMeta { source: e })?;
-    fs::write(&meta_path, content).map_err(|e| crate::session::Error::WriteMeta {
+
+    fs::write(&temp_path, content).map_err(|e| crate::session::Error::WriteMeta {
+      id: meta.id.clone(),
+      source: e,
+    })?;
+    fs::rename(&temp_path, &meta_path).map_err(|e| crate::session::Error::WriteMeta {
       id: meta.id.clone(),
       source: e,
     })?;
