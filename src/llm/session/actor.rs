@@ -719,6 +719,10 @@ impl SessionActor {
   }
 
   /// Resume tool call execution from the pending state.
+  ///
+  /// Tools that require UI interaction (AskUserQuestion or manual approval) are
+  /// handled serially because they may pause the actor.  All other approved
+  /// tools are executed concurrently via `execute_tool_batch`.
   async fn continue_tool_call_execution(&mut self) {
     let (tool_calls, current_index) = match mem::replace(&mut self.state, ActorState::Idle) {
       ActorState::ExecutingTools {
@@ -734,6 +738,8 @@ impl SessionActor {
       }
     };
 
+    let mut batch: Vec<&ToolCall> = Vec::new();
+
     for (i, tool_call) in tool_calls.iter().enumerate().skip(current_index) {
       self.wire_publisher.send(WireMessage::ToolCallBegin {
         id: tool_call.id.clone(),
@@ -748,6 +754,12 @@ impl SessionActor {
             "Session {}: AskUserQuestion in YOLO mode, auto-dismissing",
             self.id
           );
+
+          // Flush any pending batch before handling the inline response.
+          if !batch.is_empty() {
+            self.execute_tool_batch(std::mem::take(&mut batch)).await;
+          }
+
           let output = r#"{"answers": {}, "note": "Running in non-interactive (yolo) mode. Make your own decision."}"#.to_string();
           self.wire_publisher.send(WireMessage::ToolCallEnd {
             id: tool_call.id.clone(),
@@ -759,6 +771,11 @@ impl SessionActor {
           self.persistence.stage_message(&self.id, &tool_msg);
           let _ = self.persistence.flush();
           continue;
+        }
+
+        // Flush pending batch before pausing.
+        if !batch.is_empty() {
+          self.execute_tool_batch(std::mem::take(&mut batch)).await;
         }
 
         match parse_ask_user_questions(&tool_call.arguments) {
@@ -801,13 +818,18 @@ impl SessionActor {
       let diff_preview = self.tool_executor.preview(tool_call).await;
       match self.approval_service.decide(tool_call, diff_preview) {
         ApprovalDecision::Approved => {
-          self.execute_single_tool_call(tool_call).await;
+          batch.push(tool_call);
         }
         ApprovalDecision::NeedsApproval {
           tool_call_id,
           name,
           diff_preview,
         } => {
+          // Flush pending batch before pausing for approval.
+          if !batch.is_empty() {
+            self.execute_tool_batch(std::mem::take(&mut batch)).await;
+          }
+
           info!(
             "Session {}: Tool {} requires approval, pausing execution",
             self.id, name
@@ -824,6 +846,11 @@ impl SessionActor {
           return;
         }
       }
+    }
+
+    // Execute any remaining approved tools concurrently.
+    if !batch.is_empty() {
+      self.execute_tool_batch(batch).await;
     }
 
     info!(
@@ -856,6 +883,59 @@ impl SessionActor {
     self.current_response.clear();
     self.current_thinking.clear();
     self.agent_loop_continue().await;
+  }
+
+  /// Execute a batch of approved tool calls concurrently.
+  ///
+  /// Results are processed in the original order so that context messages
+  /// remain deterministic.
+  async fn execute_tool_batch(&mut self, tool_calls: Vec<&ToolCall>) {
+    let results = self.tool_executor.execute_many(&tool_calls).await;
+
+    for (tool_call, result) in tool_calls.iter().zip(results.into_iter()) {
+      match result {
+        Ok(output) => {
+          self.wire_publisher.send(WireMessage::ToolCallEnd {
+            id: tool_call.id.clone(),
+            name: tool_call.name.clone(),
+            output: output.clone(),
+          });
+          info!(
+            "Session {}: Adding tool result message: tool_call_id={}, output_preview={}...",
+            self.id,
+            tool_call.id,
+            output.chars().take(100).collect::<String>()
+          );
+          self.context.push_tool_result(&tool_call.id, &output);
+          let tool_msg = Message::tool(&output, &tool_call.id);
+          self.persistence.stage_message(&self.id, &tool_msg);
+          let _ = self.persistence.flush();
+          info!(
+            "Session {}: Tool {} executed successfully, output_len={}",
+            self.id,
+            tool_call.name,
+            output.len()
+          );
+        }
+        Err(e) => {
+          let error_msg = format!("Error: {}", e);
+          self.wire_publisher.send(WireMessage::ToolCallEnd {
+            id: tool_call.id.clone(),
+            name: tool_call.name.clone(),
+            output: error_msg.clone(),
+          });
+          info!(
+            "Session {}: Adding tool error message: tool_call_id={}, error={}",
+            self.id, tool_call.id, error_msg
+          );
+          self.context.push_tool_result(&tool_call.id, &error_msg);
+          let tool_msg = Message::tool(&error_msg, &tool_call.id);
+          self.persistence.stage_message(&self.id, &tool_msg);
+          let _ = self.persistence.flush();
+          error!("Session {}: Tool {} failed: {}", self.id, tool_call.name, e);
+        }
+      }
+    }
   }
 
   /// Execute a single tool call and store the result.

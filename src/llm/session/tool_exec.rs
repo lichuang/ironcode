@@ -3,8 +3,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use futures::future::join_all;
+
 use crate::llm::types::ToolCall;
-use crate::tools::{ExecutableToolRegistry, ToolInvocation, ToolPayload};
+use crate::tools::{ExecutableToolRegistry, ToolError, ToolInvocation, ToolPayload};
 
 pub struct ToolExecutor {
   cwd: PathBuf,
@@ -37,5 +39,15 @@ impl ToolExecutor {
       &self.cwd,
     );
     self.registry.preview(&invocation).await
+  }
+
+  /// Execute multiple tool calls concurrently.
+  ///
+  /// Returns results in the same order as the input slice.
+  pub async fn execute_many(&self, tool_calls: &[&ToolCall]) -> Vec<Result<String, ToolError>> {
+    let futures = tool_calls
+      .iter()
+      .map(|tc| async move { self.execute(tc).await });
+    join_all(futures).await
   }
 }
