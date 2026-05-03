@@ -1,9 +1,11 @@
 //! StreamManager — LLM streaming with connection recovery and exponential backoff.
 
+use std::sync::Arc;
+
 use async_openai::types::chat::{ChatCompletionMessageToolCallChunk, FunctionCallStream};
 use futures::StreamExt;
 use log::{error, info, warn};
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, mpsc};
 
 use crate::config::RetryConfig;
 use crate::error::{Error, LlmError, Result, StreamErrorCategory};
@@ -15,6 +17,11 @@ use super::SessionEvent;
 pub struct StreamManager {
   provider: Box<dyn LLMProvider>,
   retry_config: RetryConfig,
+  /// Persistent tool call buffer across stream attempts within a single step.
+  /// If a stream is interrupted while tool calls are being received, the
+  /// partial buffer remains here so that the next `start()` can detect and
+  /// discard it rather than silently losing the fragments.
+  tool_call_buffer: Arc<Mutex<Vec<ChatCompletionMessageToolCallChunk>>>,
 }
 
 impl StreamManager {
@@ -22,6 +29,7 @@ impl StreamManager {
     Self {
       provider,
       retry_config,
+      tool_call_buffer: Arc::new(Mutex::new(Vec::new())),
     }
   }
 
@@ -107,17 +115,32 @@ impl StreamManager {
       }
     };
 
+    // If a previous stream left an incomplete tool-call buffer, log and clear it.
+    {
+      let mut buffer = self.tool_call_buffer.lock().await;
+      if !buffer.is_empty() {
+        warn!(
+          "Stream: discarding {} incomplete tool-call fragment(s) from previous attempt",
+          buffer.len()
+        );
+        buffer.clear();
+      }
+    }
+
     let tx = tx.clone();
+    let buffer = self.tool_call_buffer.clone();
     tokio::spawn(async move {
-      handle_stream(stream, tx).await;
+      handle_stream(stream, tx, buffer).await;
     });
     Ok(())
   }
 }
 
-async fn handle_stream(mut stream: LlmResponseStream, tx: mpsc::UnboundedSender<SessionEvent>) {
-  let mut tool_call_buffer: Vec<ChatCompletionMessageToolCallChunk> = Vec::new();
-
+async fn handle_stream(
+  mut stream: LlmResponseStream,
+  tx: mpsc::UnboundedSender<SessionEvent>,
+  tool_call_buffer: Arc<Mutex<Vec<ChatCompletionMessageToolCallChunk>>>,
+) {
   while let Some(result) = stream.next().await {
     match result {
       Ok(LlmStreamEvent::Content(chunk)) => {
@@ -136,16 +159,18 @@ async fn handle_stream(mut stream: LlmResponseStream, tx: mpsc::UnboundedSender<
         name,
         arguments,
       }) => {
+        let mut buffer = tool_call_buffer.lock().await;
         let idx = index as usize;
-        while tool_call_buffer.len() <= idx {
-          tool_call_buffer.push(ChatCompletionMessageToolCallChunk {
-            index: tool_call_buffer.len() as u32,
+        while buffer.len() <= idx {
+          let len = buffer.len();
+          buffer.push(ChatCompletionMessageToolCallChunk {
+            index: len as u32,
             id: None,
             r#type: None,
             function: None,
           });
         }
-        let existing = &mut tool_call_buffer[idx];
+        let existing = &mut buffer[idx];
         if let Some(id) = id {
           existing.id = Some(id);
         }
@@ -189,6 +214,14 @@ async fn handle_stream(mut stream: LlmResponseStream, tx: mpsc::UnboundedSender<
       }
       Err(e) => {
         error!("Stream: Stream error: {}", e);
+        let buffer = tool_call_buffer.lock().await;
+        if !buffer.is_empty() {
+          warn!(
+            "Stream: discarding {} incomplete tool-call fragment(s) due to interruption",
+            buffer.len()
+          );
+        }
+        drop(buffer);
         let is_retryable = is_error_retryable(&e);
         let _ = tx.send(SessionEvent::StreamInterrupted {
           error: e.to_string(),
@@ -200,8 +233,9 @@ async fn handle_stream(mut stream: LlmResponseStream, tx: mpsc::UnboundedSender<
   }
 
   // Stream ended — flush any remaining tool calls and signal completion.
-  for tool_call in &tool_call_buffer {
-    if let (Some(id), Some(function)) = (tool_call.id.clone(), tool_call.function.clone())
+  let mut buffer = tool_call_buffer.lock().await;
+  for tool_call in buffer.drain(..) {
+    if let (Some(id), Some(function)) = (tool_call.id, tool_call.function)
       && let (Some(name), Some(arguments)) = (function.name, function.arguments)
       && !id.is_empty()
       && !name.is_empty()
