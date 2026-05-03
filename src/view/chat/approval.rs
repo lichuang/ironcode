@@ -43,7 +43,10 @@ impl ApprovalPanel {
             Style::default().fg(WARNING).add_modifier(Modifier::BOLD),
           ),
           Span::styled(
-            format!("{} requires approval", approval.name),
+            format!(
+              "{} ({}/{}) requires approval",
+              approval.name, approval.position, approval.total
+            ),
             Style::default().fg(TEXT_COLOR).add_modifier(Modifier::BOLD),
           ),
         ]),
@@ -62,7 +65,12 @@ impl ApprovalPanel {
             "[a] ",
             Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
           ),
-          Span::styled("allow session", Style::default().fg(TEXT_COLOR)),
+          Span::styled("allow session  ", Style::default().fg(TEXT_COLOR)),
+          Span::styled(
+            "[q] ",
+            Style::default().fg(CRITICAL).add_modifier(Modifier::BOLD),
+          ),
+          Span::styled("deny all remaining", Style::default().fg(TEXT_COLOR)),
         ]),
       ];
       let text = Text::from(header_lines);
@@ -79,7 +87,10 @@ impl ApprovalPanel {
             Style::default().fg(WARNING).add_modifier(Modifier::BOLD),
           ),
           Span::styled(
-            format!("{} requires approval", approval.name),
+            format!(
+              "{} ({}/{}) requires approval",
+              approval.name, approval.position, approval.total
+            ),
             Style::default().fg(TEXT_COLOR).add_modifier(Modifier::BOLD),
           ),
         ]),
@@ -98,7 +109,12 @@ impl ApprovalPanel {
             "[a] ",
             Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
           ),
-          Span::styled("allow session", Style::default().fg(TEXT_COLOR)),
+          Span::styled("allow session  ", Style::default().fg(TEXT_COLOR)),
+          Span::styled(
+            "[q] ",
+            Style::default().fg(CRITICAL).add_modifier(Modifier::BOLD),
+          ),
+          Span::styled("deny all remaining", Style::default().fg(TEXT_COLOR)),
         ]),
       ];
       let text = Text::from(lines);

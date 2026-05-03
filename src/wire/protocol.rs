@@ -48,6 +48,10 @@ pub enum WireMessage {
     name: String,
     /// Optional diff preview for file-modifying tools.
     diff_preview: Option<String>,
+    /// Position of this tool in the overall execution list (1-based).
+    position: usize,
+    /// Total number of tools in the current execution batch.
+    total: usize,
   },
   /// Structured questions need to be presented to the user.
   QuestionsAsked {

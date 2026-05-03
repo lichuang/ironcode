@@ -61,6 +61,8 @@ pub enum SessionCommand {
     tool_call_id: String,
     /// Whether the user approved the execution
     approved: bool,
+    /// When true and approved is false, reject all remaining tools in the queue
+    reject_remaining: bool,
   },
   /// Answer pending structured questions
   AnswerQuestions {
@@ -187,10 +189,16 @@ impl SessionHandle {
   }
 
   /// Approve or deny a pending tool call
-  pub fn approve_tool_call(&self, tool_call_id: impl Into<String>, approved: bool) {
+  pub fn approve_tool_call(
+    &self,
+    tool_call_id: impl Into<String>,
+    approved: bool,
+    reject_remaining: bool,
+  ) {
     let _ = self.cmd_tx.send(SessionCommand::ApproveToolCall {
       tool_call_id: tool_call_id.into(),
       approved,
+      reject_remaining,
     });
   }
 

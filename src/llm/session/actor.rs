@@ -294,8 +294,11 @@ impl SessionActor {
       SessionCommand::ApproveToolCall {
         tool_call_id,
         approved,
+        reject_remaining,
       } => {
-        self.handle_approval(tool_call_id, approved).await;
+        self
+          .handle_approval(tool_call_id, approved, reject_remaining)
+          .await;
         true
       }
 
@@ -691,6 +694,8 @@ impl SessionActor {
           id: id.clone(),
           name: name.clone(),
           diff_preview: diff_preview.clone(),
+          position: 1,
+          total: 1,
         });
       }
       SessionEvent::QuestionsAsked {
@@ -837,11 +842,15 @@ impl SessionActor {
           self.state = ActorState::WaitingApproval {
             tool_calls: tool_calls.clone(),
             current_index: i,
+            approved_indices: vec![],
+            rejected_indices: vec![],
           };
           self.wire_publisher.send(WireMessage::ApprovalRequest {
             id: tool_call_id,
             name,
             diff_preview,
+            position: i + 1,
+            total: tool_calls.len(),
           });
           return;
         }
@@ -990,20 +999,37 @@ impl SessionActor {
   }
 
   /// Handle user approval or denial of a pending tool call.
-  async fn handle_approval(&mut self, tool_call_id: String, approved: bool) {
-    let (tool_calls, current_index) = match mem::replace(&mut self.state, ActorState::Idle) {
-      ActorState::WaitingApproval {
-        tool_calls,
-        current_index,
-      } => (tool_calls, current_index),
-      _ => {
-        error!(
-          "Session {}: Received approval but no tool execution is pending",
-          self.id
-        );
-        return;
-      }
-    };
+  ///
+  /// Records the decision in the approval queue and advances to the next tool
+  /// that still needs manual approval.  Only when the queue is exhausted are
+  /// all approved tools executed in a single batch.
+  async fn handle_approval(
+    &mut self,
+    tool_call_id: String,
+    approved: bool,
+    reject_remaining: bool,
+  ) {
+    let (tool_calls, current_index, mut approved_indices, mut rejected_indices) =
+      match mem::replace(&mut self.state, ActorState::Idle) {
+        ActorState::WaitingApproval {
+          tool_calls,
+          current_index,
+          approved_indices,
+          rejected_indices,
+        } => (
+          tool_calls,
+          current_index,
+          approved_indices,
+          rejected_indices,
+        ),
+        _ => {
+          error!(
+            "Session {}: Received approval but no tool execution is pending",
+            self.id
+          );
+          return;
+        }
+      };
 
     let tool_call = &tool_calls[current_index];
 
@@ -1015,13 +1041,18 @@ impl SessionActor {
       self.state = ActorState::WaitingApproval {
         tool_calls,
         current_index,
+        approved_indices,
+        rejected_indices,
       };
       return;
     }
 
     if approved {
-      info!("Session {}: User approved tool {}", self.id, tool_call.name);
-      self.execute_single_tool_call(tool_call).await;
+      info!(
+        "Session {}: User approved tool {} (queued for batch execution)",
+        self.id, tool_call.name
+      );
+      approved_indices.push(current_index);
     } else {
       let denied_msg = format!("User declined to execute tool: {}", tool_call.name);
       info!(
@@ -1039,12 +1070,92 @@ impl SessionActor {
       let tool_msg = Message::tool(&denied_msg, &tool_call.id);
       self.persistence.stage_message(&self.id, &tool_msg);
       let _ = self.persistence.flush();
+
+      rejected_indices.push(current_index);
     }
 
-    let next_index = current_index + 1;
+    // Bulk-deny: reject every remaining non-interactive tool.
+    if !approved && reject_remaining {
+      for (i, tc) in tool_calls.iter().enumerate().skip(current_index + 1) {
+        if tc.name == "AskUserQuestion" {
+          continue;
+        }
+        rejected_indices.push(i);
+        let denied_msg = format!("User declined to execute tool: {}", tc.name);
+        self.wire_publisher.send(WireMessage::ToolCallEnd {
+          id: tc.id.clone(),
+          name: tc.name.clone(),
+          output: denied_msg.clone(),
+        });
+        self.context.push_tool_result(&tc.id, &denied_msg);
+        let tool_msg = Message::tool(&denied_msg, &tc.id);
+        self.persistence.stage_message(&self.id, &tool_msg);
+      }
+      let _ = self.persistence.flush();
+    }
+
+    // Scan forward to find the next tool that still needs manual approval.
+    let start_index = if reject_remaining {
+      tool_calls.len()
+    } else {
+      current_index + 1
+    };
+
+    let total = tool_calls.len();
+    for i in start_index..total {
+      if tool_calls[i].name == "AskUserQuestion" {
+        continue;
+      }
+
+      let diff_preview = self.tool_executor.preview(&tool_calls[i]).await;
+      match self
+        .approval_service
+        .decide(&tool_calls[i], diff_preview.clone())
+      {
+        ApprovalDecision::NeedsApproval {
+          tool_call_id: next_id,
+          name: next_name,
+          diff_preview: next_diff,
+        } => {
+          self.state = ActorState::WaitingApproval {
+            tool_calls,
+            current_index: i,
+            approved_indices,
+            rejected_indices,
+          };
+          self.wire_publisher.send(WireMessage::ApprovalRequest {
+            id: next_id,
+            name: next_name,
+            diff_preview: next_diff,
+            position: i + 1,
+            total,
+          });
+          return;
+        }
+        ApprovalDecision::Approved => {
+          // User may have enabled YOLO since the last scan, so subsequent
+          // tools can flip to auto-approved.  Queue them for batch execution.
+          approved_indices.push(i);
+        }
+      }
+    }
+
+    // Queue exhausted — execute every approved tool in order.
+    for &i in &approved_indices {
+      self.execute_single_tool_call(&tool_calls[i]).await;
+    }
+
+    info!(
+      "Session {}: Approval queue complete — {} approved, {} rejected",
+      self.id,
+      approved_indices.len(),
+      rejected_indices.len()
+    );
+
+    let total = tool_calls.len();
     self.state = ActorState::ExecutingTools {
       tool_calls,
-      current_index: next_index,
+      current_index: total,
     };
     self.continue_tool_call_execution().await;
   }

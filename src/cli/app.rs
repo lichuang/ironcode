@@ -59,6 +59,10 @@ pub struct PendingApproval {
   pub name: String,
   /// Optional diff preview for file-modifying tools
   pub diff_preview: Option<String>,
+  /// Position of this tool in the overall execution list (1-based)
+  pub position: usize,
+  /// Total number of tools in the current execution batch
+  pub total: usize,
 }
 
 /// Pending structured questions from AskUserQuestion
@@ -263,8 +267,10 @@ impl App {
         id,
         name,
         diff_preview,
+        position,
+        total,
       } => {
-        self.on_approval_needed(id, name, String::new(), diff_preview);
+        self.on_approval_needed(id, name, String::new(), diff_preview, position, total);
       }
       WireMessage::QuestionsAsked {
         tool_call_id,
@@ -419,11 +425,15 @@ impl App {
     name: String,
     _arguments: String,
     diff_preview: Option<String>,
+    position: usize,
+    total: usize,
   ) {
     self.data.pending_approval = Some(PendingApproval {
       tool_call_id: id,
       name,
       diff_preview,
+      position,
+      total,
     });
   }
 

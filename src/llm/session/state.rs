@@ -28,6 +28,10 @@ pub enum ActorState {
     tool_calls: Vec<ToolCall>,
     /// Index of the tool call pending approval.
     current_index: usize,
+    /// Indices of tools already approved in this queue.
+    approved_indices: Vec<usize>,
+    /// Indices of tools already rejected in this queue.
+    rejected_indices: Vec<usize>,
   },
   /// Paused waiting for user answers to AskUserQuestion.
   WaitingAnswers {
