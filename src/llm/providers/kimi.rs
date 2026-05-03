@@ -6,15 +6,10 @@ use std::collections::hash_map::DefaultHasher;
 use std::env::consts::{ARCH, OS};
 use std::hash::{Hash, Hasher};
 
-use async_openai::error::{OpenAIError, StreamError};
-use async_openai::types::chat::{
-  ChatChoiceStream, ChatCompletionMessageToolCallChunk, ChatCompletionResponseStream,
-  ChatCompletionStreamResponseDelta, CompletionUsage, CreateChatCompletionStreamResponse,
-  FinishReason, FunctionCallStream, FunctionType, Role as OpenAIRole,
-};
+use async_openai::types::chat::FinishReason;
+use async_openai::types::chat::Role as OpenAIRole;
 use async_trait::async_trait;
 use futures::StreamExt;
-use futures::stream::unfold;
 
 use hostname::get;
 use reqwest::Client;
@@ -32,6 +27,7 @@ use std::sync::Arc;
 
 /// Custom delta that includes reasoning_content for Kimi API
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 struct KimiDelta {
   #[serde(default)]
   content: Option<String>,
@@ -45,6 +41,7 @@ struct KimiDelta {
 
 /// Tool call from Kimi API
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 struct KimiToolCall {
   id: Option<String>,
   #[serde(rename = "type")]
@@ -62,6 +59,7 @@ struct KimiToolFunction {
 
 /// Custom choice stream for Kimi API
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 struct KimiChoice {
   index: u32,
   delta: KimiDelta,
@@ -71,6 +69,7 @@ struct KimiChoice {
 
 /// Custom stream response for Kimi API
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 struct KimiStreamResponse {
   id: String,
   object: String,
@@ -407,18 +406,19 @@ impl KimiProvider {
       Role::Assistant if msg.tool_calls.is_some() => {
         // Assistant messages with tool_calls:
         // - content is null (not empty string, not array)
-        // - reasoning_content is extracted from <think> tags if present
-        let reasoning = Self::extract_reasoning(&msg.content);
-        (None, reasoning)
+        // - reasoning_content is passed through natively from the message field
+        (None, msg.reasoning_content.clone())
       }
       _ => {
         // Other messages: content is string (or null if empty)
+        // reasoning_content is passed through natively for assistant messages
         let content = if msg.content.is_empty() {
           None
         } else {
           Some(serde_json::Value::String(msg.content.clone()))
         };
-        (content, None)
+        let reasoning = msg.reasoning_content.clone();
+        (content, reasoning)
       }
     };
 
@@ -429,19 +429,6 @@ impl KimiProvider {
       tool_call_id: msg.tool_call_id.clone(),
       reasoning_content,
     }
-  }
-
-  /// Extract reasoning content from message (content between <think> tags)
-  fn extract_reasoning(content: &str) -> Option<String> {
-    if let Some(start) = content.find("<think>")
-      && let Some(end) = content.find("</think>")
-    {
-      let reasoning = content[start + 7..end].trim().to_string();
-      if !reasoning.is_empty() {
-        return Some(reasoning);
-      }
-    }
-    None
   }
 
   /// Convert tools to ToolDefinition format
@@ -462,7 +449,15 @@ impl KimiProvider {
 
 #[async_trait]
 impl LLMProvider for KimiProvider {
-  async fn chat_stream(&self, messages: Vec<Message>) -> Result<ChatCompletionResponseStream> {
+  async fn chat_stream(
+    &self,
+    messages: Vec<Message>,
+  ) -> Result<crate::llm::provider::LlmResponseStream> {
+    use crate::error::Error;
+    use crate::llm::provider::LlmStreamEvent;
+    use futures::stream::{self, unfold};
+    use reqwest_eventsource::Event;
+
     log::info!(
       "KimiProvider: Sending chat request with {} messages",
       messages.len()
@@ -525,22 +520,21 @@ impl LLMProvider for KimiProvider {
         )
       })?;
 
-    // Convert EventSource to ChatCompletionResponseStream
+    // Convert EventSource to a stream of LlmStreamEvent.
+    // Each SSE message may produce multiple events (thinking + content + tool_calls),
+    // so we use unfold to generate a sub-stream per message and flatten the result.
     let stream = unfold(event_source, |mut es| async move {
       loop {
         match es.next().await {
-          Some(Ok(reqwest_eventsource::Event::Open)) => {
-            // Connection opened, continue
+          Some(Ok(Event::Open)) => {
             continue;
           }
-          Some(Ok(reqwest_eventsource::Event::Message(message))) => {
+          Some(Ok(Event::Message(message))) => {
             log::debug!("KimiProvider: Received SSE message: {}", message.data);
             if message.data == "[DONE]" {
-              // End of stream
               log::debug!("KimiProvider: Received [DONE]");
               return None;
             }
-            // Parse using Kimi's custom format that includes reasoning_content
             match from_str::<KimiStreamResponse>(&message.data) {
               Ok(kimi_response) => {
                 log::debug!(
@@ -549,6 +543,7 @@ impl LLMProvider for KimiProvider {
                   kimi_response.model,
                   kimi_response.choices.len()
                 );
+                let mut events: Vec<std::result::Result<LlmStreamEvent, Error>> = Vec::new();
                 for (i, choice) in kimi_response.choices.iter().enumerate() {
                   log::debug!(
                     "KimiProvider: Choice[{}]: content={:?}, reasoning_content={:?}, tool_calls={:?}",
@@ -557,46 +552,64 @@ impl LLMProvider for KimiProvider {
                     choice.delta.reasoning_content,
                     choice.delta.tool_calls
                   );
+                  if let Some(ref reasoning) = choice.delta.reasoning_content
+                    && !reasoning.is_empty()
+                  {
+                    events.push(Ok(LlmStreamEvent::Thinking(reasoning.clone())));
+                  }
+                  if let Some(ref content) = choice.delta.content
+                    && !content.is_empty()
+                  {
+                    events.push(Ok(LlmStreamEvent::Content(content.clone())));
+                  }
+                  if let Some(ref calls) = choice.delta.tool_calls {
+                    for call in calls {
+                      events.push(Ok(LlmStreamEvent::ToolCallChunk {
+                        index: call.index.unwrap_or(0),
+                        id: call.id.clone(),
+                        name: call.function.as_ref().and_then(|f| f.name.clone()),
+                        arguments: call.function.as_ref().and_then(|f| f.arguments.clone()),
+                      }));
+                    }
+                  }
                 }
-                // Convert Kimi response to standard OpenAI format
-                let converted = convert_kimi_response(kimi_response);
-
-                // Log the converted response
-                if let Ok(response_json) = to_string_pretty(&converted) {
-                  log::info!("KimiProvider: Converted response:\n{}", response_json);
+                if let Some(usage) = kimi_response.usage {
+                  events.push(Ok(LlmStreamEvent::Usage {
+                    total_tokens: usage.total_tokens,
+                    prompt_tokens: usage.prompt_tokens,
+                    completion_tokens: usage.completion_tokens,
+                  }));
                 }
-
-                return Some((Ok(converted), es));
+                let sub = stream::iter(events);
+                return Some((sub, es));
               }
               Err(e) => {
                 log::error!("KimiProvider: Failed to parse response: {}", e);
-                return Some((Err(OpenAIError::JSONDeserialize(e, message.data)), es));
+                let sub = stream::iter(vec![Err(Error::Llm(LlmError::Stream {
+                  category: crate::error::StreamErrorCategory::Parse,
+                  status_code: None,
+                  message: format!("Failed to parse Kimi response: {}", e),
+                }))]);
+                return Some((sub, es));
               }
             }
           }
           Some(Err(e)) => {
             log::error!("KimiProvider: Event source error: {}", e);
             let llm_err = classify_eventsource_stream_error(&e);
-            return Some((
-              Err(OpenAIError::StreamError(Box::new(
-                StreamError::EventStream(llm_err.to_string()),
-              ))),
-              es,
-            ));
+            let sub = stream::iter(vec![Err(Error::Llm(llm_err))]);
+            return Some((sub, es));
           }
           None => {
-            // Stream ended
             log::debug!("KimiProvider: Stream ended");
             return None;
           }
         }
       }
-    });
+    })
+    .flatten();
 
-    // Box the stream
-    let boxed_stream: ChatCompletionResponseStream = Box::pin(stream);
-
-    Ok(boxed_stream)
+    Ok(Box::pin(stream))
   }
 
   fn name(&self) -> &str {
@@ -678,99 +691,5 @@ fn classify_eventsource_stream_error(e: &EventSourceError) -> LlmError {
       status_code: None,
       message: format!("Stream error: {}", e),
     },
-  }
-}
-
-/// Convert Kimi stream response to standard OpenAI format
-/// This embeds reasoning_content as special markers within content for downstream processing
-fn convert_kimi_response(kimi: KimiStreamResponse) -> CreateChatCompletionStreamResponse {
-  let choices = kimi
-    .choices
-    .into_iter()
-    .map(|choice| {
-      // Build content that includes reasoning_content wrapped in markers
-      let content = match (choice.delta.reasoning_content, choice.delta.content) {
-        (Some(ref reasoning), Some(ref content)) if !reasoning.is_empty() => {
-          // Both reasoning and content present
-          let combined = format!("<think>{}</think>{}", reasoning, content);
-          log::debug!(
-            "KimiProvider: Combined reasoning + content: len={}",
-            combined.len()
-          );
-          Some(combined)
-        }
-        (Some(ref reasoning), _) if !reasoning.is_empty() => {
-          // Only reasoning present
-          let marked = format!("<think>{}</think>", reasoning);
-          log::debug!("KimiProvider: Only reasoning: len={}", marked.len());
-          Some(marked)
-        }
-        (_, content) => {
-          if content.is_some() {
-            log::debug!(
-              "KimiProvider: Only content: len={}",
-              content.as_ref().map(|s| s.len()).unwrap_or(0)
-            );
-          }
-          content
-        }
-      };
-
-      // Convert tool calls - use ChatCompletionMessageToolCallChunk for streaming
-      let tool_calls: Option<Vec<ChatCompletionMessageToolCallChunk>> =
-        choice.delta.tool_calls.map(|calls| {
-          calls
-            .into_iter()
-            .map(|call| ChatCompletionMessageToolCallChunk {
-              index: call.index.unwrap_or(0),
-              id: call.id,
-              r#type: call.call_type.map(|_t| FunctionType::Function),
-              function: call.function.map(|f| FunctionCallStream {
-                name: f.name,
-                arguments: f.arguments,
-              }),
-            })
-            .collect()
-        });
-
-      ChatChoiceStream {
-        index: choice.index,
-        delta: ChatCompletionStreamResponseDelta {
-          content,
-          role: choice.delta.role,
-          refusal: None,
-          tool_calls,
-          #[allow(deprecated)]
-          function_call: None,
-        },
-        finish_reason: choice.finish_reason,
-        #[allow(unused)]
-        logprobs: None,
-      }
-    })
-    .collect();
-
-  // Convert usage if present
-  let usage = kimi.usage.map(|u| CompletionUsage {
-    prompt_tokens: u.prompt_tokens,
-    completion_tokens: u.completion_tokens,
-    total_tokens: u.total_tokens,
-    prompt_tokens_details: None,
-    completion_tokens_details: None,
-  });
-
-  CreateChatCompletionStreamResponse {
-    id: kimi.id,
-    object: kimi.object,
-    created: kimi.created,
-    model: kimi.model,
-    choices,
-    usage,
-    #[allow(unused)]
-    // system_fingerprint is deprecated, but we keep it for compatibility
-    #[allow(deprecated)]
-    system_fingerprint: None,
-    #[allow(unused)]
-    service_tier: None,
   }
 }

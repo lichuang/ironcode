@@ -30,22 +30,17 @@ impl Context {
     thinking: Option<T>,
     tool_calls: Vec<ToolCall>,
   ) -> &Message {
-    let content = match thinking {
-      Some(t) => {
-        let t = t.into();
-        if t.is_empty() {
-          content.into()
-        } else {
-          format!("<think>{}</think>{}", t, content.into())
-        }
-      }
-      None => content.into(),
-    };
-    let msg = if tool_calls.is_empty() {
+    let reasoning_content = thinking.and_then(|t| {
+      let t = t.into();
+      if t.is_empty() { None } else { Some(t) }
+    });
+
+    let mut msg = if tool_calls.is_empty() {
       Message::assistant(content)
     } else {
       Message::assistant_with_tools(content, tool_calls)
     };
+    msg.reasoning_content = reasoning_content;
     self.messages.push(msg);
     self.messages.last().unwrap()
   }

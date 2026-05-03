@@ -1,16 +1,13 @@
 //! StreamManager — LLM streaming with connection recovery and exponential backoff.
 
-use async_openai::error::OpenAIError;
-use async_openai::types::chat::{
-  ChatCompletionMessageToolCallChunk, ChatCompletionResponseStream, FunctionCallStream,
-};
+use async_openai::types::chat::{ChatCompletionMessageToolCallChunk, FunctionCallStream};
 use futures::StreamExt;
 use log::{error, info, warn};
 use tokio::sync::mpsc;
 
 use crate::config::RetryConfig;
 use crate::error::{Error, LlmError, Result, StreamErrorCategory};
-use crate::llm::provider::LLMProvider;
+use crate::llm::provider::{LLMProvider, LlmResponseStream, LlmStreamEvent};
 use crate::llm::types::Message;
 
 use super::SessionEvent;
@@ -118,128 +115,81 @@ impl StreamManager {
   }
 }
 
-async fn handle_stream(
-  mut stream: ChatCompletionResponseStream,
-  tx: mpsc::UnboundedSender<SessionEvent>,
-) {
-  let mut buffer = String::new();
-  let mut in_thinking_mode = false;
-  let mut has_received_thinking = false;
+async fn handle_stream(mut stream: LlmResponseStream, tx: mpsc::UnboundedSender<SessionEvent>) {
   let mut tool_call_buffer: Vec<ChatCompletionMessageToolCallChunk> = Vec::new();
 
   while let Some(result) = stream.next().await {
     match result {
-      Ok(response) => {
-        if let Some(usage) = &response.usage {
-          let _ = tx.send(SessionEvent::Usage {
-            total_tokens: usage.total_tokens,
-            prompt_tokens: usage.prompt_tokens,
-            completion_tokens: usage.completion_tokens,
+      Ok(LlmStreamEvent::Content(chunk)) => {
+        if !chunk.is_empty() && tx.send(SessionEvent::ContentChunk(chunk)).is_err() {
+          return;
+        }
+      }
+      Ok(LlmStreamEvent::Thinking(chunk)) => {
+        if !chunk.is_empty() && tx.send(SessionEvent::ThinkingChunk(chunk)).is_err() {
+          return;
+        }
+      }
+      Ok(LlmStreamEvent::ToolCallChunk {
+        index,
+        id,
+        name,
+        arguments,
+      }) => {
+        let idx = index as usize;
+        while tool_call_buffer.len() <= idx {
+          tool_call_buffer.push(ChatCompletionMessageToolCallChunk {
+            index: tool_call_buffer.len() as u32,
+            id: None,
+            r#type: None,
+            function: None,
           });
         }
-
-        for choice in &response.choices {
-          if let Some(ref tool_calls) = choice.delta.tool_calls {
-            for tool_call in tool_calls {
-              let idx = tool_call.index as usize;
-              while tool_call_buffer.len() <= idx {
-                tool_call_buffer.push(ChatCompletionMessageToolCallChunk {
-                  index: tool_call_buffer.len() as u32,
-                  id: None,
-                  r#type: None,
-                  function: None,
-                });
-              }
-              let existing = &mut tool_call_buffer[idx];
-              if let Some(ref id) = tool_call.id {
-                existing.id = Some(id.clone());
-              }
-              if let Some(ref call_type) = tool_call.r#type {
-                existing.r#type = Some(call_type.clone());
-              }
-              if let Some(ref function) = tool_call.function {
-                if existing.function.is_none() {
-                  existing.function = Some(FunctionCallStream {
-                    name: None,
-                    arguments: None,
-                  });
-                }
-                if let Some(ref existing_func) = existing.function {
-                  let mut updated_func = existing_func.clone();
-                  if let Some(ref name) = function.name {
-                    updated_func.name = Some(name.clone());
-                  }
-                  if let Some(ref args) = function.arguments {
-                    if let Some(ref existing_args) = updated_func.arguments {
-                      updated_func.arguments = Some(format!("{}{}", existing_args, args));
-                    } else {
-                      updated_func.arguments = Some(args.clone());
-                    }
-                  }
-                  existing.function = Some(updated_func);
-                }
-              }
-            }
+        let existing = &mut tool_call_buffer[idx];
+        if let Some(id) = id {
+          existing.id = Some(id);
+        }
+        if let Some(name) = name {
+          if existing.function.is_none() {
+            existing.function = Some(FunctionCallStream {
+              name: None,
+              arguments: None,
+            });
           }
-
-          if let Some(content) = &choice.delta.content
-            && !content.is_empty()
-          {
-            buffer.push_str(content);
-            loop {
-              if in_thinking_mode {
-                if let Some(end_pos) = buffer.find("</think>") {
-                  let thinking = buffer[..end_pos].to_string();
-                  if !thinking.is_empty() {
-                    if !has_received_thinking {
-                      has_received_thinking = true;
-                    }
-                    if tx.send(SessionEvent::ThinkingChunk(thinking)).is_err() {
-                      return;
-                    }
-                  }
-                  buffer = buffer[end_pos + 8..].to_string();
-                  in_thinking_mode = false;
-                } else {
-                  if !buffer.is_empty() {
-                    if !has_received_thinking {
-                      has_received_thinking = true;
-                    }
-                    if tx
-                      .send(SessionEvent::ThinkingChunk(buffer.clone()))
-                      .is_err()
-                    {
-                      return;
-                    }
-                    buffer.clear();
-                  }
-                  break;
-                }
-              } else if let Some(start_pos) = buffer.find("<think>") {
-                if start_pos > 0 {
-                  let before = buffer[..start_pos].to_string();
-                  if !before.is_empty() && tx.send(SessionEvent::ContentChunk(before)).is_err() {
-                    return;
-                  }
-                }
-                buffer = buffer[start_pos + 7..].to_string();
-                in_thinking_mode = true;
-              } else {
-                if !buffer.is_empty()
-                  && tx.send(SessionEvent::ContentChunk(buffer.clone())).is_err()
-                {
-                  return;
-                }
-                buffer.clear();
-                break;
-              }
+          if let Some(ref mut func) = existing.function {
+            func.name = Some(name);
+          }
+        }
+        if let Some(args) = arguments {
+          if existing.function.is_none() {
+            existing.function = Some(FunctionCallStream {
+              name: None,
+              arguments: None,
+            });
+          }
+          if let Some(ref mut func) = existing.function {
+            if let Some(ref existing_args) = func.arguments {
+              func.arguments = Some(format!("{}{}", existing_args, args));
+            } else {
+              func.arguments = Some(args);
             }
           }
         }
       }
+      Ok(LlmStreamEvent::Usage {
+        total_tokens,
+        prompt_tokens,
+        completion_tokens,
+      }) => {
+        let _ = tx.send(SessionEvent::Usage {
+          total_tokens,
+          prompt_tokens,
+          completion_tokens,
+        });
+      }
       Err(e) => {
         error!("Stream: Stream error: {}", e);
-        let is_retryable = is_stream_error_retryable(&e);
+        let is_retryable = is_error_retryable(&e);
         let _ = tx.send(SessionEvent::StreamInterrupted {
           error: e.to_string(),
           is_retryable,
@@ -249,16 +199,9 @@ async fn handle_stream(
     }
   }
 
-  if !buffer.is_empty() {
-    if in_thinking_mode {
-      let _ = tx.send(SessionEvent::ThinkingChunk(buffer));
-    } else {
-      let _ = tx.send(SessionEvent::ContentChunk(buffer));
-    }
-  }
-
-  for tool_call in tool_call_buffer {
-    if let (Some(id), Some(function)) = (tool_call.id, tool_call.function)
+  // Stream ended — flush any remaining tool calls and signal completion.
+  for tool_call in &tool_call_buffer {
+    if let (Some(id), Some(function)) = (tool_call.id.clone(), tool_call.function.clone())
       && let (Some(name), Some(arguments)) = (function.name, function.arguments)
       && !id.is_empty()
       && !name.is_empty()
@@ -270,7 +213,6 @@ async fn handle_stream(
       });
     }
   }
-
   let _ = tx.send(SessionEvent::Completed);
 }
 
@@ -303,23 +245,6 @@ pub fn format_user_friendly_error(err: &str) -> String {
     "The request was invalid. Please check your input and try again.".to_string()
   } else {
     format!("An error occurred: {}. Please try again.", err)
-  }
-}
-
-fn is_stream_error_retryable(err: &OpenAIError) -> bool {
-  match err {
-    OpenAIError::Reqwest(e) => {
-      let msg = e.to_string().to_lowercase();
-      msg.contains("timeout")
-        || msg.contains("connection")
-        || msg.contains("reset")
-        || msg.contains("broken pipe")
-    }
-    OpenAIError::JSONDeserialize(e, _) => {
-      let msg = e.to_string().to_lowercase();
-      msg.contains("eof") || msg.contains("unexpected")
-    }
-    _ => false,
   }
 }
 

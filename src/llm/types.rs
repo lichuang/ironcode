@@ -7,6 +7,9 @@ pub struct Message {
   pub role: Role,
   /// The content of the message
   pub content: String,
+  /// Thinking / reasoning content (for assistant messages from models that support it)
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub reasoning_content: Option<String>,
   /// Tool calls requested by the assistant (only for assistant messages)
   pub tool_calls: Option<Vec<ToolCall>>,
   /// The ID of the tool call this message is responding to (only for tool messages)
@@ -19,6 +22,7 @@ impl Message {
     Self {
       role,
       content: content.into(),
+      reasoning_content: None,
       tool_calls: None,
       tool_call_id: None,
     }
@@ -44,6 +48,7 @@ impl Message {
     Self {
       role: Role::Assistant,
       content: content.into(),
+      reasoning_content: None,
       tool_calls: Some(tool_calls),
       tool_call_id: None,
     }
@@ -54,6 +59,7 @@ impl Message {
     Self {
       role: Role::Tool,
       content: content.into(),
+      reasoning_content: None,
       tool_calls: None,
       tool_call_id: Some(tool_call_id.into()),
     }
