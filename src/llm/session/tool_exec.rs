@@ -20,7 +20,7 @@ impl ToolExecutor {
 
   pub async fn execute(&self, tool_call: &ToolCall) -> Result<String, crate::tools::ToolError> {
     let invocation = ToolInvocation::new(
-      &tool_call.id,
+      &tool_call.name,
       ToolPayload::Function {
         arguments: tool_call.arguments.clone(),
       },
@@ -32,7 +32,7 @@ impl ToolExecutor {
 
   pub async fn preview(&self, tool_call: &ToolCall) -> Option<String> {
     let invocation = ToolInvocation::new(
-      &tool_call.id,
+      &tool_call.name,
       ToolPayload::Function {
         arguments: tool_call.arguments.clone(),
       },
