@@ -27,6 +27,18 @@ use crate::utils::token_counter::estimate_llm_messages_tokens;
 /// Maximum characters to display in user input log preview
 const USER_INPUT_PREVIEW_LEN: usize = 50;
 
+/// Default maximum steps per turn to prevent infinite tool-call loops.
+const DEFAULT_MAX_STEPS_PER_TURN: usize = 10;
+
+/// Tracks whether the actor is running inside an explicit agent loop.
+#[derive(Debug, Clone, Copy)]
+enum AgentLoopState {
+  /// No agent loop is active.
+  Idle,
+  /// Inside a turn loop; `step_count` is the number of LLM calls made so far.
+  InProgress { step_count: usize },
+}
+
 /// Generate a session ID based on timestamp and current directory
 /// Format: dirname-YYYY.MM.DD:HH.MM.SS.microseconds
 pub(crate) fn generate_session_id() -> String {
@@ -97,6 +109,10 @@ struct SessionActor {
   runtime: Arc<Runtime>,
   /// Explicit actor state replacing is_streaming + tool_call_execution_state + pending_answers_state
   state: ActorState,
+  /// Agent loop state — tracks whether we're in an explicit turn loop and step count.
+  agent_loop_state: AgentLoopState,
+  /// Maximum steps (LLM calls) allowed per turn to prevent infinite loops.
+  max_steps_per_turn: usize,
 }
 
 impl SessionActor {
@@ -135,6 +151,8 @@ impl SessionActor {
       compaction_service: CompactionService::new(runtime.compaction_config().clone()),
       runtime,
       state: ActorState::Idle,
+      agent_loop_state: AgentLoopState::Idle,
+      max_steps_per_turn: DEFAULT_MAX_STEPS_PER_TURN,
     }
   }
 
@@ -236,8 +254,8 @@ impl SessionActor {
           );
         }
 
-        // Start streaming
-        self.start_stream().await;
+        // Start the explicit agent loop for this turn.
+        self.start_turn().await;
         true
       }
 
@@ -364,6 +382,75 @@ impl SessionActor {
         tokens: result.new_token_count,
       });
     }
+  }
+
+  /// Start a new turn with the explicit agent loop.
+  ///
+  /// Initializes loop state, sends `TurnBegin`, and kicks off the first
+  /// iteration.  The loop continues (via `agent_loop_continue`) until the
+  /// model responds without tool calls or a limit is reached.
+  async fn start_turn(&mut self) {
+    info!("Session {}: Starting new turn", self.id);
+    self.wire_publisher.send(WireMessage::TurnBegin);
+    self.agent_loop_state = AgentLoopState::InProgress { step_count: 0 };
+    self.agent_loop_iteration().await;
+  }
+
+  /// Single iteration of the agent loop.
+  ///
+  /// Checks `max_steps_per_turn`, checks compaction, then starts the stream.
+  /// This is called at the beginning of every step (including retries).
+  async fn agent_loop_iteration(&mut self) {
+    let step_count = match self.agent_loop_state {
+      AgentLoopState::InProgress { step_count } => step_count,
+      _ => {
+        // Not inside an agent loop — fall back to a direct stream start.
+        self.start_stream().await;
+        return;
+      }
+    };
+
+    if step_count >= self.max_steps_per_turn {
+      let msg = format!(
+        "Reached maximum steps per turn ({})",
+        self.max_steps_per_turn
+      );
+      error!("Session {}: {}", self.id, msg);
+      self
+        .wire_publisher
+        .send(WireMessage::Error { message: msg });
+      self.agent_loop_end().await;
+      return;
+    }
+
+    info!(
+      "Session {}: Agent loop step {}/{}",
+      self.id, step_count, self.max_steps_per_turn
+    );
+
+    // Check compaction before *every* step, not just the first one.
+    self.check_and_notify_compaction().await;
+
+    self.start_stream().await;
+  }
+
+  /// Continue the agent loop after tool execution.
+  ///
+  /// Increments the step counter and starts the next iteration.
+  async fn agent_loop_continue(&mut self) {
+    if let AgentLoopState::InProgress { ref mut step_count } = self.agent_loop_state {
+      *step_count += 1;
+    }
+    self.agent_loop_iteration().await;
+  }
+
+  /// End the current turn.
+  ///
+  /// Resets agent-loop state and sends `TurnEnd` to the UI.
+  async fn agent_loop_end(&mut self) {
+    info!("Session {}: Turn ended", self.id);
+    self.agent_loop_state = AgentLoopState::Idle;
+    self.wire_publisher.send(WireMessage::TurnEnd);
   }
 
   /// Start a chat stream with the current messages, with retry support.
@@ -495,7 +582,7 @@ impl SessionActor {
           };
           let assistant_msg = self
             .context
-            .push_assistant(response, thinking_opt, tool_calls)
+            .push_assistant(response, thinking_opt, tool_calls.clone())
             .clone();
           self.persistence.stage_message(&self.id, &assistant_msg);
           self.meta.updated_at = Local::now();
@@ -512,19 +599,24 @@ impl SessionActor {
         self.state = ActorState::Idle;
         self.stream_rx = None;
 
-        // Check if we have tool calls to execute
-        if let Some(msg) = self.context.messages().last()
-          && msg.tool_calls.is_some()
-          && !msg.tool_calls.as_ref().unwrap().is_empty()
-        {
-          info!("Session {}: Executing tool calls", self.id);
-          self.execute_tool_calls().await;
-          return; // Don't send TurnEnd yet, we'll continue after tool execution
+        // Use the tool_calls we already have in hand instead of re-reading
+        // from context.messages().last().
+        if !tool_calls.is_empty() {
+          info!(
+            "Session {}: Executing {} tool calls",
+            self.id,
+            tool_calls.len()
+          );
+          self.state = ActorState::ExecutingTools {
+            tool_calls,
+            current_index: 0,
+          };
+          self.continue_tool_call_execution().await;
+          return;
         }
 
-        // Forward to caller
-        self.wire_publisher.send(WireMessage::TurnEnd);
-        info!("Session {}: Stream completed", self.id);
+        // End the turn via the explicit agent loop.
+        self.agent_loop_end().await;
       }
       SessionEvent::StreamInterrupted {
         error,
@@ -539,11 +631,19 @@ impl SessionActor {
         self.pending_tool_calls.clear();
 
         if *is_retryable {
-          self.start_stream().await;
+          if matches!(self.agent_loop_state, AgentLoopState::InProgress { .. }) {
+            // Retry the same step (do not increment step_count).
+            self.agent_loop_iteration().await;
+          } else {
+            self.start_stream().await;
+          }
         } else {
           self.wire_publisher.send(WireMessage::Error {
             message: format_user_friendly_error(error),
           });
+          if matches!(self.agent_loop_state, AgentLoopState::InProgress { .. }) {
+            self.agent_loop_end().await;
+          }
         }
       }
       SessionEvent::Error(err) => {
@@ -557,6 +657,9 @@ impl SessionActor {
         self.wire_publisher.send(WireMessage::Error {
           message: err.clone(),
         });
+        if matches!(self.agent_loop_state, AgentLoopState::InProgress { .. }) {
+          self.agent_loop_end().await;
+        }
       }
       SessionEvent::Shutdown => {
         // Should not happen, but handle it
@@ -613,33 +716,6 @@ impl SessionActor {
         });
       }
     }
-  }
-
-  /// Execute pending tool calls and continue the conversation.
-  ///
-  /// If YOLO mode is off and a tool is not in the auto-approve list,
-  /// execution pauses and an `ApprovalNeeded` event is sent to the UI.
-  async fn execute_tool_calls(&mut self) {
-    let tool_calls = match self.context.messages().last() {
-      Some(msg) => msg.tool_calls.clone().unwrap_or_default(),
-      None => {
-        error!("Session {}: No assistant message with tool calls", self.id);
-        self.wire_publisher.send(WireMessage::TurnEnd);
-        return;
-      }
-    };
-
-    info!(
-      "Session {}: Executing {} tool calls",
-      self.id,
-      tool_calls.len()
-    );
-
-    self.state = ActorState::ExecutingTools {
-      tool_calls,
-      current_index: 0,
-    };
-    self.continue_tool_call_execution().await;
   }
 
   /// Resume tool call execution from the pending state.
@@ -779,7 +855,7 @@ impl SessionActor {
 
     self.current_response.clear();
     self.current_thinking.clear();
-    self.start_stream().await;
+    self.agent_loop_continue().await;
   }
 
   /// Execute a single tool call and store the result.
