@@ -4,6 +4,18 @@
 
 This project is a Rust re-implementation of **kimi-cli** (https://github.com/moonshot-ai/kimi-cli). When implementing features, aim to match kimi-cli's behavior, architecture, and user experience as closely as possible. Reference the Python implementation for design decisions, feature parity, and interaction patterns. Adaptations should only be made where Rust's ownership model, type system, or ecosystem constraints require a different approach.
 
+## Feature Parity Requirement
+
+**Any new feature MUST align with kimi-cli's behavior as closely as possible.**
+
+- Before implementing a feature, study the corresponding code in `~/source/ai/kimi-cli` (local reference copy)
+- Match tool parameters, return formats, error messages, and side effects exactly
+- Match user interaction flows (approval dialogs, confirmations, plan mode behavior, etc.)
+- Match state management and persistence semantics
+- If a direct port is impossible due to Rust constraints, document the deviation and its rationale
+- **Do not ship simplified/MVP versions that diverge from kimi-cli's behavior** — either implement it fully or do not implement it yet
+- When in doubt, read the source: `~/source/ai/kimi-cli/src/kimi_cli/`
+
 ## Code Quality Requirements
 
 ### Formatting
