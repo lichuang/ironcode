@@ -333,6 +333,9 @@ impl ChatView {
     // Update compaction warning level from AppData
     self.status_bar_info.compaction_warning =
       calculate_compaction_warning_level(&data.compaction_warning, true);
+
+    // Update plan mode indicator
+    self.status_bar_info.plan_mode = data.plan_mode;
   }
 }
 

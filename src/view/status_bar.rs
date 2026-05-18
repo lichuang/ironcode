@@ -92,6 +92,8 @@ pub struct StatusBarInfo {
   pub history_active: bool,
   /// Compaction warning level based on token usage
   pub compaction_warning: CompactionWarningLevel,
+  /// Whether plan mode is active
+  pub plan_mode: bool,
 }
 
 impl StatusBarInfo {
@@ -123,6 +125,7 @@ impl StatusBarInfo {
       max_context_size,
       history_active: false, // Will be set by ChatView if needed
       compaction_warning,
+      plan_mode: false, // Will be set by ChatView if needed
     }
   }
 }
@@ -168,14 +171,24 @@ fn render_first_line(f: &mut Frame, area: Rect, info: &StatusBarInfo) {
     .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
     .split(area);
 
-  // Left: Session ID and Model
-  let left_text = Line::from(vec![
+  // Left: Session ID, Model, and Plan mode indicator
+  let mut left_spans = vec![
     Span::styled("Session: ", Style::default().fg(SUBTLE)),
     Span::styled(&info.session_id, Style::default().fg(PRIMARY)),
     Span::styled(" | ", Style::default().fg(SUBTLE)),
     Span::styled("Model: ", Style::default().fg(SUBTLE)),
     Span::styled(&info.model_name, Style::default().fg(TEXT)),
-  ]);
+  ];
+  if info.plan_mode {
+    left_spans.push(Span::styled(" | ", Style::default().fg(SUBTLE)));
+    left_spans.push(Span::styled(
+      "📋 plan",
+      Style::default()
+        .fg(ratatui::style::Color::Blue)
+        .add_modifier(Modifier::BOLD),
+    ));
+  }
+  let left_text = Line::from(left_spans);
 
   // Right: Status
   let state_text = format_state(&info.state);

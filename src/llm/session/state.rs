@@ -42,4 +42,28 @@ pub enum ActorState {
     /// Tool call ID of the question.
     tool_call_id: String,
   },
+  /// Paused waiting for user confirmation to enter plan mode.
+  WaitingEnterPlanMode {
+    /// The tool calls being executed.
+    tool_calls: Vec<ToolCall>,
+    /// Index of the EnterPlanMode tool call.
+    current_index: usize,
+    /// Tool call ID.
+    tool_call_id: String,
+  },
+  /// Paused waiting for user approval of a plan.
+  WaitingExitPlanMode {
+    /// The tool calls being executed.
+    tool_calls: Vec<ToolCall>,
+    /// Index of the ExitPlanMode tool call.
+    current_index: usize,
+    /// Tool call ID.
+    tool_call_id: String,
+    /// Whether the plan had custom options.
+    has_options: bool,
+    /// Labels of custom options (for mapping answers).
+    option_labels: Vec<String>,
+    /// All option labels in order (including built-in ones).
+    all_option_labels: Vec<String>,
+  },
 }

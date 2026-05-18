@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::{Datelike, Local, Timelike};
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use tokio::sync::mpsc;
 
 use super::approval::{ApprovalDecision, ApprovalService};
@@ -22,6 +22,7 @@ use crate::llm::provider::LLMProvider;
 use crate::llm::providers::KimiProvider;
 use crate::llm::types::{ChatConfig, Message, ToolCall};
 use crate::session::{SessionMeta, SessionMode, SessionStore};
+use crate::utils::plan::{plan_file_path, read_plan};
 use crate::utils::token_counter::estimate_llm_messages_tokens;
 
 /// Maximum characters to display in user input log preview
@@ -113,6 +114,8 @@ struct SessionActor {
   agent_loop_state: AgentLoopState,
   /// Maximum steps (LLM calls) allowed per turn to prevent infinite loops.
   max_steps_per_turn: usize,
+  /// Whether plan mode is active (read-only tools only).
+  plan_mode: bool,
 }
 
 impl SessionActor {
@@ -129,6 +132,7 @@ impl SessionActor {
   ) -> Self {
     let max_context_size = provider.max_context_size();
     let yolo = meta.yolo;
+    let plan_mode = meta.plan_mode;
     Self {
       id,
       context: Context::from_messages(messages),
@@ -153,6 +157,7 @@ impl SessionActor {
       state: ActorState::Idle,
       agent_loop_state: AgentLoopState::Idle,
       max_steps_per_turn: DEFAULT_MAX_STEPS_PER_TURN,
+      plan_mode,
     }
   }
 
@@ -307,9 +312,23 @@ impl SessionActor {
         answers,
         dismissed,
       } => {
-        self
-          .handle_question_answers(tool_call_id, answers, dismissed)
-          .await;
+        match &self.state {
+          ActorState::WaitingEnterPlanMode { .. } => {
+            self
+              .handle_plan_mode_enter_answer(tool_call_id, answers, dismissed)
+              .await;
+          }
+          ActorState::WaitingExitPlanMode { .. } => {
+            self
+              .handle_plan_mode_exit_answer(tool_call_id, answers, dismissed)
+              .await;
+          }
+          _ => {
+            self
+              .handle_question_answers(tool_call_id, answers, dismissed)
+              .await;
+          }
+        }
         true
       }
 
@@ -752,6 +771,268 @@ impl SessionActor {
         arguments: tool_call.arguments.clone(),
       });
 
+      // Plan mode: reject non-read-only tools immediately
+      if self.plan_mode && !self.is_tool_allowed_in_plan_mode(&tool_call.name) {
+        let error_msg = format!(
+          "Tool '{}' is not available in plan mode. \
+           Only read-only tools (ReadFile, Glob, Grep, SearchWeb, FetchURL) \
+           are allowed while planning.",
+          tool_call.name
+        );
+        self.wire_publisher.send(WireMessage::ToolCallEnd {
+          id: tool_call.id.clone(),
+          name: tool_call.name.clone(),
+          output: error_msg.clone(),
+        });
+        self.context.push_tool_result(&tool_call.id, &error_msg);
+        let tool_msg = Message::tool(&error_msg, &tool_call.id);
+        self.persistence.stage_message(&self.id, &tool_msg);
+        let _ = self.persistence.flush();
+        warn!(
+          "Session {}: Blocked tool {} in plan mode",
+          self.id, tool_call.name
+        );
+        continue;
+      }
+
+      // Special handling for EnterPlanMode: pause execution and wait for user confirmation
+      if tool_call.name == "EnterPlanMode" {
+        // Guard: already in plan mode
+        if self.plan_mode {
+          let error_msg =
+            "Already in plan mode. Use ExitPlanMode when your plan is ready.".to_string();
+          self.wire_publisher.send(WireMessage::ToolCallEnd {
+            id: tool_call.id.clone(),
+            name: tool_call.name.clone(),
+            output: error_msg.clone(),
+          });
+          self.context.push_tool_result(&tool_call.id, &error_msg);
+          let tool_msg = Message::tool(&error_msg, &tool_call.id);
+          self.persistence.stage_message(&self.id, &tool_msg);
+          let _ = self.persistence.flush();
+          continue;
+        }
+
+        // YOLO mode: auto-approve
+        if self.approval_service.is_yolo() {
+          if !batch.is_empty() {
+            self.execute_tool_batch(std::mem::take(&mut batch)).await;
+          }
+          self.handle_plan_mode_transition(true).await;
+          let plan_path = plan_file_path(&self.id, None);
+          let output = format!(
+            "Plan mode activated (auto-approved in non-interactive mode).\n\
+             Plan file: {}\n\
+             Workflow: identify key questions about the codebase → \
+             use Agent(subagent_type='explore') to investigate if needed → \
+             design approach → \
+             modify the plan file with WriteFile or StrReplaceFile \
+             (create it with WriteFile first if it does not exist) → \
+             call ExitPlanMode.\n",
+            plan_path.display()
+          );
+          self.wire_publisher.send(WireMessage::ToolCallEnd {
+            id: tool_call.id.clone(),
+            name: tool_call.name.clone(),
+            output: output.clone(),
+          });
+          self.context.push_tool_result(&tool_call.id, &output);
+          let tool_msg = Message::tool(&output, &tool_call.id);
+          self.persistence.stage_message(&self.id, &tool_msg);
+          let _ = self.persistence.flush();
+          continue;
+        }
+
+        // Flush pending batch before pausing.
+        if !batch.is_empty() {
+          self.execute_tool_batch(std::mem::take(&mut batch)).await;
+        }
+
+        info!(
+          "Session {}: EnterPlanMode paused, waiting for user confirmation",
+          self.id
+        );
+        self.state = ActorState::WaitingEnterPlanMode {
+          tool_calls: tool_calls.clone(),
+          current_index: i,
+          tool_call_id: tool_call.id.clone(),
+        };
+        self.wire_publisher.send(WireMessage::QuestionsAsked {
+          tool_call_id: tool_call.id.clone(),
+          questions: vec![Question {
+            question: "Enter plan mode?".to_string(),
+            header: "Plan Mode".to_string(),
+            options: vec![
+              QuestionOption {
+                label: "Yes".to_string(),
+                description: "Enter plan mode to explore and design an approach".to_string(),
+              },
+              QuestionOption {
+                label: "No".to_string(),
+                description: "Skip planning, start implementing now".to_string(),
+              },
+            ],
+            multi_select: false,
+            confirmation: true,
+            default: vec![0],
+            required: true,
+          }],
+        });
+        return;
+      }
+
+      // Special handling for ExitPlanMode: pause execution and wait for user approval
+      if tool_call.name == "ExitPlanMode" {
+        // Guard: only works in plan mode
+        if !self.plan_mode {
+          let error_msg =
+            "Not in plan mode. ExitPlanMode is only available during plan mode.".to_string();
+          self.wire_publisher.send(WireMessage::ToolCallEnd {
+            id: tool_call.id.clone(),
+            name: tool_call.name.clone(),
+            output: error_msg.clone(),
+          });
+          self.context.push_tool_result(&tool_call.id, &error_msg);
+          let tool_msg = Message::tool(&error_msg, &tool_call.id);
+          self.persistence.stage_message(&self.id, &tool_msg);
+          let _ = self.persistence.flush();
+          continue;
+        }
+
+        // Parse arguments to get custom options
+        let exit_args = parse_exit_plan_mode_args(&tool_call.arguments);
+        let has_options = exit_args
+          .as_ref()
+          .map(|a| a.options.as_ref().map(|o| o.len() >= 2).unwrap_or(false))
+          .unwrap_or(false);
+        let custom_options: Vec<(String, String)> = if has_options {
+          exit_args
+            .unwrap()
+            .options
+            .unwrap()
+            .into_iter()
+            .map(|o| (o.label, o.description))
+            .collect()
+        } else {
+          Vec::new()
+        };
+
+        // Read the plan file
+        let plan_path = plan_file_path(&self.id, None);
+        let plan_content = read_plan(&self.id, None);
+
+        if plan_content.is_none() {
+          let error_msg = format!(
+            "No plan file found. Write your plan to {} first, then call ExitPlanMode.",
+            plan_path.display()
+          );
+          self.wire_publisher.send(WireMessage::ToolCallEnd {
+            id: tool_call.id.clone(),
+            name: tool_call.name.clone(),
+            output: error_msg.clone(),
+          });
+          self.context.push_tool_result(&tool_call.id, &error_msg);
+          let tool_msg = Message::tool(&error_msg, &tool_call.id);
+          self.persistence.stage_message(&self.id, &tool_msg);
+          let _ = self.persistence.flush();
+          continue;
+        }
+        let plan_content = plan_content.unwrap();
+
+        // YOLO mode: auto-approve
+        if self.approval_service.is_yolo() {
+          if !batch.is_empty() {
+            self.execute_tool_batch(std::mem::take(&mut batch)).await;
+          }
+          self.handle_plan_mode_transition(false).await;
+          let output = format!(
+            "Plan approved (auto-approved in non-interactive mode). \
+             Plan mode deactivated. All tools are now available.\n\
+             Plan saved to: {}\n\n\
+             ## Approved Plan:\n{}",
+            plan_path.display(),
+            plan_content
+          );
+          self.wire_publisher.send(WireMessage::ToolCallEnd {
+            id: tool_call.id.clone(),
+            name: tool_call.name.clone(),
+            output: output.clone(),
+          });
+          self.context.push_tool_result(&tool_call.id, &output);
+          let tool_msg = Message::tool(&output, &tool_call.id);
+          self.persistence.stage_message(&self.id, &tool_msg);
+          let _ = self.persistence.flush();
+          continue;
+        }
+
+        // Flush pending batch before pausing.
+        if !batch.is_empty() {
+          self.execute_tool_batch(std::mem::take(&mut batch)).await;
+        }
+
+        // Build question options
+        let mut question_options = Vec::new();
+        if has_options {
+          for (label, description) in &custom_options {
+            question_options.push(QuestionOption {
+              label: label.clone(),
+              description: description.clone(),
+            });
+          }
+        } else {
+          question_options.push(QuestionOption {
+            label: "Approve".to_string(),
+            description: "Exit plan mode and start execution".to_string(),
+          });
+        }
+        question_options.push(QuestionOption {
+          label: "Reject".to_string(),
+          description: "Reject and stay in plan mode".to_string(),
+        });
+        question_options.push(QuestionOption {
+          label: "Reject and Exit".to_string(),
+          description: "Reject and exit plan mode".to_string(),
+        });
+        question_options.push(QuestionOption {
+          label: "Revise".to_string(),
+          description: "Stay in plan mode and provide feedback".to_string(),
+        });
+
+        // Display plan content inline
+        self.wire_publisher.send(WireMessage::PlanDisplay {
+          content: plan_content.clone(),
+          file_path: plan_path.display().to_string(),
+        });
+
+        info!(
+          "Session {}: ExitPlanMode paused, waiting for user approval",
+          self.id
+        );
+        let all_option_labels: Vec<String> =
+          question_options.iter().map(|o| o.label.clone()).collect();
+        self.state = ActorState::WaitingExitPlanMode {
+          tool_calls: tool_calls.clone(),
+          current_index: i,
+          tool_call_id: tool_call.id.clone(),
+          has_options,
+          option_labels: custom_options.into_iter().map(|(l, _)| l).collect(),
+          all_option_labels,
+        };
+        self.wire_publisher.send(WireMessage::QuestionsAsked {
+          tool_call_id: tool_call.id.clone(),
+          questions: vec![Question {
+            question: "Approve this plan".to_string(),
+            header: "Plan".to_string(),
+            options: question_options,
+            multi_select: false,
+            confirmation: false,
+            default: vec![0],
+            required: true,
+          }],
+        });
+        return;
+      }
+
       // Special handling for AskUserQuestion: pause execution and wait for answers
       if tool_call.name == "AskUserQuestion" {
         if self.approval_service.is_yolo() {
@@ -897,7 +1178,8 @@ impl SessionActor {
   /// Execute a batch of approved tool calls concurrently.
   ///
   /// Results are processed in the original order so that context messages
-  /// remain deterministic.
+  /// remain deterministic. Also handles plan mode state transitions for
+  /// EnterPlanMode and ExitPlanMode.
   async fn execute_tool_batch(&mut self, tool_calls: Vec<&ToolCall>) {
     let results = self.tool_executor.execute_many(&tool_calls).await;
 
@@ -925,6 +1207,13 @@ impl SessionActor {
             tool_call.name,
             output.len()
           );
+
+          // Handle plan mode state transitions for tools executed via batch
+          if tool_call.name == "EnterPlanMode" {
+            self.handle_plan_mode_transition(true).await;
+          } else if tool_call.name == "ExitPlanMode" {
+            self.handle_plan_mode_transition(false).await;
+          }
         }
         Err(e) => {
           let error_msg = format!("Error: {}", e);
@@ -945,6 +1234,46 @@ impl SessionActor {
         }
       }
     }
+  }
+
+  /// Toggle plan mode state and notify UI.
+  async fn handle_plan_mode_transition(&mut self, entering: bool) {
+    if entering {
+      if !self.plan_mode {
+        self.plan_mode = true;
+        self.meta.plan_mode = true;
+        self.persistence.stage_meta(&self.meta);
+        let _ = self.persistence.flush();
+        self
+          .wire_publisher
+          .send(WireMessage::PlanModeChanged { active: true });
+        info!("Session {}: Entered plan mode", self.id);
+      }
+    } else if self.plan_mode {
+      self.plan_mode = false;
+      self.meta.plan_mode = false;
+      self.persistence.stage_meta(&self.meta);
+      let _ = self.persistence.flush();
+      self
+        .wire_publisher
+        .send(WireMessage::PlanModeChanged { active: false });
+      info!("Session {}: Exited plan mode", self.id);
+    }
+  }
+
+  /// Returns true if the given tool is allowed in plan mode.
+  fn is_tool_allowed_in_plan_mode(&self, tool_name: &str) -> bool {
+    const ALLOWED: &[&str] = &[
+      "ReadFile",
+      "Glob",
+      "Grep",
+      "SearchWeb",
+      "FetchURL",
+      "AskUserQuestion",
+      "EnterPlanMode",
+      "ExitPlanMode",
+    ];
+    ALLOWED.contains(&tool_name)
   }
 
   /// Execute a single tool call and store the result.
@@ -1077,7 +1406,10 @@ impl SessionActor {
     // Bulk-deny: reject every remaining non-interactive tool.
     if !approved && reject_remaining {
       for (i, tc) in tool_calls.iter().enumerate().skip(current_index + 1) {
-        if tc.name == "AskUserQuestion" {
+        if matches!(
+          tc.name.as_str(),
+          "AskUserQuestion" | "EnterPlanMode" | "ExitPlanMode"
+        ) {
           continue;
         }
         rejected_indices.push(i);
@@ -1103,7 +1435,10 @@ impl SessionActor {
 
     let total = tool_calls.len();
     for i in start_index..total {
-      if tool_calls[i].name == "AskUserQuestion" {
+      if matches!(
+        tool_calls[i].name.as_str(),
+        "AskUserQuestion" | "EnterPlanMode" | "ExitPlanMode"
+      ) {
         continue;
       }
 
@@ -1235,6 +1570,247 @@ impl SessionActor {
       self.id,
       output.len()
     );
+
+    self.wire_publisher.send(WireMessage::ToolCallEnd {
+      id: tool_call.id.clone(),
+      name: tool_call.name.clone(),
+      output: output.clone(),
+    });
+
+    self.context.push_tool_result(&tool_call.id, &output);
+    let tool_msg = Message::tool(&output, &tool_call.id);
+    self.persistence.stage_message(&self.id, &tool_msg);
+    let _ = self.persistence.flush();
+
+    let next_index = current_index + 1;
+    self.state = ActorState::ExecutingTools {
+      tool_calls,
+      current_index: next_index,
+    };
+    self.continue_tool_call_execution().await;
+  }
+
+  /// Handle user confirmation to enter plan mode.
+  async fn handle_plan_mode_enter_answer(
+    &mut self,
+    tool_call_id: String,
+    answers: Vec<Vec<usize>>,
+    dismissed: bool,
+  ) {
+    let (tool_calls, current_index, expected_id) =
+      match mem::replace(&mut self.state, ActorState::Idle) {
+        ActorState::WaitingEnterPlanMode {
+          tool_calls,
+          current_index,
+          tool_call_id: expected_id,
+        } => (tool_calls, current_index, expected_id),
+        _ => {
+          error!(
+            "Session {}: Received plan mode enter answer but no confirmation is pending",
+            self.id
+          );
+          return;
+        }
+      };
+
+    if expected_id != tool_call_id {
+      error!(
+        "Session {}: Plan mode enter tool_call_id mismatch: expected {}, got {}",
+        self.id, expected_id, tool_call_id
+      );
+      self.state = ActorState::WaitingEnterPlanMode {
+        tool_calls,
+        current_index,
+        tool_call_id: expected_id,
+      };
+      return;
+    }
+
+    let tool_call = &tool_calls[current_index];
+    let plan_path = plan_file_path(&self.id, None);
+
+    // Map answer: index 0 = Yes, index 1 = No
+    let approved = !dismissed && answers.first().and_then(|a| a.first()).copied() == Some(0);
+
+    let output = if dismissed {
+      info!("Session {}: User dismissed EnterPlanMode", self.id);
+      "User dismissed without choosing. Proceed with implementation directly.".to_string()
+    } else if approved {
+      self.handle_plan_mode_transition(true).await;
+      info!("Session {}: User approved entering plan mode", self.id);
+      format!(
+        "Plan mode activated. You MUST NOT edit code files — only read and plan.\n\
+         Plan file: {}\n\
+         Workflow: identify key questions about the codebase → \
+         use Agent(subagent_type='explore') to investigate if needed → \
+         design approach → \
+         modify the plan file with WriteFile or StrReplaceFile \
+         (create it with WriteFile first if it does not exist) → \
+         call ExitPlanMode.\n\
+         Use AskUserQuestion only to clarify missing requirements or choose \
+         between approaches.\n\
+         Do NOT use AskUserQuestion to ask about plan approval.",
+        plan_path.display()
+      )
+    } else {
+      info!("Session {}: User declined entering plan mode", self.id);
+      "User declined to enter plan mode. Please check with user whether \
+       to proceed with implementation directly."
+        .to_string()
+    };
+
+    self.wire_publisher.send(WireMessage::ToolCallEnd {
+      id: tool_call.id.clone(),
+      name: tool_call.name.clone(),
+      output: output.clone(),
+    });
+
+    self.context.push_tool_result(&tool_call.id, &output);
+    let tool_msg = Message::tool(&output, &tool_call.id);
+    self.persistence.stage_message(&self.id, &tool_msg);
+    let _ = self.persistence.flush();
+
+    let next_index = current_index + 1;
+    self.state = ActorState::ExecutingTools {
+      tool_calls,
+      current_index: next_index,
+    };
+    self.continue_tool_call_execution().await;
+  }
+
+  /// Handle user approval of a plan (ExitPlanMode).
+  async fn handle_plan_mode_exit_answer(
+    &mut self,
+    tool_call_id: String,
+    answers: Vec<Vec<usize>>,
+    dismissed: bool,
+  ) {
+    let (tool_calls, current_index, expected_id, has_options, option_labels, all_option_labels) =
+      match mem::replace(&mut self.state, ActorState::Idle) {
+        ActorState::WaitingExitPlanMode {
+          tool_calls,
+          current_index,
+          tool_call_id: expected_id,
+          has_options,
+          option_labels,
+          all_option_labels,
+        } => (
+          tool_calls,
+          current_index,
+          expected_id,
+          has_options,
+          option_labels,
+          all_option_labels,
+        ),
+        _ => {
+          error!(
+            "Session {}: Received plan mode exit answer but no approval is pending",
+            self.id
+          );
+          return;
+        }
+      };
+
+    if expected_id != tool_call_id {
+      error!(
+        "Session {}: Plan mode exit tool_call_id mismatch: expected {}, got {}",
+        self.id, expected_id, tool_call_id
+      );
+      self.state = ActorState::WaitingExitPlanMode {
+        tool_calls,
+        current_index,
+        tool_call_id: expected_id,
+        has_options,
+        option_labels,
+        all_option_labels,
+      };
+      return;
+    }
+
+    let tool_call = &tool_calls[current_index];
+    let plan_path = plan_file_path(&self.id, None);
+    let plan_content = read_plan(&self.id, None).unwrap_or_default();
+
+    // Map answer index to option label
+    let choice = if dismissed || answers.is_empty() {
+      String::new()
+    } else if let Some(first_answer) = answers.first()
+      && let Some(&idx) = first_answer.first()
+      && let Some(label) = all_option_labels.get(idx)
+    {
+      label.clone()
+    } else {
+      String::new()
+    };
+
+    let output = if dismissed || choice.is_empty() {
+      info!("Session {}: User dismissed ExitPlanMode", self.id);
+      "User dismissed without choosing. Plan mode remains active. \
+       Continue working on your plan or call ExitPlanMode again when ready."
+        .to_string()
+    } else if choice == "Reject and Exit" {
+      self.handle_plan_mode_transition(false).await;
+      info!(
+        "Session {}: User rejected plan and exited plan mode",
+        self.id
+      );
+      "Plan rejected by user. Plan mode deactivated. \
+       All tools are now available. Wait for the user's next message."
+        .to_string()
+    } else if choice == "Reject" {
+      info!(
+        "Session {}: User rejected plan, staying in plan mode",
+        self.id
+      );
+      "Plan rejected by user. Stay in plan mode. \
+       The user will provide feedback via conversation. \
+       Wait for the user's next message before revising."
+        .to_string()
+    } else if has_options && option_labels.contains(&choice) {
+      self.handle_plan_mode_transition(false).await;
+      info!(
+        "Session {}: User approved plan with selected approach: {}",
+        self.id, choice
+      );
+      format!(
+        "Plan approved by user. Selected approach: \"{}\"\n\
+         Plan mode deactivated. All tools are now available.\n\
+         Plan saved to: {}\n\n\
+         IMPORTANT: Execute ONLY the selected approach \"{}\". \
+         Ignore other approaches in the plan.\n\n\
+         ## Approved Plan:\n{}",
+        choice,
+        plan_path.display(),
+        choice,
+        plan_content
+      )
+    } else if choice == "Approve" {
+      self.handle_plan_mode_transition(false).await;
+      info!("Session {}: User approved plan", self.id);
+      format!(
+        "Plan approved by user. Plan mode deactivated. \
+         All tools are now available.\n\
+         Plan saved to: {}\n\n\
+         ## Approved Plan:\n{}",
+        plan_path.display(),
+        plan_content
+      )
+    } else {
+      // Revise or other free-text feedback
+      info!("Session {}: User wants to revise plan", self.id);
+      if choice.is_empty() {
+        "User wants to revise the plan. Stay in plan mode. \
+         Wait for the user's next message with feedback before revising."
+          .to_string()
+      } else {
+        format!(
+          "User wants to revise the plan. Stay in plan mode. \
+           Revise based on the feedback below.\n\n\
+           User feedback: {}",
+          choice
+        )
+      }
+    };
 
     self.wire_publisher.send(WireMessage::ToolCallEnd {
       id: tool_call.id.clone(),
@@ -1396,6 +1972,27 @@ fn parse_ask_user_questions(arguments: &str) -> std::result::Result<Vec<Question
 fn parse_ask_user_question_args(
   arguments: &str,
 ) -> std::result::Result<AskUserQuestionArgs, String> {
+  serde_json::from_str(arguments).map_err(|e| format!("JSON parse error: {}", e))
+}
+
+// ---------------------------------------------------------------------------
+// ExitPlanMode argument parsing (used by SessionActor)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, serde::Deserialize)]
+struct ExitPlanModeArgOption {
+  label: String,
+  #[serde(default)]
+  description: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ExitPlanModeArgs {
+  #[serde(default)]
+  options: Option<Vec<ExitPlanModeArgOption>>,
+}
+
+fn parse_exit_plan_mode_args(arguments: &str) -> std::result::Result<ExitPlanModeArgs, String> {
   serde_json::from_str(arguments).map_err(|e| format!("JSON parse error: {}", e))
 }
 

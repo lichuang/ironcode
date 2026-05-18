@@ -36,6 +36,8 @@ pub struct AppData {
   pub(crate) pending_approval: Option<PendingApproval>,
   /// Pending structured questions awaiting user answers
   pub(crate) pending_questions: Option<PendingQuestions>,
+  /// Whether plan mode is active
+  pub(crate) plan_mode: bool,
 }
 
 /// Compaction warning information
@@ -92,6 +94,7 @@ impl AppData {
       compaction_warning: None,
       pending_approval: None,
       pending_questions: None,
+      plan_mode: false,
     }
   }
 }
@@ -304,6 +307,16 @@ impl App {
         self.on_compaction_completed(before, after, tokens);
       }
       WireMessage::TurnBegin => {}
+      WireMessage::PlanModeChanged { active } => {
+        self.data.plan_mode = active;
+        info!("App: Plan mode changed to {}", active);
+      }
+      WireMessage::PlanDisplay { content, file_path } => {
+        self.data.chat_history.push(ChatMessage::System {
+          content: format!("## Plan\n\n{}\n\n_Plan file: {}_", content, file_path),
+          level: SystemMessageLevel::Info,
+        });
+      }
     }
   }
 

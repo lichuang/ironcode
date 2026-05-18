@@ -58,6 +58,9 @@ pub struct SessionMeta {
   /// Whether YOLO mode is enabled for this session
   #[serde(default)]
   pub yolo: bool,
+  /// Whether plan mode is active for this session
+  #[serde(default)]
+  pub plan_mode: bool,
 }
 
 impl SessionMeta {
@@ -71,6 +74,7 @@ impl SessionMeta {
       updated_at: now,
       system_prompt: system_prompt.into(),
       yolo: false,
+      plan_mode: false,
     }
   }
 

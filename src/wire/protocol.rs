@@ -89,6 +89,18 @@ pub enum WireMessage {
   },
   /// The current turn has ended.
   TurnEnd,
+  /// Plan mode state has changed.
+  PlanModeChanged {
+    /// Whether plan mode is now active.
+    active: bool,
+  },
+  /// A plan's content should be displayed inline in the chat.
+  PlanDisplay {
+    /// The full markdown content of the plan.
+    content: String,
+    /// The path to the plan file for reference.
+    file_path: String,
+  },
   /// An error occurred.
   Error {
     /// Error message.

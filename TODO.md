@@ -65,7 +65,7 @@
 - [x] Automatic compaction execution
 - [ ] Summary generation strategy (LLM-generated historical summary) - Future enhancement
 
-#### 3. Improved Error Handling and Retry (In Progress)
+#### 3. Improved Error Handling and Retry [x] COMPLETED
 - [x] Integrate custom exponential backoff retry logic
 - [x] Precise error classification for retry decisions (mirrors kimi-cli)
 - [x] LLM stream interruption recovery mechanism
@@ -120,9 +120,17 @@
 - [ ] Stop hook for graceful interruption
 
 #### 18. Plan Mode
-- [ ] `EnterPlanMode` / `ExitPlanMode` tools
-- [ ] Plan session isolation and state persistence
+- [x] `EnterPlanMode` / `ExitPlanMode` tools
+- [x] Plan session isolation and state persistence
 - [ ] Plan slug tracking in session state
+- [x] EnterPlanMode handler blocking user confirmation (via SessionActor interception)
+- [x] ExitPlanMode plan content reading from `~/.ironcode/plans/{session_id}.md`
+- [x] ExitPlanMode plan approval UI — Approve / Reject / Reject and Exit (+ custom options)
+- [x] PlanDisplay wire message for rendering plan content in TUI
+- [ ] QuestionRequest "other" option support (Revise free-text input) — TUI does not support free-text answers yet
+- [x] YOLO mode auto-approve logic for EnterPlanMode/ExitPlanMode
+- [ ] `/plan` slash command (toggle/view/clear) — requires slash command infrastructure
+- [x] Session-scoped plan file path injection into plan handlers
 
 #### 19. Git Context Integration
 - [ ] Auto-detect git repository
@@ -223,10 +231,10 @@
 
 | Metric | Count |
 |--------|-------|
-| **Total Tasks** | 93 |
-| **Completed** | 22 |
-| **Remaining** | 71 |
-| **Progress** | 23.7% |
+| **Total Tasks** | 101 |
+| **Completed** | 24 |
+| **Remaining** | 77 |
+| **Progress** | 23.8% |
 
 > **Note:** This summary must be updated whenever tasks are completed. After each batch of completions, recalculate the counts and percentage to keep the document accurate.
 

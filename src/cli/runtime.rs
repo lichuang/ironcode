@@ -13,8 +13,9 @@ use crate::config::{
 };
 use crate::error::Result;
 use crate::tools::handlers::{
-  AskUserQuestionHandler, FetchURLHandler, GlobHandler, GrepHandler, ReadFileHandler,
-  ReplaceFileHandler, SearchWebHandler, SetTodoListHandler, WriteFileHandler,
+  AskUserQuestionHandler, EnterPlanModeHandler, ExitPlanModeHandler, FetchURLHandler, GlobHandler,
+  GrepHandler, ReadFileHandler, ReplaceFileHandler, SearchWebHandler, SetTodoListHandler,
+  WriteFileHandler,
 };
 use crate::tools::{ExecutableToolRegistry, ToolRegistry};
 
@@ -255,6 +256,8 @@ impl Runtime {
     registry.register("SetTodoList", Box::new(SetTodoListHandler::new()));
     registry.register("FetchURL", Box::new(FetchURLHandler::new()));
     registry.register("SearchWeb", Box::new(SearchWebHandler::new()));
+    registry.register("EnterPlanMode", Box::new(EnterPlanModeHandler::new()));
+    registry.register("ExitPlanMode", Box::new(ExitPlanModeHandler::new()));
 
     // Register platform-specific shell handler
     #[cfg(target_os = "windows")]
