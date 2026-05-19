@@ -6,7 +6,8 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::background::BackgroundTaskManager;
-use crate::tools::{ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, parse_arguments};
+use crate::background::models::is_terminal_status;
+use crate::tools::{ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, ToolPayload, parse_arguments};
 
 use super::format_task;
 
@@ -29,6 +30,25 @@ fn default_reason() -> String {
 impl ToolHandler for TaskStopHandler {
   fn kind(&self) -> ToolKind {
     ToolKind::Function
+  }
+
+  async fn preview(&self, invocation: &ToolInvocation) -> Option<String> {
+    let ToolPayload::Function { arguments } = &invocation.payload;
+    let args: TaskStopArgs = parse_arguments(arguments).ok()?;
+    let view = self.manager.get_task(&args.task_id)?;
+
+    let mut lines = vec![
+      format!("Stop background task `{}`", args.task_id),
+      String::new(),
+      format_task(&view, true),
+    ];
+    if is_terminal_status(view.runtime.status) {
+      lines.push(String::new());
+      lines.push(
+        "Note: This task is already in a terminal state. Stopping will be a no-op.".to_string(),
+      );
+    }
+    Some(lines.join("\n"))
   }
 
   async fn handle(&self, invocation: ToolInvocation) -> Result<ToolOutput, ToolError> {

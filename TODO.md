@@ -111,7 +111,7 @@
 - [x] Background task creation and dispatch (`TaskList`, `TaskOutput`, `TaskStop` tools)
 - [x] Worker process with heartbeat and timeout monitoring
 - [x] Task output storage and retrieval
-- [ ] TaskStop approval flow (kill should request user approval like kimi-cli)
+- [x] TaskStop approval flow (kill should request user approval like kimi-cli)
 - [ ] `/task` slash command infrastructure (TUI slash commands for background tasks)
 - [ ] Worker recovery on app restart (scan task dirs, reconnect to running workers)
 - [ ] Notification store and LLM context delivery
@@ -301,9 +301,9 @@
 | Metric | Count |
 |--------|-------|
 | **Total Tasks** | 105 |
-| **Completed** | 36 |
-| **Remaining** | 69 |
-| **Progress** | 34.3% |
+| **Completed** | 37 |
+| **Remaining** | 68 |
+| **Progress** | 35.2% |
 
 > **Note:** This summary must be updated whenever tasks are completed. After each batch of completions, recalculate the counts and percentage to keep the document accurate.
 
