@@ -41,6 +41,22 @@ pub struct Args {
   /// { "mcpServers": { "name": { "command": "...", "args": [...] } } }
   #[arg(long, value_name = "PATH")]
   pub mcp_config_file: Option<PathBuf>,
+
+  /// Internal: run as a background task worker process.
+  #[arg(long, hide = true, value_name = "DIR")]
+  pub background_task_worker: Option<PathBuf>,
+
+  /// Internal: heartbeat interval for background task worker (ms).
+  #[arg(long, hide = true)]
+  pub worker_heartbeat_interval_ms: Option<u64>,
+
+  /// Internal: control poll interval for background task worker (ms).
+  #[arg(long, hide = true)]
+  pub worker_control_poll_interval_ms: Option<u64>,
+
+  /// Internal: kill grace period for background task worker (ms).
+  #[arg(long, hide = true)]
+  pub worker_kill_grace_period_ms: Option<u64>,
 }
 
 impl Args {

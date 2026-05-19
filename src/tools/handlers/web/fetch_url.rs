@@ -178,6 +178,7 @@ mod tests {
 
     let invocation = ToolInvocation::new(
       "test-call-id",
+      "call-test",
       ToolPayload::Function {
         arguments: r#"{"url": "not-a-valid-url"}"#.to_string(),
       },

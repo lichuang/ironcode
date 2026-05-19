@@ -263,6 +263,7 @@ mod tests {
     let cwd = PathBuf::from(".");
     let invocation = ToolInvocation::new(
       "test-call-id",
+      "call-test",
       ToolPayload::Function {
         arguments: r#"{"pattern": "ReadFile", "output_mode": "files_with_matches"}"#.to_string(),
       },
@@ -283,6 +284,7 @@ mod tests {
     let cwd = PathBuf::from(".");
     let invocation = ToolInvocation::new(
       "test-call-id",
+      "call-test",
       ToolPayload::Function {
         arguments: r#"{"pattern": "ReadFile", "output_mode": "content", "line_number": true, "path": "src/tools/handlers/file/read.rs"}"#.to_string(),
       },
@@ -309,6 +311,7 @@ mod tests {
     let args = format!(r#"{{"pattern": "{}", "path": "src"}}"#, pattern);
     let invocation = ToolInvocation::new(
       "test-call-id",
+      "call-test",
       ToolPayload::Function { arguments: args },
       &cwd,
     );
@@ -330,6 +333,7 @@ mod tests {
     let cwd = PathBuf::from(".");
     let invocation = ToolInvocation::new(
       "test-call-id",
+      "call-test",
       ToolPayload::Function {
         arguments:
           r#"{"pattern": "ReadFile", "glob": "*.rs", "output_mode": "files_with_matches"}"#
@@ -348,6 +352,7 @@ mod tests {
     let cwd = PathBuf::from(".");
     let invocation = ToolInvocation::new(
       "test-call-id",
+      "call-test",
       ToolPayload::Function {
         arguments:
           r#"{"pattern": "use", "path": "src/tools", "output_mode": "content", "head_limit": 3}"#

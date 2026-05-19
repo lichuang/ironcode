@@ -279,6 +279,7 @@ mod tests {
     let handler = ReplaceFileHandler::new();
     let invocation = ToolInvocation::new(
       "test-call-id",
+      "call-test",
       ToolPayload::Function {
         arguments: format!(
           r#"{{"path": "{}", "edit": {{"old": "World", "new": "Rust"}}}}"#,
@@ -318,6 +319,7 @@ mod tests {
     let handler = ReplaceFileHandler::new();
     let invocation = ToolInvocation::new(
       "test-call-id",
+      "call-test",
       ToolPayload::Function {
         arguments: format!(
           r#"{{"path": "{}", "edit": {{"old": "foo", "new": "qux", "replace_all": true}}}}"#,
@@ -356,6 +358,7 @@ mod tests {
     let handler = ReplaceFileHandler::new();
     let invocation = ToolInvocation::new(
       "test-call-id",
+      "call-test",
       ToolPayload::Function {
         arguments: format!(
           r#"{{"path": "{}", "edit": [{{"old": "Hello", "new": "Hi"}}, {{"old": "Bar", "new": "Baz"}}]}}"#,
@@ -392,6 +395,7 @@ mod tests {
     let handler = ReplaceFileHandler::new();
     let invocation = ToolInvocation::new(
       "test-call-id",
+      "call-test",
       ToolPayload::Function {
         arguments: format!(
           r#"{{"path": "{}", "edit": {{"old": "NonExistent", "new": "Replacement"}}}}"#,
@@ -419,6 +423,7 @@ mod tests {
     let handler = ReplaceFileHandler::new();
     let invocation = ToolInvocation::new(
       "test-call-id",
+      "call-test",
       ToolPayload::Function {
         arguments: format!(
           r#"{{"path": "{}", "edit": {{"old": "foo", "new": "bar"}}}}"#,

@@ -245,6 +245,7 @@ mod tests {
     let handler = WriteFileHandler::new();
     let invocation = ToolInvocation::new(
       "test-call-id",
+      "call-test",
       ToolPayload::Function {
         arguments: format!(
           r#"{{"path": "{}", "content": "Hello World", "mode": "overwrite"}}"#,
@@ -284,6 +285,7 @@ mod tests {
     let handler = WriteFileHandler::new();
     let invocation = ToolInvocation::new(
       "test-call-id",
+      "call-test",
       ToolPayload::Function {
         arguments: format!(
           r#"{{"path": "{}", "content": "World", "mode": "append"}}"#,
@@ -316,6 +318,7 @@ mod tests {
     let handler = WriteFileHandler::new();
     let invocation = ToolInvocation::new(
       "test-call-id",
+      "call-test",
       ToolPayload::Function {
         arguments: format!(
           r#"{{"path": "{}", "content": "Hello"}}"#,

@@ -6,16 +6,17 @@ use std::sync::Arc;
 use chrono::Local;
 use log::{debug, info, warn};
 
+use crate::background::BackgroundTaskManager;
 use crate::config::loader::{data_dir, system_prompt_path};
 use crate::config::{
-  CompactionConfig, Config, DEFAULT_MAX_CONTEXT_SIZE, HistoryConfig, ModelConfig, ProviderConfig,
-  RetryConfig,
+  BackgroundConfig, CompactionConfig, Config, DEFAULT_MAX_CONTEXT_SIZE, HistoryConfig, ModelConfig,
+  ProviderConfig, RetryConfig,
 };
 use crate::error::Result;
 use crate::tools::handlers::{
   AskUserQuestionHandler, EnterPlanModeHandler, ExitPlanModeHandler, FetchURLHandler, GlobHandler,
   GrepHandler, ReadFileHandler, ReplaceFileHandler, SearchWebHandler, SetTodoListHandler,
-  WriteFileHandler,
+  TaskListHandler, TaskOutputHandler, TaskStopHandler, WriteFileHandler,
 };
 use crate::tools::{ExecutableToolRegistry, ToolRegistry};
 
@@ -195,6 +196,8 @@ pub(crate) struct Runtime {
   pub tool_registry: Arc<ToolRegistry>,
   /// Executable tool registry for dispatching and previewing tool calls
   pub executable_registry: Arc<ExecutableToolRegistry>,
+  /// Background task manager (session is bound after session creation)
+  pub background_manager: Arc<BackgroundTaskManager>,
 }
 
 impl Runtime {
@@ -207,8 +210,13 @@ impl Runtime {
     let system_prompt_template = Self::load_system_prompt_template(data_dir);
     let args = RuntimeArgs::new()?;
 
+    let background_manager = Arc::new(BackgroundTaskManager::new(
+      data_dir.to_path_buf(),
+      config.background.clone(),
+    ));
+
     // Load executable tool registry first (handlers must be registered before checking)
-    let executable_registry = Arc::new(Self::load_executable_tools());
+    let executable_registry = Arc::new(Self::load_executable_tools(&background_manager));
 
     // Load tool definitions from Markdown files
     let tool_registry = Arc::new(Self::load_tools(data_dir)?);
@@ -222,6 +230,7 @@ impl Runtime {
       system_prompt_template,
       tool_registry,
       executable_registry,
+      background_manager,
     })
   }
 
@@ -241,11 +250,15 @@ impl Runtime {
       system_prompt_template: String::new(),
       tool_registry: Arc::new(ToolRegistry::default()),
       executable_registry: Arc::new(ExecutableToolRegistry::new()),
+      background_manager: Arc::new(BackgroundTaskManager::new(
+        std::path::PathBuf::from("."),
+        crate::config::BackgroundConfig::default(),
+      )),
     }
   }
 
   /// Load and initialize the executable tool registry with all handlers
-  fn load_executable_tools() -> ExecutableToolRegistry {
+  fn load_executable_tools(manager: &Arc<BackgroundTaskManager>) -> ExecutableToolRegistry {
     let mut registry = ExecutableToolRegistry::new();
     registry.register("ReadFile", Box::new(ReadFileHandler::new()));
     registry.register("WriteFile", Box::new(WriteFileHandler::new()));
@@ -258,12 +271,18 @@ impl Runtime {
     registry.register("SearchWeb", Box::new(SearchWebHandler::new()));
     registry.register("EnterPlanMode", Box::new(EnterPlanModeHandler::new()));
     registry.register("ExitPlanMode", Box::new(ExitPlanModeHandler::new()));
+    registry.register("TaskList", Box::new(TaskListHandler::new(manager.clone())));
+    registry.register(
+      "TaskOutput",
+      Box::new(TaskOutputHandler::new(manager.clone())),
+    );
+    registry.register("TaskStop", Box::new(TaskStopHandler::new(manager.clone())));
 
     // Register platform-specific shell handler
     #[cfg(target_os = "windows")]
     registry.register("PowerShell", Box::new(PowerShellHandler::new()));
     #[cfg(not(target_os = "windows"))]
-    registry.register("Bash", Box::new(BashHandler::new()));
+    registry.register("Bash", Box::new(BashHandler::new(manager.clone())));
 
     registry
   }
@@ -274,18 +293,32 @@ impl Runtime {
     let tools_dir = data_dir.join("prompts").join("tools");
     debug!("Loading tools from: {:?}", tools_dir);
 
-    match ToolRegistry::load_from_dir(&tools_dir) {
-      Ok(registry) => {
-        info!("Loaded {} tools from {:?}", registry.len(), tools_dir);
-        Ok(registry)
-      }
+    let mut registry = match ToolRegistry::load_from_dir(&tools_dir) {
+      Ok(registry) => registry,
       Err(e) => {
         warn!("Failed to load tools from {:?}: {}", tools_dir, e);
         // If directory doesn't exist or fails to load, return empty registry
         // This is not a fatal error - tools are optional
-        Ok(ToolRegistry::new())
+        return Ok(ToolRegistry::new());
+      }
+    };
+
+    info!("Loaded {} tools from {:?}", registry.len(), tools_dir);
+
+    // Apply ${SHELL} template replacement for shell tool descriptions
+    // (mirrors kimi-cli's load_desc with {"SHELL": "..."})
+    let shell_replacement = if cfg!(target_os = "windows") {
+      "PowerShell (powershell.exe)"
+    } else {
+      "bash (/bin/bash)"
+    };
+    for tool_name in ["Bash", "PowerShell"] {
+      if let Some(tool) = registry.get_mut(tool_name) {
+        tool.description = tool.description.replace("${SHELL}", shell_replacement);
       }
     }
+
+    Ok(registry)
   }
 
   /// Validate that all tools defined in registry have corresponding handlers
@@ -393,6 +426,12 @@ impl Runtime {
   /// Whether default thinking mode is enabled.
   pub fn default_thinking(&self) -> bool {
     self.config.default_thinking
+  }
+
+  /// Get the background task configuration.
+  #[allow(dead_code)]
+  pub fn background_config(&self) -> BackgroundConfig {
+    self.config.background.clone()
   }
 
   /// Get a provider by name.

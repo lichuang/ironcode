@@ -216,6 +216,7 @@ mod tests {
 
     let invocation = ToolInvocation::new(
       "test-call-id",
+      "call-test",
       ToolPayload::Function {
         arguments: r#"{"query": ""}"#.to_string(),
       },
@@ -235,6 +236,7 @@ mod tests {
 
     let invocation = ToolInvocation::new(
       "test-call-id",
+      "call-test",
       ToolPayload::Function {
         arguments: r#"{"query": "Rust", "limit": 25}"#.to_string(),
       },

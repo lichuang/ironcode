@@ -4,6 +4,7 @@
 //! the actual implementation for a specific tool.
 
 pub mod ask_user;
+pub mod background;
 pub mod file;
 pub mod plan;
 pub mod shell;
@@ -11,6 +12,7 @@ pub mod todo;
 pub mod web;
 
 pub use ask_user::AskUserQuestionHandler;
+pub use background::{TaskListHandler, TaskOutputHandler, TaskStopHandler};
 pub use file::{GlobHandler, GrepHandler, ReadFileHandler, ReplaceFileHandler, WriteFileHandler};
 pub use plan::{EnterPlanModeHandler, ExitPlanModeHandler};
 pub use todo::SetTodoListHandler;

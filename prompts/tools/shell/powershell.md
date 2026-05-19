@@ -1,6 +1,6 @@
 ---
 name: PowerShell
-description: Execute a PowerShell command. Use this tool to explore the filesystem, inspect or edit files, run Windows scripts, collect system information, etc., whenever the agent is running on Windows.
+description: Execute a ${SHELL} command. Use this tool to explore the filesystem, inspect or edit files, run Windows scripts, collect system information, etc., whenever the agent is running on Windows.
 ---
 
 ## Parameters
@@ -18,7 +18,17 @@ description: Execute a PowerShell command. Use this tool to explore the filesyst
       "description": "The timeout in seconds for the command to execute. If the command takes longer than this, it will be killed.",
       "default": 60,
       "minimum": 1,
-      "maximum": 300
+      "maximum": 86400
+    },
+    "run_in_background": {
+      "type": "boolean",
+      "description": "Whether to run the command as a background task. When true, the command will start in an independent worker process and this tool will return a task ID immediately instead of waiting for completion.",
+      "default": false
+    },
+    "description": {
+      "type": "string",
+      "description": "A short description for the background task. Required when run_in_background is true.",
+      "default": ""
     }
   },
   "required": ["command"]
@@ -28,8 +38,10 @@ description: Execute a PowerShell command. Use this tool to explore the filesyst
 **Output:**
 The stdout and stderr streams are combined and returned as a single string. Extremely long output may be truncated. When a command fails, the exit code is provided in a system tag.
 
+If `run_in_background=true`, the command will be started as a background task and this tool will return a task ID instead of waiting for command completion. When doing that, you must provide a short `description`. You will be automatically notified when the task completes. Use `TaskOutput` for a non-blocking status/output snapshot, and only set `block=true` when you explicitly want to wait for completion. Use `TaskStop` only if the task must be cancelled.
+
 **Guidelines for safety and security:**
-- Every tool call starts a fresh PowerShell session. Environment variables, `cd` changes, and command history do not persist between calls.
+- Every tool call starts a fresh ${SHELL} session. Environment variables, `cd` changes, and command history do not persist between calls.
 - Do not launch interactive programs or anything that is expected to block indefinitely; ensure each command finishes promptly. Provide a `timeout` argument for potentially long runs.
 - Avoid using `..` to leave the working directory, and never touch files outside that directory unless explicitly instructed.
 - Never attempt commands that require elevated (Administrator) privileges unless explicitly authorized.
@@ -38,6 +50,8 @@ The stdout and stderr streams are combined and returned as a single string. Extr
 - Chain related commands with `;` and use `if ($?)` or `if (-not $?)` to conditionally execute commands based on the success or failure of previous ones.
 - Redirect or pipe output with `>`, `>>`, `|`, and leverage `for /f`, `if`, and `set` to build richer one-liners instead of multiple tool calls.
 - Reuse built-in utilities (e.g., `findstr`, `where`) to filter, transform, or locate data in a single invocation.
+- Prefer `run_in_background=true` for long-running builds, tests, watchers, or servers when you need the conversation to continue before the command finishes.
+- After starting a background task, do not guess its outcome. Rely on the automatic completion notification whenever possible. Use `TaskOutput` for non-blocking progress snapshots by default, and set `block=true` only when you intentionally want to wait.
 
 **Commands available:**
 - Shell environment: `cd`, `dir`, `set`, `setlocal`, `echo`, `call`, `where`

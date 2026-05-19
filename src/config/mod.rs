@@ -85,6 +85,10 @@ pub struct Config {
   /// MCP (Model Context Protocol) server configurations
   #[serde(default)]
   pub mcp: McpConfig,
+
+  /// Background task configuration
+  #[serde(default)]
+  pub background: BackgroundConfig,
 }
 
 impl Default for Config {
@@ -102,6 +106,7 @@ impl Default for Config {
       yolo: false,
       auto_approve: Vec::new(),
       mcp: McpConfig::default(),
+      background: BackgroundConfig::default(),
     }
   }
 }
@@ -362,6 +367,93 @@ impl RetryConfig {
   #[allow(dead_code)]
   pub fn is_enabled(&self) -> bool {
     self.max_attempts > 0
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Background task configuration
+// ---------------------------------------------------------------------------
+
+/// Default max concurrent background tasks.
+const DEFAULT_MAX_RUNNING_TASKS: usize = 5;
+/// Default worker heartbeat interval in milliseconds.
+const DEFAULT_WORKER_HEARTBEAT_INTERVAL_MS: u64 = 5000;
+/// Default poll interval when waiting for task completion.
+const DEFAULT_WAIT_POLL_INTERVAL_MS: u64 = 500;
+/// Default grace period before force-killing a worker.
+const DEFAULT_KILL_GRACE_PERIOD_MS: u64 = 2000;
+/// Default max bytes to read from task output in one call.
+const DEFAULT_READ_MAX_BYTES: usize = 32 * 1024;
+/// Default number of tail lines included in notifications.
+const DEFAULT_NOTIFICATION_TAIL_LINES: usize = 20;
+/// Default stale threshold before a worker is considered lost.
+const DEFAULT_WORKER_STALE_AFTER_MS: u64 = 30_000;
+
+/// Background task configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackgroundConfig {
+  /// Maximum number of concurrent background tasks.
+  #[serde(default = "default_max_running_tasks")]
+  pub max_running_tasks: usize,
+  /// Worker heartbeat interval in milliseconds.
+  #[serde(default = "default_worker_heartbeat_interval_ms")]
+  pub worker_heartbeat_interval_ms: u64,
+  /// Poll interval when waiting for task completion in milliseconds.
+  #[serde(default = "default_wait_poll_interval_ms")]
+  pub wait_poll_interval_ms: u64,
+  /// Grace period before force-killing a worker in milliseconds.
+  #[serde(default = "default_kill_grace_period_ms")]
+  pub kill_grace_period_ms: u64,
+  /// Max bytes to read from task output in one call.
+  #[serde(default = "default_read_max_bytes")]
+  pub read_max_bytes: usize,
+  /// Number of tail lines included in notifications.
+  #[serde(default = "default_notification_tail_lines")]
+  pub notification_tail_lines: usize,
+  /// Stale threshold before a worker is considered lost in milliseconds.
+  #[serde(default = "default_worker_stale_after_ms")]
+  pub worker_stale_after_ms: u64,
+}
+
+fn default_max_running_tasks() -> usize {
+  DEFAULT_MAX_RUNNING_TASKS
+}
+
+fn default_worker_heartbeat_interval_ms() -> u64 {
+  DEFAULT_WORKER_HEARTBEAT_INTERVAL_MS
+}
+
+fn default_wait_poll_interval_ms() -> u64 {
+  DEFAULT_WAIT_POLL_INTERVAL_MS
+}
+
+fn default_kill_grace_period_ms() -> u64 {
+  DEFAULT_KILL_GRACE_PERIOD_MS
+}
+
+fn default_read_max_bytes() -> usize {
+  DEFAULT_READ_MAX_BYTES
+}
+
+fn default_notification_tail_lines() -> usize {
+  DEFAULT_NOTIFICATION_TAIL_LINES
+}
+
+fn default_worker_stale_after_ms() -> u64 {
+  DEFAULT_WORKER_STALE_AFTER_MS
+}
+
+impl Default for BackgroundConfig {
+  fn default() -> Self {
+    Self {
+      max_running_tasks: DEFAULT_MAX_RUNNING_TASKS,
+      worker_heartbeat_interval_ms: DEFAULT_WORKER_HEARTBEAT_INTERVAL_MS,
+      wait_poll_interval_ms: DEFAULT_WAIT_POLL_INTERVAL_MS,
+      kill_grace_period_ms: DEFAULT_KILL_GRACE_PERIOD_MS,
+      read_max_bytes: DEFAULT_READ_MAX_BYTES,
+      notification_tail_lines: DEFAULT_NOTIFICATION_TAIL_LINES,
+      worker_stale_after_ms: DEFAULT_WORKER_STALE_AFTER_MS,
+    }
   }
 }
 

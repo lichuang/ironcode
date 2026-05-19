@@ -1,3 +1,4 @@
+mod background;
 mod cli;
 mod config;
 mod error;
@@ -99,6 +100,17 @@ async fn main() -> Result<()> {
   // Parse command line arguments
   let args = Args::parse();
 
+  // Background task worker mode — run independently and exit.
+  if let Some(ref task_dir) = args.background_task_worker {
+    background::run_background_task_worker(
+      task_dir.clone(),
+      args.worker_heartbeat_interval_ms.unwrap_or(5000),
+      args.worker_control_poll_interval_ms.unwrap_or(500),
+      args.worker_kill_grace_period_ms.unwrap_or(2000),
+    );
+    return Ok(());
+  }
+
   // Load configuration
   let config_file_dir = args.config_dir();
   let user_config = load_config_from_dir(&config_file_dir)?;
@@ -143,6 +155,9 @@ async fn main() -> Result<()> {
 
   // Run the main event loop
   let result = run_app(&mut tui, &mut app).await;
+
+  // Cleanup: kill any active background tasks
+  app.cleanup_background_tasks();
 
   // Restore terminal settings
   restore_terminal()?;

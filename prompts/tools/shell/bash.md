@@ -1,6 +1,6 @@
 ---
 name: Bash
-description: Execute a bash command. Use this tool to explore the filesystem, edit files, run scripts, get system information, etc.
+description: Execute a ${SHELL} command. Use this tool to explore the filesystem, edit files, run scripts, get system information, etc.
 ---
 
 ## Parameters
@@ -18,7 +18,17 @@ description: Execute a bash command. Use this tool to explore the filesystem, ed
       "description": "The timeout in seconds for the command to execute. If the command takes longer than this, it will be killed.",
       "default": 60,
       "minimum": 1,
-      "maximum": 300
+      "maximum": 86400
+    },
+    "run_in_background": {
+      "type": "boolean",
+      "description": "Whether to run the command as a background task. When true, the command will start in an independent worker process and this tool will return a task ID immediately instead of waiting for completion.",
+      "default": false
+    },
+    "description": {
+      "type": "string",
+      "description": "A short description for the background task. Required when run_in_background is true.",
+      "default": ""
     }
   },
   "required": ["command"]
@@ -28,8 +38,10 @@ description: Execute a bash command. Use this tool to explore the filesystem, ed
 **Output:**
 The stdout and stderr will be combined and returned as a string. The output may be truncated if it is too long. If the command failed, the exit code will be provided in a system tag.
 
+If `run_in_background=true`, the command will be started as a background task and this tool will return a task ID instead of waiting for command completion. When doing that, you must provide a short `description`. You will be automatically notified when the task completes. Use `TaskOutput` for a non-blocking status/output snapshot, and only set `block=true` when you explicitly want to wait for completion. Use `TaskStop` only if the task must be cancelled.
+
 **Guidelines for safety and security:**
-- Each shell tool call will be executed in a fresh shell environment. The shell variables, current working directory changes, and the shell history is not preserved between calls.
+- Each tool call will be executed in a fresh ${SHELL} session. The shell variables, current working directory changes, and the shell history is not preserved between calls.
 - The tool call will return after the command is finished. You shall not use this tool to execute an interactive command or a command that may run forever. For possibly long-running commands, you shall set `timeout` argument to a reasonable value.
 - Avoid using `..` to access files or directories outside of the working directory.
 - Avoid modifying files outside of the working directory unless explicitly instructed to do so.
@@ -43,6 +55,8 @@ The stdout and stderr will be combined and returned as a string. The output may 
 - Always quote file paths containing spaces with double quotes (e.g., cd "/path with spaces/")
 - Use `if`, `case`, `for`, `while` control flows to execute complex logic in a single call.
 - Verify directory structure before create/edit/delete files or directories to reduce the risk of failure.
+- Prefer `run_in_background=true` for long-running builds, tests, watchers, or servers when you need the conversation to continue before the command finishes.
+- After starting a background task, do not guess its outcome. Rely on the automatic completion notification whenever possible. Use `TaskOutput` for non-blocking progress snapshots by default, and set `block=true` only when you intentionally want to wait.
 
 **Commands available:**
 - Shell environment: cd, pwd, export, unset, env

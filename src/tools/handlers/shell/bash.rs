@@ -1,8 +1,10 @@
 //! Bash tool handler.
 //!
 //! Execute bash commands in a fresh shell environment.
+//! Supports both foreground (blocking) and background execution.
 
 use std::process::Stdio;
+use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
@@ -11,17 +13,23 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::time::{self, Duration};
 
+use crate::background::BackgroundTaskManager;
+use crate::background::models::TaskView;
+use crate::tools::handlers::background::format_task;
 use crate::tools::{
   ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, ToolPayload, parse_arguments,
 };
 
 /// Handler for the Bash tool
-pub struct BashHandler;
+pub struct BashHandler {
+  manager: Arc<BackgroundTaskManager>,
+}
 
-/// Maximum timeout in seconds
-const MAX_TIMEOUT: u64 = 300;
-
-/// Default timeout in seconds
+/// Maximum timeout for foreground commands (5 minutes).
+const MAX_FOREGROUND_TIMEOUT: u64 = 5 * 60;
+/// Maximum timeout for background commands (24 hours).
+const MAX_BACKGROUND_TIMEOUT: u64 = 24 * 60 * 60;
+/// Default timeout in seconds.
 const DEFAULT_TIMEOUT: u64 = 60;
 
 /// Arguments for the Bash tool
@@ -32,6 +40,12 @@ struct BashArgs {
   /// Timeout in seconds
   #[serde(default = "default_timeout")]
   timeout: u64,
+  /// Whether to run as a background task
+  #[serde(default)]
+  run_in_background: bool,
+  /// Description for the background task (required when run_in_background=true)
+  #[serde(default)]
+  description: String,
 }
 
 fn default_timeout() -> u64 {
@@ -55,18 +69,25 @@ impl ToolHandler for BashHandler {
     if cmd.is_empty() {
       return None;
     }
-    Some(format!("bash -c '{}'", cmd))
+    if args.run_in_background {
+      Some(format!("bash -c '{}' (background)", cmd))
+    } else {
+      Some(format!("bash -c '{}'", cmd))
+    }
   }
 
   async fn handle(&self, invocation: ToolInvocation) -> Result<ToolOutput, ToolError> {
-    let ToolInvocation { payload, cwd, .. } = invocation;
+    let ToolInvocation {
+      payload,
+      cwd,
+      tool_call_id,
+      ..
+    } = invocation;
 
-    // Extract arguments from payload
     let arguments = match payload {
       ToolPayload::Function { arguments } => arguments,
     };
 
-    // Parse arguments
     let args: BashArgs = parse_arguments(&arguments)?;
 
     // Validate command is not empty
@@ -76,15 +97,30 @@ impl ToolHandler for BashHandler {
       ));
     }
 
-    // Validate timeout
-    let timeout = args.timeout.min(MAX_TIMEOUT);
+    // Validate background fields
+    if args.run_in_background && args.description.trim().is_empty() {
+      return Err(ToolError::RespondToModel(
+        "description is required when run_in_background is true".to_string(),
+      ));
+    }
 
-    // Execute the command
+    if !args.run_in_background && args.timeout > MAX_FOREGROUND_TIMEOUT {
+      return Err(ToolError::RespondToModel(format!(
+        "timeout must be <= {}s for foreground commands; use run_in_background=true for longer timeouts (up to {}s)",
+        MAX_FOREGROUND_TIMEOUT, MAX_BACKGROUND_TIMEOUT
+      )));
+    }
+
+    if args.run_in_background {
+      return self.run_in_background(&args, &tool_call_id, &cwd).await;
+    }
+
+    // Foreground execution
+    let timeout = args.timeout.min(MAX_FOREGROUND_TIMEOUT);
     let output_result = execute_shell_command(&args.command, &cwd, timeout).await;
 
     match output_result {
       Ok((stdout, stderr, exit_code)) => {
-        // Combine stdout and stderr
         let mut combined_output = String::new();
         if !stdout.is_empty() {
           combined_output.push_str(&stdout);
@@ -105,8 +141,7 @@ impl ToolHandler for BashHandler {
             combined_output
           };
           Ok(ToolOutput::success(format!(
-            "{}
-<system>Exit code: {}</system>",
+            "{}\n<system>Exit code: {}</system>",
             message, exit_code
           )))
         }
@@ -128,6 +163,62 @@ impl ToolHandler for BashHandler {
   }
 }
 
+impl BashHandler {
+  /// Create a new BashHandler
+  pub fn new(manager: Arc<BackgroundTaskManager>) -> Self {
+    Self { manager }
+  }
+
+  fn parse_args(&self, invocation: &ToolInvocation) -> Result<BashArgs, ToolError> {
+    let arguments = match &invocation.payload {
+      ToolPayload::Function { arguments } => arguments.clone(),
+    };
+    parse_arguments(&arguments)
+  }
+
+  async fn run_in_background(
+    &self,
+    args: &BashArgs,
+    tool_call_id: &str,
+    cwd: &std::path::Path,
+  ) -> Result<ToolOutput, ToolError> {
+    let view = self
+      .manager
+      .create_bash_task(
+        &args.command,
+        &args.description,
+        args.timeout.min(MAX_BACKGROUND_TIMEOUT),
+        tool_call_id,
+        "bash",
+        "/bin/bash",
+        &cwd.to_string_lossy(),
+      )
+      .map_err(|e| ToolError::RespondToModel(format!("Failed to start background task: {}", e)))?;
+
+    let output = format_background_task_response(&view);
+    Ok(ToolOutput::success(output))
+  }
+}
+
+impl Default for BashHandler {
+  fn default() -> Self {
+    Self {
+      manager: Arc::new(BackgroundTaskManager::new(
+        std::path::PathBuf::from("."),
+        crate::config::BackgroundConfig::default(),
+      )),
+    }
+  }
+}
+
+fn format_background_task_response(view: &TaskView) -> String {
+  let task_info = format_task(view, true);
+  format!(
+    "{}\n\nautomatic_notification: true\nnext_step: You will be automatically notified when it completes.\nnext_step: Use TaskOutput with this task_id for a non-blocking status/output snapshot. Only set block=true when you intentionally want to wait.\nnext_step: Use TaskStop only if the task must be cancelled.",
+    task_info
+  )
+}
+
 /// Execute a shell command with timeout
 async fn execute_shell_command(
   command: &str,
@@ -137,10 +228,8 @@ async fn execute_shell_command(
   let mut cmd = Command::new("bash");
   cmd.arg("-c").arg(command).current_dir(cwd);
 
-  // Set up pipes for stdout and stderr
   cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-  // Spawn the process
   let mut child = cmd.spawn()?;
 
   let stdout = child
@@ -152,7 +241,6 @@ async fn execute_shell_command(
     .take()
     .ok_or_else(|| anyhow!("Failed to capture stderr"))?;
 
-  // Create buffered readers
   let stdout_reader = BufReader::new(stdout);
   let stderr_reader = BufReader::new(stderr);
 
@@ -162,7 +250,6 @@ async fn execute_shell_command(
   let mut stdout_output = String::new();
   let mut stderr_output = String::new();
 
-  // Read output with timeout
   let result = time::timeout(Duration::from_secs(timeout_secs), async {
     loop {
       tokio::select! {
@@ -187,16 +274,13 @@ async fn execute_shell_command(
           }
         }
         status = child.wait() => {
-          // Process finished, drain remaining output
           let exit_code = status?.code().unwrap_or(-1);
 
-          // Drain remaining stdout
           while let Ok(Some(l)) = stdout_lines.next_line().await {
             stdout_output.push_str(&l);
             stdout_output.push('\n');
           }
 
-          // Drain remaining stderr
           while let Ok(Some(l)) = stderr_lines.next_line().await {
             stderr_output.push_str(&l);
             stderr_output.push('\n');
@@ -207,7 +291,6 @@ async fn execute_shell_command(
       }
     }
 
-    // If we reach here, both stdout and stderr are closed
     let status = child.wait().await?;
     let exit_code = status.code().unwrap_or(-1);
 
@@ -219,30 +302,9 @@ async fn execute_shell_command(
     Ok(Ok((stdout, stderr, exit_code))) => Ok((stdout, stderr, exit_code)),
     Ok(Err(e)) => Err(e),
     Err(_) => {
-      // Timeout - kill the process
       let _ = child.kill().await;
       Err(anyhow!("timeout"))
     }
-  }
-}
-
-impl BashHandler {
-  /// Create a new BashHandler
-  pub fn new() -> Self {
-    Self
-  }
-
-  fn parse_args(&self, invocation: &ToolInvocation) -> Result<BashArgs, ToolError> {
-    let arguments = match &invocation.payload {
-      ToolPayload::Function { arguments } => arguments.clone(),
-    };
-    parse_arguments(&arguments)
-  }
-}
-
-impl Default for BashHandler {
-  fn default() -> Self {
-    Self::new()
   }
 }
 
@@ -260,6 +322,7 @@ mod tests {
 
     assert_eq!(args.command, "echo hello");
     assert_eq!(args.timeout, 30);
+    assert!(!args.run_in_background);
   }
 
   #[test]
@@ -274,9 +337,11 @@ mod tests {
   #[tokio::test]
   async fn test_bash_handler_echo() {
     let temp_dir = env::temp_dir();
-    let handler = BashHandler::new();
+    let manager = Arc::new(BackgroundTaskManager::new(temp_dir.clone(), crate::config::BackgroundConfig::default()));
+    let handler = BashHandler::new(manager);
     let invocation = ToolInvocation::new(
-      "test-call-id",
+      "Bash",
+      "call-test",
       ToolPayload::Function {
         arguments: r#"{"command": "echo 'Hello World'"}"#.to_string(),
       },
@@ -293,9 +358,11 @@ mod tests {
   #[tokio::test]
   async fn test_bash_handler_exit_code() {
     let temp_dir = env::temp_dir();
-    let handler = BashHandler::new();
+    let manager = Arc::new(BackgroundTaskManager::new(temp_dir.clone(), crate::config::BackgroundConfig::default()));
+    let handler = BashHandler::new(manager);
     let invocation = ToolInvocation::new(
-      "test-call-id",
+      "Bash",
+      "call-test",
       ToolPayload::Function {
         arguments: r#"{"command": "exit 42"}"#.to_string(),
       },
@@ -312,9 +379,11 @@ mod tests {
   #[tokio::test]
   async fn test_bash_handler_empty_command() {
     let temp_dir = env::temp_dir();
-    let handler = BashHandler::new();
+    let manager = Arc::new(BackgroundTaskManager::new(temp_dir.clone(), crate::config::BackgroundConfig::default()));
+    let handler = BashHandler::new(manager);
     let invocation = ToolInvocation::new(
-      "test-call-id",
+      "Bash",
+      "call-test",
       ToolPayload::Function {
         arguments: r#"{"command": "   "}"#.to_string(),
       },
@@ -331,9 +400,11 @@ mod tests {
   #[tokio::test]
   async fn test_bash_handler_chained_commands() {
     let temp_dir = env::temp_dir();
-    let handler = BashHandler::new();
+    let manager = Arc::new(BackgroundTaskManager::new(temp_dir.clone(), crate::config::BackgroundConfig::default()));
+    let handler = BashHandler::new(manager);
     let invocation = ToolInvocation::new(
-      "test-call-id",
+      "Bash",
+      "call-test",
       ToolPayload::Function {
         arguments: r#"{"command": "echo 'line1' && echo 'line2'"}"#.to_string(),
       },
@@ -354,9 +425,11 @@ mod tests {
     let test_dir = temp_dir.join("ironcode_bash_test_");
     let _ = fs::create_dir(&test_dir);
 
-    let handler = BashHandler::new();
+    let manager = Arc::new(BackgroundTaskManager::new(temp_dir.clone(), crate::config::BackgroundConfig::default()));
+    let handler = BashHandler::new(manager);
     let invocation = ToolInvocation::new(
-      "test-call-id",
+      "Bash",
+      "call-test",
       ToolPayload::Function {
         arguments: r#"{"command": "pwd"}"#.to_string(),
       },

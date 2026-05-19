@@ -517,6 +517,7 @@ mod tests {
       yolo: false,
       auto_approve: Vec::new(),
       mcp: crate::config::McpConfig::default(),
+      background: crate::config::BackgroundConfig::default(),
     }
   }
 

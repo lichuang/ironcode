@@ -135,6 +135,7 @@ fn merge_configs(base: Config, override_: Config) -> Config {
       override_.auto_approve
     },
     mcp: merge_mcp_configs(base.mcp, override_.mcp),
+    background: override_.background,
   }
 }
 
@@ -491,6 +492,7 @@ supports_streaming = true
       yolo: false,
       auto_approve: Vec::new(),
       mcp: McpConfig::default(),
+      background: crate::config::BackgroundConfig::default(),
     };
     let result = validate_config(&config);
     assert!(result.is_err());

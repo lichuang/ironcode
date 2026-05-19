@@ -220,6 +220,7 @@ mod tests {
     let handler = ReadFileHandler::new();
     let invocation = ToolInvocation::new(
       "test-call-id",
+      "call-test",
       ToolPayload::Function {
         arguments: format!(
           r#"{{"path": "{}", "offset": 2, "limit": 3}}"#,

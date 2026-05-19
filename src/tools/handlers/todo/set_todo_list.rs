@@ -130,6 +130,7 @@ mod tests {
 
     let invocation = ToolInvocation::new(
       "test-call-id",
+      "call-test",
       ToolPayload::Function {
         arguments: r#"{
           "todos": [
@@ -160,6 +161,7 @@ mod tests {
 
     let invocation = ToolInvocation::new(
       "test-call-id",
+      "call-test",
       ToolPayload::Function {
         arguments: r#"{
           "todos": [
@@ -184,6 +186,7 @@ mod tests {
 
     let invocation = ToolInvocation::new(
       "test-call-id",
+      "call-test",
       ToolPayload::Function {
         arguments: r#"{
           "todos": [

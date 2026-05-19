@@ -32,6 +32,8 @@ readability = { version = "0.3.0", features = ["reqwest"] }
 url = "2.5.8"
 fs4 = { version = "0.13", features = ["sync"] }
 similar = "3.1.0"
+rand = "0.8"
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

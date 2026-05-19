@@ -93,6 +93,11 @@ impl ToolRegistry {
     self.tools.get(name)
   }
 
+  /// Get a mutable reference to a tool by name
+  pub fn get_mut(&mut self, name: &str) -> Option<&mut Tool> {
+    self.tools.get_mut(name)
+  }
+
   /// Get all tools as a vector
   pub fn all(&self) -> Vec<&Tool> {
     self.tools.values().collect()
@@ -195,6 +200,8 @@ impl ToolOutput {
 pub struct ToolInvocation {
   /// Tool name
   pub tool_name: String,
+  /// Tool call ID from the LLM response
+  pub tool_call_id: String,
   /// Tool payload (arguments)
   pub payload: ToolPayload,
   /// Working directory
@@ -203,9 +210,15 @@ pub struct ToolInvocation {
 
 impl ToolInvocation {
   /// Create a new tool invocation
-  pub fn new(tool_name: impl Into<String>, payload: ToolPayload, cwd: impl AsRef<Path>) -> Self {
+  pub fn new(
+    tool_name: impl Into<String>,
+    tool_call_id: impl Into<String>,
+    payload: ToolPayload,
+    cwd: impl AsRef<Path>,
+  ) -> Self {
     Self {
       tool_name: tool_name.into(),
+      tool_call_id: tool_call_id.into(),
       payload,
       cwd: cwd.as_ref().to_path_buf(),
     }

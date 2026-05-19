@@ -171,6 +171,9 @@ impl App {
     data.chat_history = llm_messages_to_chat_history(&messages);
     let session_handle = chat_session.handle.clone();
 
+    // Bind background task manager to this session
+    runtime.background_manager.bind_session(&session_handle.id);
+
     // Create ChatView directly
     let chat_view = ChatView::new(&data, session_handle, &runtime);
 
@@ -187,6 +190,17 @@ impl App {
 
   pub fn should_exit(&self) -> bool {
     self.data.should_exit
+  }
+
+  /// Kill all active background tasks on exit.
+  pub fn cleanup_background_tasks(&self) {
+    let killed = self
+      .runtime
+      .background_manager
+      .kill_all_active("CLI session ended");
+    if !killed.is_empty() {
+      info!("Killed {} background tasks on exit", killed.len());
+    }
   }
 
   /// Handle keyboard events
