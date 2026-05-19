@@ -68,7 +68,11 @@ fn make_pending_questions() -> PendingQuestions {
 fn test_question_keyboard_down_navigation() {
   let (session_handle, mut cmd_rx) = make_session_handle();
   let mut data = AppData::new();
-  let mut view = ChatView::new(&data, session_handle, &Runtime::for_test(Config::default()));
+  let mut view = ChatView::new(
+    &data,
+    session_handle,
+    std::sync::Arc::new(Runtime::for_test(Config::default())),
+  );
   data.pending_questions = Some(make_pending_questions());
 
   // Press Down to move from option 0 to option 1
@@ -83,7 +87,11 @@ fn test_question_keyboard_down_navigation() {
 fn test_question_single_select_enter() {
   let (session_handle, _cmd_rx) = make_session_handle();
   let mut data = AppData::new();
-  let mut view = ChatView::new(&data, session_handle, &Runtime::for_test(Config::default()));
+  let mut view = ChatView::new(
+    &data,
+    session_handle,
+    std::sync::Arc::new(Runtime::for_test(Config::default())),
+  );
   data.pending_questions = Some(make_pending_questions());
 
   // Press Enter to confirm first question (single-select)
@@ -100,7 +108,11 @@ fn test_question_single_select_enter() {
 fn test_question_multi_select_toggle() {
   let (session_handle, _cmd_rx) = make_session_handle();
   let mut data = AppData::new();
-  let mut view = ChatView::new(&data, session_handle, &Runtime::for_test(Config::default()));
+  let mut view = ChatView::new(
+    &data,
+    session_handle,
+    std::sync::Arc::new(Runtime::for_test(Config::default())),
+  );
   data.pending_questions = Some(make_pending_questions());
 
   // Move to second question (multi-select)
@@ -136,7 +148,11 @@ fn test_question_multi_select_toggle() {
 fn test_question_complete_all_and_submit() {
   let (session_handle, mut cmd_rx) = make_session_handle();
   let mut data = AppData::new();
-  let mut view = ChatView::new(&data, session_handle, &Runtime::for_test(Config::default()));
+  let mut view = ChatView::new(
+    &data,
+    session_handle,
+    std::sync::Arc::new(Runtime::for_test(Config::default())),
+  );
   data.pending_questions = Some(make_pending_questions());
 
   // Answer first question (single-select, option 1)
@@ -170,7 +186,11 @@ fn test_question_complete_all_and_submit() {
 fn test_question_dismiss_with_q() {
   let (session_handle, mut cmd_rx) = make_session_handle();
   let mut data = AppData::new();
-  let mut view = ChatView::new(&data, session_handle, &Runtime::for_test(Config::default()));
+  let mut view = ChatView::new(
+    &data,
+    session_handle,
+    std::sync::Arc::new(Runtime::for_test(Config::default())),
+  );
   data.pending_questions = Some(make_pending_questions());
 
   view.handle_key(&mut data, KeyEvent::from(KeyCode::Char('q')));
@@ -195,7 +215,11 @@ fn test_question_dismiss_with_q() {
 fn test_question_dismiss_with_esc() {
   let (session_handle, mut cmd_rx) = make_session_handle();
   let mut data = AppData::new();
-  let mut view = ChatView::new(&data, session_handle, &Runtime::for_test(Config::default()));
+  let mut view = ChatView::new(
+    &data,
+    session_handle,
+    std::sync::Arc::new(Runtime::for_test(Config::default())),
+  );
   data.pending_questions = Some(make_pending_questions());
 
   view.handle_key(&mut data, KeyEvent::from(KeyCode::Esc));
@@ -220,7 +244,11 @@ fn test_question_dismiss_with_esc() {
 fn test_question_digit_quick_select() {
   let (session_handle, _cmd_rx) = make_session_handle();
   let mut data = AppData::new();
-  let mut view = ChatView::new(&data, session_handle, &Runtime::for_test(Config::default()));
+  let mut view = ChatView::new(
+    &data,
+    session_handle,
+    std::sync::Arc::new(Runtime::for_test(Config::default())),
+  );
   data.pending_questions = Some(make_pending_questions());
 
   // Press '2' to select option 1 (0-indexed) and auto-confirm single-select
@@ -262,7 +290,11 @@ fn make_confirmation_question() -> PendingQuestions {
 fn test_question_confirmation_yes() {
   let (session_handle, mut cmd_rx) = make_session_handle();
   let mut data = AppData::new();
-  let mut view = ChatView::new(&data, session_handle, &Runtime::for_test(Config::default()));
+  let mut view = ChatView::new(
+    &data,
+    session_handle,
+    std::sync::Arc::new(Runtime::for_test(Config::default())),
+  );
   data.pending_questions = Some(make_confirmation_question());
 
   view.handle_key(&mut data, KeyEvent::from(KeyCode::Char('y')));
@@ -287,7 +319,11 @@ fn test_question_confirmation_yes() {
 fn test_question_confirmation_no() {
   let (session_handle, mut cmd_rx) = make_session_handle();
   let mut data = AppData::new();
-  let mut view = ChatView::new(&data, session_handle, &Runtime::for_test(Config::default()));
+  let mut view = ChatView::new(
+    &data,
+    session_handle,
+    std::sync::Arc::new(Runtime::for_test(Config::default())),
+  );
   data.pending_questions = Some(make_confirmation_question());
 
   view.handle_key(&mut data, KeyEvent::from(KeyCode::Char('n')));
@@ -312,7 +348,11 @@ fn test_question_confirmation_no() {
 fn test_question_default_value_preselected() {
   let (session_handle, _cmd_rx) = make_session_handle();
   let mut data = AppData::new();
-  let mut view = ChatView::new(&data, session_handle, &Runtime::for_test(Config::default()));
+  let mut view = ChatView::new(
+    &data,
+    session_handle,
+    std::sync::Arc::new(Runtime::for_test(Config::default())),
+  );
   data.pending_questions = Some(PendingQuestions {
     tool_call_id: "call-def".to_string(),
     questions: vec![Question {
@@ -349,7 +389,11 @@ fn test_question_default_value_preselected() {
 fn test_question_required_blocks_empty() {
   let (session_handle, _cmd_rx) = make_session_handle();
   let mut data = AppData::new();
-  let mut view = ChatView::new(&data, session_handle, &Runtime::for_test(Config::default()));
+  let mut view = ChatView::new(
+    &data,
+    session_handle,
+    std::sync::Arc::new(Runtime::for_test(Config::default())),
+  );
   data.pending_questions = Some(PendingQuestions {
     tool_call_id: "call-req".to_string(),
     questions: vec![Question {

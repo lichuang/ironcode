@@ -8,8 +8,6 @@ use serde::Deserialize;
 use crate::background::{BackgroundTaskManager, TaskView};
 use crate::tools::{ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, parse_arguments};
 
-
-
 pub struct TaskOutputHandler {
   manager: Arc<BackgroundTaskManager>,
 }

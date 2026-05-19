@@ -167,6 +167,35 @@ async fn main() -> Result<()> {
   result
 }
 
+/// Run the system pager with the given content.
+fn run_pager(content: &str) -> Result<()> {
+  let pager = env::var("PAGER").unwrap_or_else(|_| {
+    if cfg!(target_os = "windows") {
+      "more".to_string()
+    } else {
+      "less".to_string()
+    }
+  });
+
+  let mut cmd = std::process::Command::new(&pager);
+  if pager == "less" {
+    cmd.arg("-R"); // Preserve ANSI colors
+  }
+  cmd.stdin(std::process::Stdio::piped());
+
+  let mut child = cmd
+    .spawn()
+    .map_err(|e| anyhow::anyhow!("Failed to start pager '{}': {}", pager, e))?;
+
+  if let Some(mut stdin) = child.stdin.take() {
+    use std::io::Write;
+    stdin.write_all(content.as_bytes())?;
+  }
+
+  child.wait()?;
+  Ok(())
+}
+
 /// Run the main application loop
 async fn run_app(tui: &mut Tui, app: &mut App) -> Result<()> {
   // Create event stream
@@ -179,6 +208,15 @@ async fn run_app(tui: &mut Tui, app: &mut App) -> Result<()> {
   while let Some(event) = event_stream.next().await {
     // Process LLM stream events
     app.update_chat_session();
+
+    // Handle pending pager output (from /task browser)
+    if let Some(output) = app.take_pager_output() {
+      restore_terminal()?;
+      if let Err(e) = run_pager(&output) {
+        warn!("Failed to run pager: {}", e);
+      }
+      init_terminal()?;
+    }
 
     match event {
       TuiEvent::Key(key) => {

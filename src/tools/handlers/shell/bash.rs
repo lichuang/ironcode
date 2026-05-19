@@ -337,7 +337,10 @@ mod tests {
   #[tokio::test]
   async fn test_bash_handler_echo() {
     let temp_dir = env::temp_dir();
-    let manager = Arc::new(BackgroundTaskManager::new(temp_dir.clone(), crate::config::BackgroundConfig::default()));
+    let manager = Arc::new(BackgroundTaskManager::new(
+      temp_dir.clone(),
+      crate::config::BackgroundConfig::default(),
+    ));
     let handler = BashHandler::new(manager);
     let invocation = ToolInvocation::new(
       "Bash",
@@ -358,7 +361,10 @@ mod tests {
   #[tokio::test]
   async fn test_bash_handler_exit_code() {
     let temp_dir = env::temp_dir();
-    let manager = Arc::new(BackgroundTaskManager::new(temp_dir.clone(), crate::config::BackgroundConfig::default()));
+    let manager = Arc::new(BackgroundTaskManager::new(
+      temp_dir.clone(),
+      crate::config::BackgroundConfig::default(),
+    ));
     let handler = BashHandler::new(manager);
     let invocation = ToolInvocation::new(
       "Bash",
@@ -379,7 +385,10 @@ mod tests {
   #[tokio::test]
   async fn test_bash_handler_empty_command() {
     let temp_dir = env::temp_dir();
-    let manager = Arc::new(BackgroundTaskManager::new(temp_dir.clone(), crate::config::BackgroundConfig::default()));
+    let manager = Arc::new(BackgroundTaskManager::new(
+      temp_dir.clone(),
+      crate::config::BackgroundConfig::default(),
+    ));
     let handler = BashHandler::new(manager);
     let invocation = ToolInvocation::new(
       "Bash",
@@ -400,7 +409,10 @@ mod tests {
   #[tokio::test]
   async fn test_bash_handler_chained_commands() {
     let temp_dir = env::temp_dir();
-    let manager = Arc::new(BackgroundTaskManager::new(temp_dir.clone(), crate::config::BackgroundConfig::default()));
+    let manager = Arc::new(BackgroundTaskManager::new(
+      temp_dir.clone(),
+      crate::config::BackgroundConfig::default(),
+    ));
     let handler = BashHandler::new(manager);
     let invocation = ToolInvocation::new(
       "Bash",
@@ -425,7 +437,10 @@ mod tests {
     let test_dir = temp_dir.join("ironcode_bash_test_");
     let _ = fs::create_dir(&test_dir);
 
-    let manager = Arc::new(BackgroundTaskManager::new(temp_dir.clone(), crate::config::BackgroundConfig::default()));
+    let manager = Arc::new(BackgroundTaskManager::new(
+      temp_dir.clone(),
+      crate::config::BackgroundConfig::default(),
+    ));
     let handler = BashHandler::new(manager);
     let invocation = ToolInvocation::new(
       "Bash",

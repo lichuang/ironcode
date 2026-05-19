@@ -7,7 +7,9 @@ use serde::Deserialize;
 
 use crate::background::BackgroundTaskManager;
 use crate::background::models::is_terminal_status;
-use crate::tools::{ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, ToolPayload, parse_arguments};
+use crate::tools::{
+  ToolError, ToolHandler, ToolInvocation, ToolKind, ToolOutput, ToolPayload, parse_arguments,
+};
 
 use super::format_task;
 

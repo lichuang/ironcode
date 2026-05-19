@@ -8,6 +8,7 @@ use crate::tui::FrameRequester;
 pub mod chat;
 pub mod diff;
 pub mod status_bar;
+pub mod task_browser;
 
 /// Trait for UI components within a view.
 ///

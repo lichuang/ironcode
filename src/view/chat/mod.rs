@@ -1,4 +1,5 @@
 use std::env;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -11,6 +12,7 @@ use ratatui::{
 
 use crate::cli::AppData;
 use crate::cli::runtime::Runtime;
+use crate::cli::slash::parse_slash_command;
 use crate::history::InputHistoryManager;
 use crate::llm::SessionHandle;
 use crate::tui::{FrameRequester, TARGET_FRAME_INTERVAL};
@@ -77,6 +79,8 @@ pub struct ChatView {
   session_handle: SessionHandle,
   /// Status bar info (reused across draws)
   status_bar_info: StatusBarInfo,
+  /// Runtime for accessing background manager and config
+  runtime: Arc<Runtime>,
 }
 
 impl ChatView {
@@ -90,7 +94,7 @@ impl ChatView {
   /// # Arguments
   /// * `data` - Application data for determining initial state
   /// * `session_handle` - Handle to the chat session (must be valid)
-  pub fn new(data: &AppData, session_handle: SessionHandle, runtime: &Runtime) -> Self {
+  pub fn new(data: &AppData, session_handle: SessionHandle, runtime: Arc<Runtime>) -> Self {
     let prompt = Self::build_prompt();
 
     // Check if waiting for AI response (last message is from user)
@@ -117,10 +121,10 @@ impl ChatView {
     log::debug!("ChatView created with initial state: {:?}", state);
 
     // Initialize status bar info
-    let status_bar_info = StatusBarInfo::from_app_data(data, &session_handle.id, state, runtime);
+    let status_bar_info = StatusBarInfo::from_app_data(data, &session_handle.id, state, &runtime);
 
     Self {
-      input: InputComponent::new(InputHistoryManager::with_config(runtime)),
+      input: InputComponent::new(InputHistoryManager::with_config(&runtime)),
       prompt,
       frame_requester: None,
       animation_enabled: true,
@@ -131,6 +135,7 @@ impl ChatView {
       state,
       session_handle,
       status_bar_info,
+      runtime,
     }
   }
 
@@ -236,6 +241,45 @@ impl ChatView {
       // Enter Animating state (show moon animation)
       log::debug!("State will transition: WaitingInput → Animating");
       self.enter_animating();
+    }
+  }
+
+  /// Handle a slash command intercepted before message submission.
+  fn handle_slash_command(
+    &mut self,
+    data: &mut AppData,
+    cmd: crate::cli::slash::SlashCommandCall,
+  ) -> Option<Box<dyn View>> {
+    match cmd.name.as_str() {
+      "task" => {
+        if !cmd.args.is_empty() {
+          data.chat_history.push(ChatMessage::System {
+            content: "Usage: /task (opens the interactive task browser)".to_string(),
+            level: crate::view::chat::messages::SystemMessageLevel::Warning,
+          });
+          return None;
+        }
+        Some(Box::new(crate::view::task_browser::TaskBrowserView::new(
+          self.runtime.background_manager().clone(),
+          self.session_handle.clone(),
+          self.runtime.clone(),
+        )))
+      }
+      "clear" | "reset" => {
+        data.chat_history.clear();
+        data.chat_history.push(ChatMessage::System {
+          content: "Context cleared.".to_string(),
+          level: crate::view::chat::messages::SystemMessageLevel::Info,
+        });
+        None
+      }
+      _ => {
+        data.chat_history.push(ChatMessage::System {
+          content: format!("Unknown slash command: /{}", cmd.name),
+          level: crate::view::chat::messages::SystemMessageLevel::Error,
+        });
+        None
+      }
     }
   }
 
@@ -539,7 +583,13 @@ impl View for ChatView {
         if key.modifiers.contains(KeyModifiers::SHIFT) || key.modifiers.contains(KeyModifiers::ALT)
         {
           self.insert_char('\n');
-        } else {
+        } else if !self.input.is_empty() {
+          let text = self.input.text();
+          if let Some(cmd) = parse_slash_command(text) {
+            self.input.take_text();
+            self.input.move_cursor_home();
+            return self.handle_slash_command(data, cmd);
+          }
           self.submit_message(data);
         }
       }

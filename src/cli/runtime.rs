@@ -434,6 +434,11 @@ impl Runtime {
     self.config.background.clone()
   }
 
+  /// Get the background task manager.
+  pub fn background_manager(&self) -> Arc<BackgroundTaskManager> {
+    self.background_manager.clone()
+  }
+
   /// Get a provider by name.
   pub fn get_provider(&self, name: &str) -> Option<&ProviderConfig> {
     self.config.get_provider(name)

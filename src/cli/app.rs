@@ -38,6 +38,8 @@ pub struct AppData {
   pub(crate) pending_questions: Option<PendingQuestions>,
   /// Whether plan mode is active
   pub(crate) plan_mode: bool,
+  /// Pending pager output to display (set by TaskBrowserView, consumed by run_app)
+  pub(crate) pending_pager_output: Option<String>,
 }
 
 /// Compaction warning information
@@ -95,6 +97,7 @@ impl AppData {
       pending_approval: None,
       pending_questions: None,
       plan_mode: false,
+      pending_pager_output: None,
     }
   }
 }
@@ -175,7 +178,7 @@ impl App {
     runtime.background_manager.bind_session(&session_handle.id);
 
     // Create ChatView directly
-    let chat_view = ChatView::new(&data, session_handle, &runtime);
+    let chat_view = ChatView::new(&data, session_handle, runtime.clone());
 
     Ok(Self {
       data,
@@ -190,6 +193,11 @@ impl App {
 
   pub fn should_exit(&self) -> bool {
     self.data.should_exit
+  }
+
+  /// Take any pending pager output (for /task browser).
+  pub fn take_pager_output(&mut self) -> Option<String> {
+    self.data.pending_pager_output.take()
   }
 
   /// Kill all active background tasks on exit.
