@@ -1,5 +1,29 @@
 //! Slash command parser.
 
+/// Metadata for a slash command shown in the completion menu.
+pub struct SlashCommandInfo {
+  /// Command name (without the leading `/`).
+  pub name: &'static str,
+  /// Short description for the completion menu.
+  pub description: &'static str,
+}
+
+/// Available slash commands for autocomplete.
+pub const SLASH_COMMANDS: &[SlashCommandInfo] = &[
+  SlashCommandInfo {
+    name: "task",
+    description: "Browse and manage background tasks",
+  },
+  SlashCommandInfo {
+    name: "clear",
+    description: "Clear conversation context",
+  },
+  SlashCommandInfo {
+    name: "reset",
+    description: "Clear conversation context",
+  },
+];
+
 /// Parsed slash command invocation.
 pub struct SlashCommandCall {
   /// Command name (without the leading `/`).

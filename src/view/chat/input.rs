@@ -121,6 +121,12 @@ impl InputComponent {
     std::mem::take(&mut self.text)
   }
 
+  /// Replace the current text with the given text, moving cursor to end.
+  pub fn replace_text(&mut self, text: String) {
+    self.text = text;
+    self.cursor = self.text.chars().count();
+  }
+
   /// Check if input is empty.
   pub fn is_empty(&self) -> bool {
     self.text.is_empty()

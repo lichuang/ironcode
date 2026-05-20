@@ -431,3 +431,120 @@ fn test_question_required_blocks_empty() {
   view.handle_key(&mut data, KeyEvent::from(KeyCode::Enter));
   assert!(data.pending_questions.is_none());
 }
+
+#[test]
+fn test_slash_completion_basic() {
+  let (session_handle, _cmd_rx) = make_session_handle();
+  let data = AppData::new();
+  let mut view = ChatView::new(
+    &data,
+    session_handle,
+    std::sync::Arc::new(Runtime::for_test(Config::default())),
+  );
+
+  // Type '/'
+  view.handle_key(&mut AppData::new(), KeyEvent::from(KeyCode::Char('/')));
+  assert!(view.slash_completion.active);
+  assert_eq!(view.slash_completion.filtered.len(), 3);
+
+  // Type 't' → "/t"
+  view.handle_key(&mut AppData::new(), KeyEvent::from(KeyCode::Char('t')));
+  assert!(view.slash_completion.active);
+  assert_eq!(view.slash_completion.filtered.len(), 1);
+  assert_eq!(
+    SLASH_COMMANDS[view.slash_completion.filtered[0]].name,
+    "task"
+  );
+
+  // Type 'a' → "/ta"
+  view.handle_key(&mut AppData::new(), KeyEvent::from(KeyCode::Char('a')));
+  assert!(view.slash_completion.active);
+  assert_eq!(view.slash_completion.filtered.len(), 1);
+
+  // Type 's' → "/tas"
+  view.handle_key(&mut AppData::new(), KeyEvent::from(KeyCode::Char('s')));
+  assert!(view.slash_completion.active);
+  assert_eq!(view.slash_completion.filtered.len(), 1);
+
+  // Type 'k' → "/task"
+  view.handle_key(&mut AppData::new(), KeyEvent::from(KeyCode::Char('k')));
+  assert!(view.slash_completion.active);
+  assert_eq!(view.slash_completion.filtered.len(), 1);
+
+  // Type ' ' → "/task "
+  view.handle_key(&mut AppData::new(), KeyEvent::from(KeyCode::Char(' ')));
+  assert!(!view.slash_completion.active);
+}
+
+#[test]
+fn test_slash_completion_filtering() {
+  let (session_handle, _cmd_rx) = make_session_handle();
+  let data = AppData::new();
+  let mut view = ChatView::new(
+    &data,
+    session_handle,
+    std::sync::Arc::new(Runtime::for_test(Config::default())),
+  );
+
+  // "/c" should match "clear"
+  view.handle_key(&mut AppData::new(), KeyEvent::from(KeyCode::Char('/')));
+  view.handle_key(&mut AppData::new(), KeyEvent::from(KeyCode::Char('c')));
+  assert!(view.slash_completion.active);
+  assert_eq!(view.slash_completion.filtered.len(), 1);
+  assert_eq!(
+    SLASH_COMMANDS[view.slash_completion.filtered[0]].name,
+    "clear"
+  );
+
+  // "/r" should match "reset"
+  view.handle_key(&mut AppData::new(), KeyEvent::from(KeyCode::Backspace));
+  view.handle_key(&mut AppData::new(), KeyEvent::from(KeyCode::Char('r')));
+  assert!(view.slash_completion.active);
+  assert_eq!(view.slash_completion.filtered.len(), 1);
+  assert_eq!(
+    SLASH_COMMANDS[view.slash_completion.filtered[0]].name,
+    "reset"
+  );
+
+  // "/x" should match nothing
+  view.handle_key(&mut AppData::new(), KeyEvent::from(KeyCode::Backspace));
+  view.handle_key(&mut AppData::new(), KeyEvent::from(KeyCode::Char('x')));
+  assert!(!view.slash_completion.active);
+}
+
+#[test]
+fn test_slash_completion_navigation_and_accept() {
+  let (session_handle, _cmd_rx) = make_session_handle();
+  let data = AppData::new();
+  let mut view = ChatView::new(
+    &data,
+    session_handle,
+    std::sync::Arc::new(Runtime::for_test(Config::default())),
+  );
+
+  // Type "/" to show all commands
+  view.handle_key(&mut AppData::new(), KeyEvent::from(KeyCode::Char('/')));
+  assert!(view.slash_completion.active);
+  assert_eq!(view.slash_completion.filtered.len(), 3);
+  assert_eq!(view.slash_completion.selected, 0);
+
+  // Press Down to select next item
+  view.handle_key(&mut AppData::new(), KeyEvent::from(KeyCode::Down));
+  assert_eq!(view.slash_completion.selected, 1);
+
+  // Press Up to go back
+  view.handle_key(&mut AppData::new(), KeyEvent::from(KeyCode::Up));
+  assert_eq!(view.slash_completion.selected, 0);
+
+  // Press Enter to accept the first command (task)
+  view.handle_key(&mut AppData::new(), KeyEvent::from(KeyCode::Enter));
+  assert!(!view.slash_completion.active);
+  assert_eq!(view.input.text(), "/task ");
+
+  // Press Esc to cancel completion
+  view.input.replace_text("/".to_string());
+  view.update_slash_completion();
+  assert!(view.slash_completion.active);
+  view.handle_key(&mut AppData::new(), KeyEvent::from(KeyCode::Esc));
+  assert!(!view.slash_completion.active);
+}

@@ -12,7 +12,7 @@ use ratatui::{
 
 use crate::cli::AppData;
 use crate::cli::runtime::Runtime;
-use crate::cli::slash::parse_slash_command;
+use crate::cli::slash::{SLASH_COMMANDS, parse_slash_command};
 use crate::history::InputHistoryManager;
 use crate::llm::SessionHandle;
 use crate::tui::{FrameRequester, TARGET_FRAME_INTERVAL};
@@ -55,6 +55,17 @@ pub enum ChatDisplayState {
   WaitingInput,
 }
 
+/// Slash command completion state.
+#[derive(Default)]
+struct SlashCompletion {
+  /// Whether the completion menu is active.
+  active: bool,
+  /// Indices into [`SLASH_COMMANDS`] of matching commands.
+  filtered: Vec<usize>,
+  /// Index of the currently selected item in `filtered`.
+  selected: usize,
+}
+
 /// Chat view state
 pub struct ChatView {
   /// Input component managing text, cursor, and history
@@ -81,6 +92,8 @@ pub struct ChatView {
   status_bar_info: StatusBarInfo,
   /// Runtime for accessing background manager and config
   runtime: Arc<Runtime>,
+  /// Slash command completion state
+  slash_completion: SlashCompletion,
 }
 
 impl ChatView {
@@ -136,6 +149,7 @@ impl ChatView {
       session_handle,
       status_bar_info,
       runtime,
+      slash_completion: SlashCompletion::default(),
     }
   }
 
@@ -359,6 +373,86 @@ impl ChatView {
     f.render_widget(widget, area);
   }
 
+  /// Update the slash completion state based on current input.
+  fn update_slash_completion(&mut self) {
+    let text = self.input.text();
+    let cursor = self.input.cursor();
+
+    // Must start with `/` and cursor must be after it.
+    if !text.starts_with('/') || cursor == 0 {
+      self.slash_completion.active = false;
+      return;
+    }
+
+    // Collect characters between `/` and cursor.
+    let prefix: String = text.chars().take(cursor).skip(1).collect();
+
+    // If there's a space before cursor, the user has finished the command name.
+    if prefix.contains(' ') {
+      self.slash_completion.active = false;
+      return;
+    }
+
+    let prefix_lower = prefix.to_lowercase();
+    self.slash_completion.filtered = SLASH_COMMANDS
+      .iter()
+      .enumerate()
+      .filter(|(_, cmd)| cmd.name.starts_with(&prefix_lower))
+      .map(|(i, _)| i)
+      .collect();
+
+    self.slash_completion.selected = 0;
+    self.slash_completion.active = !self.slash_completion.filtered.is_empty();
+  }
+
+  /// Accept the currently selected slash completion item.
+  fn accept_slash_completion(&mut self) {
+    if let Some(&idx) = self
+      .slash_completion
+      .filtered
+      .get(self.slash_completion.selected)
+    {
+      let cmd = &SLASH_COMMANDS[idx];
+      self.input.replace_text(format!("/{0} ", cmd.name));
+      self.slash_completion.active = false;
+    }
+  }
+
+  /// Render the slash command completion menu.
+  fn render_slash_completion(&self, f: &mut Frame, area: Rect) {
+    if area.height == 0 || self.slash_completion.filtered.is_empty() {
+      return;
+    }
+
+    use ratatui::style::Style;
+
+    let items: Vec<Line> = self
+      .slash_completion
+      .filtered
+      .iter()
+      .enumerate()
+      .map(|(i, &cmd_idx)| {
+        let cmd = &SLASH_COMMANDS[cmd_idx];
+        let is_selected = i == self.slash_completion.selected;
+        let name_style = if is_selected { *HIGHLIGHT } else { *PRIMARY };
+        let desc_style = if is_selected {
+          *HIGHLIGHT
+        } else {
+          Style::default().fg(crate::utils::colors::MUTED)
+        };
+
+        Line::from(vec![
+          Span::styled(format!("/{}", cmd.name), name_style),
+          Span::raw("  "),
+          Span::styled(cmd.description, desc_style),
+        ])
+      })
+      .collect();
+
+    let widget = Paragraph::new(Text::from(items));
+    f.render_widget(widget, area);
+  }
+
   /// Update status bar info with current state
   ///
   /// This method updates the mutable fields of status_bar_info.
@@ -570,6 +664,33 @@ impl View for ChatView {
       return None;
     }
 
+    // Slash command completion navigation.
+    if self.slash_completion.active {
+      match key.code {
+        KeyCode::Up => {
+          if self.slash_completion.selected > 0 {
+            self.slash_completion.selected -= 1;
+          }
+          return None;
+        }
+        KeyCode::Down => {
+          if self.slash_completion.selected + 1 < self.slash_completion.filtered.len() {
+            self.slash_completion.selected += 1;
+          }
+          return None;
+        }
+        KeyCode::Enter | KeyCode::Tab => {
+          self.accept_slash_completion();
+          return None;
+        }
+        KeyCode::Esc => {
+          self.slash_completion.active = false;
+          return None;
+        }
+        _ => {}
+      }
+    }
+
     match key.code {
       KeyCode::Esc => {
         // Exit the application
@@ -583,14 +704,17 @@ impl View for ChatView {
         if key.modifiers.contains(KeyModifiers::SHIFT) || key.modifiers.contains(KeyModifiers::ALT)
         {
           self.insert_char('\n');
+          self.update_slash_completion();
         } else if !self.input.is_empty() {
           let text = self.input.text();
           if let Some(cmd) = parse_slash_command(text) {
             self.input.take_text();
             self.input.move_cursor_home();
+            self.slash_completion.active = false;
             return self.handle_slash_command(data, cmd);
           }
           self.submit_message(data);
+          self.slash_completion.active = false;
         }
       }
       KeyCode::Up => {
@@ -601,24 +725,31 @@ impl View for ChatView {
       }
       KeyCode::Backspace => {
         self.input.backspace();
+        self.update_slash_completion();
       }
       KeyCode::Delete => {
         self.input.delete();
+        self.update_slash_completion();
       }
       KeyCode::Left => {
         self.input.move_cursor_left();
+        self.update_slash_completion();
       }
       KeyCode::Right => {
         self.input.move_cursor_right();
+        self.update_slash_completion();
       }
       KeyCode::Home => {
         self.input.move_cursor_home();
+        self.update_slash_completion();
       }
       KeyCode::End => {
         self.input.move_cursor_end();
+        self.update_slash_completion();
       }
       KeyCode::Char(c) => {
         self.input.insert_char(c);
+        self.update_slash_completion();
       }
       _ => {}
     }
@@ -841,8 +972,15 @@ impl View for ChatView {
     }
 
     // Current input (only if there's actual input text)
+    let completion_height = if self.slash_completion.active {
+      self.slash_completion.filtered.len().min(6) as u16
+    } else {
+      0
+    };
     if !self.input.is_empty() {
-      constraints.push(Constraint::Length(input_height as u16));
+      constraints.push(Constraint::Length(
+        (input_height as u16) + completion_height,
+      ));
     }
 
     // Add remaining space
@@ -907,6 +1045,9 @@ impl View for ChatView {
     // Only add input height if there's actual input
     if !self.input.is_empty() {
       total_fixed_height += input_height;
+      if self.slash_completion.active {
+        total_fixed_height += completion_height as usize;
+      }
     }
 
     let available_height = area.height as usize;
@@ -1054,20 +1195,54 @@ impl View for ChatView {
       && chunk_idx < chunks.len()
       && !self.input.is_empty()
     {
-      self.render_input_line(f, chunks[chunk_idx], self.input.text(), true);
+      let area = chunks[chunk_idx];
+      if self.slash_completion.active && completion_height > 0 {
+        // Split area into input part and completion part
+        let input_area = Rect {
+          x: area.x,
+          y: area.y,
+          width: area.width,
+          height: input_height as u16,
+        };
+        let completion_area = Rect {
+          x: area.x,
+          y: area.y + input_height as u16,
+          width: area.width,
+          height: completion_height,
+        };
+        self.render_input_line(f, input_area, self.input.text(), true);
 
-      // Set cursor position
-      let (cursor_line, cursor_col) = self.find_cursor_position(available_width);
-      let cursor_x = chunks[chunk_idx].x + cursor_col as u16;
-      let cursor_y = chunks[chunk_idx].y + cursor_line as u16;
+        // Set cursor position
+        let (cursor_line, cursor_col) = self.find_cursor_position(available_width);
+        let cursor_x = input_area.x + cursor_col as u16;
+        let cursor_y = input_area.y + cursor_line as u16;
 
-      // Ensure cursor is within bounds
-      let max_x = chunks[chunk_idx].x + chunks[chunk_idx].width;
-      let max_y = chunks[chunk_idx].y + chunks[chunk_idx].height;
-      let cursor_x = cursor_x.min(max_x.saturating_sub(1));
-      let cursor_y = cursor_y.min(max_y.saturating_sub(1));
+        // Ensure cursor is within bounds
+        let max_x = input_area.x + input_area.width;
+        let max_y = input_area.y + input_area.height;
+        let cursor_x = cursor_x.min(max_x.saturating_sub(1));
+        let cursor_y = cursor_y.min(max_y.saturating_sub(1));
 
-      f.set_cursor_position((cursor_x, cursor_y));
+        f.set_cursor_position((cursor_x, cursor_y));
+
+        // Render completion menu
+        self.render_slash_completion(f, completion_area);
+      } else {
+        self.render_input_line(f, area, self.input.text(), true);
+
+        // Set cursor position
+        let (cursor_line, cursor_col) = self.find_cursor_position(available_width);
+        let cursor_x = area.x + cursor_col as u16;
+        let cursor_y = area.y + cursor_line as u16;
+
+        // Ensure cursor is within bounds
+        let max_x = area.x + area.width;
+        let max_y = area.y + area.height;
+        let cursor_x = cursor_x.min(max_x.saturating_sub(1));
+        let cursor_y = cursor_y.min(max_y.saturating_sub(1));
+
+        f.set_cursor_position((cursor_x, cursor_y));
+      }
     }
 
     // Update and render status bar
