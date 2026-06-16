@@ -12,7 +12,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::time::sleep;
 
-use super::models::TaskStatus;
+use super::models::{TaskStatus, Timestamp};
 use super::store::BackgroundTaskStore;
 
 /// Synchronous entry point for the worker process.
@@ -341,7 +341,8 @@ async fn control_loop(
 ) {
   let store = BackgroundTaskStore::new(store_root);
   let poll = Duration::from_millis(poll_interval_ms);
-  let mut kill_sent_at: Option<f64> = None;
+  let mut kill_sent_at: Option<Timestamp> = None;
+  let grace_period_s = kill_grace_period_ms / 1000;
 
   loop {
     tokio::select! {
@@ -360,7 +361,7 @@ async fn control_loop(
       kill_sent_at = kill_sent_at.or(Some(now));
       if let Some(sent) = kill_sent_at
         && !control.force
-        && now - sent >= kill_grace_period_ms as f64 / 1000.0
+        && now - sent >= grace_period_s
       {
         best_effort_kill(child_pid, true);
       }
@@ -386,9 +387,9 @@ fn best_effort_kill(pid: u32, force: bool) {
   let _ = (pid, force);
 }
 
-fn now_secs() -> f64 {
+fn now_secs() -> Timestamp {
   SystemTime::now()
     .duration_since(UNIX_EPOCH)
     .unwrap_or_default()
-    .as_secs_f64()
+    .as_secs()
 }

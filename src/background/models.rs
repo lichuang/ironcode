@@ -4,6 +4,9 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+/// Unix timestamp in seconds.
+pub type Timestamp = u64;
+
 // ---------------------------------------------------------------------------
 // Task status
 // ---------------------------------------------------------------------------
@@ -78,7 +81,7 @@ pub struct TaskSpec {
   /// Timeout in seconds (None = no timeout).
   pub timeout_s: Option<u64>,
   /// Creation timestamp (seconds since UNIX epoch).
-  pub created_at: f64,
+  pub created_at: Timestamp,
 }
 
 impl TaskSpec {
@@ -121,10 +124,10 @@ pub struct TaskRuntime {
   pub status: TaskStatus,
   pub worker_pid: Option<u32>,
   pub child_pid: Option<u32>,
-  pub started_at: Option<f64>,
-  pub heartbeat_at: Option<f64>,
-  pub updated_at: f64,
-  pub finished_at: Option<f64>,
+  pub started_at: Option<Timestamp>,
+  pub heartbeat_at: Option<Timestamp>,
+  pub updated_at: Timestamp,
+  pub finished_at: Option<Timestamp>,
   pub exit_code: Option<i32>,
   pub interrupted: bool,
   pub timed_out: bool,
@@ -156,7 +159,7 @@ impl Default for TaskRuntime {
 /// Control signals written by the manager and read by the worker.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TaskControl {
-  pub kill_requested_at: Option<f64>,
+  pub kill_requested_at: Option<Timestamp>,
   pub kill_reason: Option<String>,
   pub force: bool,
 }
@@ -169,7 +172,7 @@ pub struct TaskControl {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TaskConsumerState {
   pub last_seen_output_size: usize,
-  pub last_viewed_at: Option<f64>,
+  pub last_viewed_at: Option<Timestamp>,
 }
 
 // ---------------------------------------------------------------------------
@@ -209,9 +212,9 @@ pub struct TaskOutputChunk {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn now_secs() -> f64 {
+fn now_secs() -> Timestamp {
   std::time::SystemTime::now()
     .duration_since(std::time::UNIX_EPOCH)
     .unwrap_or_default()
-    .as_secs_f64()
+    .as_secs()
 }

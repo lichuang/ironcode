@@ -6,6 +6,9 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Unix timestamp in seconds.
+pub type Timestamp = u64;
+
 // ---------------------------------------------------------------------------
 // Severity
 // ---------------------------------------------------------------------------
@@ -80,7 +83,7 @@ pub struct NotificationEvent {
   /// Severity level.
   pub severity: NotificationSeverity,
   /// Creation timestamp (seconds since UNIX epoch).
-  pub created_at: f64,
+  pub created_at: Timestamp,
   /// Arbitrary JSON payload.
   pub payload: Value,
   /// Target sinks (e.g. ["llm", "wire", "shell"]).
@@ -108,9 +111,9 @@ pub struct NotificationSinkState {
   /// Current delivery status.
   pub status: NotificationDeliveryStatus,
   /// When the sink claimed this notification.
-  pub claimed_at: Option<f64>,
+  pub claimed_at: Option<Timestamp>,
   /// When the sink acked this notification.
-  pub acked_at: Option<f64>,
+  pub acked_at: Option<Timestamp>,
 }
 
 /// Delivery record for a notification.

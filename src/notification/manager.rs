@@ -7,7 +7,7 @@ use crate::config::NotificationConfig;
 
 use super::models::{
   NotificationDelivery, NotificationDeliveryStatus, NotificationEvent, NotificationSinkState,
-  NotificationView,
+  NotificationView, Timestamp,
 };
 use super::store::NotificationStore;
 
@@ -209,7 +209,7 @@ impl NotificationManager {
   /// Notifications that have been in `Claimed` state for longer than
   /// `claim_stale_after_ms` are reset to `Pending` so they can be retried.
   pub fn recover(&self) {
-    let stale_after_s = self.config.claim_stale_after_ms as f64 / 1000.0;
+    let stale_after_s = self.config.claim_stale_after_ms / 1000;
     let Some(store) = self.store() else {
       return;
     };
@@ -257,9 +257,9 @@ fn initial_delivery(event: &NotificationEvent) -> NotificationDelivery {
   NotificationDelivery { sinks }
 }
 
-fn now_secs() -> f64 {
+fn now_secs() -> Timestamp {
   std::time::SystemTime::now()
     .duration_since(std::time::UNIX_EPOCH)
     .unwrap_or_default()
-    .as_secs_f64()
+    .as_secs()
 }

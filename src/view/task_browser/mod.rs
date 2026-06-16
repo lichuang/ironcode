@@ -78,18 +78,13 @@ impl TaskBrowserView {
             (true, false) => std::cmp::Ordering::Greater,
             (false, false) => {
               // Non-terminal: by creation time (newest first)
-              b.spec
-                .created_at
-                .partial_cmp(&a.spec.created_at)
-                .unwrap_or(std::cmp::Ordering::Equal)
+              b.spec.created_at.cmp(&a.spec.created_at)
             }
             (true, true) => {
               // Terminal: by finish time (newest first)
-              let a_fin = a.runtime.finished_at.unwrap_or(0.0);
-              let b_fin = b.runtime.finished_at.unwrap_or(0.0);
-              b_fin
-                .partial_cmp(&a_fin)
-                .unwrap_or(std::cmp::Ordering::Equal)
+              let a_fin = a.runtime.finished_at.unwrap_or(0);
+              let b_fin = b.runtime.finished_at.unwrap_or(0);
+              b_fin.cmp(&a_fin)
             }
           }
         });
@@ -134,13 +129,13 @@ impl TaskBrowserView {
     (running, starting, completed, failed, killed, lost)
   }
 
-  fn format_duration(secs: f64) -> String {
-    if secs < 60.0 {
-      format!("{:.0}s", secs)
-    } else if secs < 3600.0 {
-      format!("{:.0}m {:.0}s", secs / 60.0, secs % 60.0)
+  fn format_duration(secs: u64) -> String {
+    if secs < 60 {
+      format!("{}s", secs)
+    } else if secs < 3600 {
+      format!("{}m {}s", secs / 60, secs % 60)
     } else {
-      format!("{:.0}h {:.0}m", secs / 3600.0, (secs % 3600.0) / 60.0)
+      format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
     }
   }
 }
@@ -413,7 +408,7 @@ impl TaskBrowserView {
         let now = std::time::SystemTime::now()
           .duration_since(std::time::UNIX_EPOCH)
           .unwrap_or_default()
-          .as_secs_f64();
+          .as_secs();
         let elapsed = now - started;
         lines.push(Line::from(""));
         lines.push(Line::from(vec![Span::styled(

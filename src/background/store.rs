@@ -160,11 +160,7 @@ impl BackgroundTaskStore {
         views.push(view);
       }
     }
-    views.sort_by(|a, b| {
-      let a_ts = b.runtime.updated_at;
-      let b_ts = a.runtime.updated_at;
-      a_ts.partial_cmp(&b_ts).unwrap_or(std::cmp::Ordering::Equal)
-    });
+    views.sort_by(|a, b| b.runtime.updated_at.cmp(&a.runtime.updated_at));
     views
   }
 

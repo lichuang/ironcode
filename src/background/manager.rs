@@ -11,7 +11,9 @@ use tokio::time::sleep;
 use crate::config::BackgroundConfig;
 
 use super::ids::generate_task_id;
-use super::models::{TaskOutputChunk, TaskSpec, TaskStatus, TaskView, is_terminal_status};
+use super::models::{
+  TaskOutputChunk, TaskSpec, TaskStatus, TaskView, Timestamp, is_terminal_status,
+};
 use super::store::BackgroundTaskStore;
 use std::time::Duration;
 
@@ -318,7 +320,7 @@ impl BackgroundTaskManager {
           .or(Some(view.spec.created_at))
           .unwrap_or(now);
 
-        if now - last_progress <= stale_after_s as f64 {
+        if now - last_progress <= stale_after_s {
           continue;
         }
       }
@@ -337,7 +339,7 @@ impl BackgroundTaskManager {
           .or(Some(view.spec.created_at))
           .unwrap_or(now);
 
-        if now - fresh_progress <= stale_after_s as f64 {
+        if now - fresh_progress <= stale_after_s {
           continue;
         }
       }
@@ -478,11 +480,11 @@ fn publish_terminal_notification(
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn now_secs() -> f64 {
+fn now_secs() -> Timestamp {
   SystemTime::now()
     .duration_since(UNIX_EPOCH)
     .unwrap_or_default()
-    .as_secs_f64()
+    .as_secs()
 }
 
 /// Check whether a process with the given PID is still alive.
@@ -525,11 +527,11 @@ mod tests {
   use crate::background::models::{TaskRuntime, TaskSpec, TaskStatus};
   use std::time::{SystemTime, UNIX_EPOCH};
 
-  fn now_secs() -> f64 {
+  fn now_secs() -> Timestamp {
     SystemTime::now()
       .duration_since(UNIX_EPOCH)
       .unwrap_or_default()
-      .as_secs_f64()
+      .as_secs()
   }
 
   #[test]
@@ -561,7 +563,7 @@ mod tests {
       shell_path: "/bin/bash".to_string(),
       cwd: "/".to_string(),
       timeout_s: Some(60),
-      created_at: now_secs() - 10.0,
+      created_at: now_secs() - 10,
     };
     store.create_task(&spec);
 
@@ -569,8 +571,8 @@ mod tests {
     let mut runtime = TaskRuntime::default();
     runtime.status = TaskStatus::Running;
     runtime.worker_pid = Some(999999); // Non-existent PID
-    runtime.heartbeat_at = Some(now_secs() - 5.0);
-    runtime.updated_at = now_secs() - 5.0;
+    runtime.heartbeat_at = Some(now_secs() - 5);
+    runtime.updated_at = now_secs() - 5;
     store.write_runtime(&spec.id, &runtime);
 
     // Recover should mark the stale task as lost
@@ -618,13 +620,13 @@ mod tests {
       shell_path: "/bin/bash".to_string(),
       cwd: "/".to_string(),
       timeout_s: Some(60),
-      created_at: now_secs() - 10.0,
+      created_at: now_secs() - 10,
     };
     store.create_task(&spec);
 
     let mut runtime = TaskRuntime::default();
     runtime.status = TaskStatus::Completed;
-    runtime.finished_at = Some(now_secs() - 5.0);
+    runtime.finished_at = Some(now_secs() - 5);
     store.write_runtime(&spec.id, &runtime);
 
     let updated = manager.recover();

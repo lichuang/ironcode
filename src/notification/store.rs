@@ -110,12 +110,7 @@ impl NotificationStore {
         views.push(view);
       }
     }
-    views.sort_by(|a, b| {
-      b.event
-        .created_at
-        .partial_cmp(&a.event.created_at)
-        .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    views.sort_by(|a, b| b.event.created_at.cmp(&a.event.created_at));
     views
   }
 }

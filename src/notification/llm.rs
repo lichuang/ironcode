@@ -112,7 +112,7 @@ mod tests {
         title: "Test".to_string(),
         body: "Body".to_string(),
         severity: NotificationSeverity::Success,
-        created_at: 0.0,
+        created_at: 0,
         payload: serde_json::Value::Object(serde_json::Map::new()),
         targets: vec!["llm".to_string()],
         dedupe_key: None,
