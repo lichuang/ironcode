@@ -13,6 +13,7 @@ use crate::config::{
   ProviderConfig, RetryConfig,
 };
 use crate::error::Result;
+use crate::hooks::HookEngine;
 use crate::notification::NotificationManager;
 use crate::tools::handlers::{
   AskUserQuestionHandler, EnterPlanModeHandler, ExitPlanModeHandler, FetchURLHandler, GlobHandler,
@@ -201,6 +202,8 @@ pub(crate) struct Runtime {
   pub background_manager: Arc<BackgroundTaskManager>,
   /// Notification manager (session is bound after session creation)
   pub notification_manager: Arc<NotificationManager>,
+  /// Lifecycle hook engine
+  pub hook_engine: Arc<HookEngine>,
 }
 
 impl Runtime {
@@ -221,6 +224,10 @@ impl Runtime {
       data_dir.to_path_buf(),
       config.notifications.clone(),
     ));
+    let hook_engine = Arc::new(HookEngine::new(
+      config.hooks.clone(),
+      std::env::current_dir().ok(),
+    ));
 
     // Load executable tool registry first (handlers must be registered before checking)
     let executable_registry = Arc::new(Self::load_executable_tools(&background_manager));
@@ -239,6 +246,7 @@ impl Runtime {
       executable_registry,
       background_manager,
       notification_manager,
+      hook_engine,
     })
   }
 
@@ -266,6 +274,7 @@ impl Runtime {
         std::path::PathBuf::from("."),
         crate::config::NotificationConfig::default(),
       )),
+      hook_engine: Arc::new(HookEngine::empty()),
     }
   }
 
@@ -454,6 +463,11 @@ impl Runtime {
   /// Get the notification manager.
   pub fn notification_manager(&self) -> Arc<NotificationManager> {
     self.notification_manager.clone()
+  }
+
+  /// Get the hook engine.
+  pub fn hook_engine(&self) -> Arc<HookEngine> {
+    self.hook_engine.clone()
   }
 
   /// Publish notifications for all terminal background tasks.

@@ -11,6 +11,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use tokio::time::Duration;
 
+use crate::hooks::HookDef;
+
 /// Default value for history max_size (1MB).
 const DEFAULT_HISTORY_MAX_SIZE: usize = 1024 * 1024;
 /// Default value for history max_entries.
@@ -93,6 +95,10 @@ pub struct Config {
   /// Notification delivery configuration
   #[serde(default)]
   pub notifications: NotificationConfig,
+
+  /// User-defined lifecycle hooks
+  #[serde(default)]
+  pub hooks: Vec<HookDef>,
 }
 
 impl Default for Config {
@@ -112,6 +118,7 @@ impl Default for Config {
       mcp: McpConfig::default(),
       background: BackgroundConfig::default(),
       notifications: NotificationConfig::default(),
+      hooks: Vec::new(),
     }
   }
 }

@@ -34,7 +34,7 @@
 14. ~~**Auto-retry with Backoff**~~ [x] COMPLETED - Exponential backoff retry
 15. ~~**YOLO Mode**~~ [x] COMPLETED - Auto-approve all operations with session-level persistence
 16. **Background Task & Notification System** - Async workers with heartbeat and LLM context delivery
-17. **Hook Engine** - Extensible PreToolUse/PostToolUse/UserPromptSubmit hooks
+17. ~~**Hook Engine**~~ [x] COMPLETED - Extensible PreToolUse/PostToolUse/UserPromptSubmit/Stop hooks with config-defined shell commands
 18. **Plan Mode** - Structured planning with EnterPlanMode/ExitPlanMode tools
 19. **Git Context Integration** - Auto-inject git status/diff into system prompt
 20. **Think Tool** - Explicit reasoning tool for complex problem-solving
@@ -122,19 +122,34 @@
   - Deduplication by `dedupe_key` (e.g., `background_task:{task_id}:{status}`)
   - Auto-clear notifications after they are consumed by LLM context
 
-#### 17. Hook Engine
-- [ ] Hook definition and registration framework
-  - Load from config (TOML `[[hooks]]` entries with `event`, `command`, `script_path`)
+#### 17. Hook Engine [x] COMPLETED (server-side lifecycle hooks)
+- [x] Hook definition and registration framework
+  - Load from config (TOML `[[hooks]]` entries with `event`, `command`, `matcher`, `timeout`)
   - In-process hook registry (`HookEngine`) attached to `Runtime`
-- [ ] PreToolUse / PostToolUse hooks
-  - Return `allow` (continue) / `block` (reject with message) / `modify` (mutate arguments)
-  - Error handling: hook failure defaults to `allow` or `block` based on config
-- [ ] UserPromptSubmit hook
+- [x] PreToolUse / PostToolUse / PostToolUseFailure hooks
+  - Return `allow` (continue) / `block` (reject with message)
+  - Error handling: hook failure defaults to `allow` (fail-open)
+- [x] UserPromptSubmit hook
   - Triggered after user input but before sending to LLM
-  - Can mutate prompt text or inject context
-- [ ] Stop hook for graceful interruption
-  - Triggered on Ctrl+C or explicit stop
-  - Async cleanup window (e.g., save state, flush logs)
+  - Blocks by rendering TurnBegin / ContentChunk(reason) / TurnEnd
+- [x] Stop / SessionStart / SessionEnd hooks for lifecycle events
+  - Stop triggered at the end of every turn; block with reason injects a follow-up user turn
+  - SessionStart awaited with matcher `"startup"` / `"resume"`
+  - SessionEnd triggered on app exit with 5s timeout
+
+#### 17b. Hook Engine — remaining kimi-cli parity gaps
+- [ ] Wire / client-side hook subscriptions
+  - `WireHookSubscription` model and `HookEngine::add_wire_subscriptions`
+  - Dispatch wire hooks to client via `WireHookHandle` and await response
+- [ ] Hook telemetry and lifecycle callbacks
+  - `on_triggered` / `on_resolved` callbacks
+  - Deduplicate server-side hooks by `command`
+  - `HookEngine::details()` for UI display
+- [ ] Remaining event trigger points
+  - `StopFailure` when graceful stop fails
+  - `PreCompact` / `PostCompact` around context compaction
+  - `Notification` when notifications are delivered to sinks
+  - `SubagentStart` / `SubagentStop` once subagent system exists
 
 #### 18. Plan Mode
 - [x] `EnterPlanMode` / `ExitPlanMode` tools
@@ -302,10 +317,10 @@
 
 | Metric | Count |
 |--------|-------|
-| **Total Tasks** | 106 |
-| **Completed** | 40 |
-| **Remaining** | 66 |
-| **Progress** | 37.7% |
+| **Total Tasks** | 109 |
+| **Completed** | 44 |
+| **Remaining** | 65 |
+| **Progress** | 40.4% |
 
 > **Note:** This summary must be updated whenever tasks are completed. After each batch of completions, recalculate the counts and percentage to keep the document accurate.
 

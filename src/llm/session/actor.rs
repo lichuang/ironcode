@@ -18,6 +18,7 @@ use super::compaction::CompactionService;
 use super::state::ActorState;
 use crate::cli::runtime::Runtime;
 use crate::error::Result;
+use crate::hooks::{HookDecision, HookEventType, events as hook_events};
 use crate::llm::provider::LLMProvider;
 use crate::llm::providers::KimiProvider;
 use crate::llm::types::{ChatConfig, Message, ToolCall};
@@ -70,7 +71,7 @@ pub(crate) fn generate_session_id() -> String {
 use super::context::Context;
 use super::persistence::SessionPersistence;
 use super::stream::{StreamManager, format_user_friendly_error};
-use super::tool_exec::ToolExecutor;
+use super::tool_exec::{ToolExecutionContext, ToolExecutor};
 use super::{Question, QuestionOption, SessionCommand, SessionEvent, SessionHandle};
 use crate::notification::NotificationManager;
 use crate::wire::{WireMessage, WirePublisher};
@@ -138,6 +139,8 @@ struct SessionActor {
   max_steps_per_turn: usize,
   /// Whether plan mode is active (read-only tools only).
   plan_mode: bool,
+  /// Guard to prevent recursive Stop hook re-triggering.
+  stop_hook_active: bool,
 }
 
 impl SessionActor {
@@ -162,7 +165,7 @@ impl SessionActor {
     ack_notification_ids_in_context(&runtime.notification_manager(), &messages);
 
     Self {
-      id,
+      id: id.clone(),
       context: Context::from_messages(messages),
       wire_publisher,
       cmd_rx,
@@ -175,10 +178,19 @@ impl SessionActor {
       meta,
       precise_token_count: None,
       max_context_size,
-      tool_executor: ToolExecutor::new(
-        env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-        runtime.executable_registry.clone(),
-      ),
+      tool_executor: {
+        let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let mut executor = ToolExecutor::new(
+          cwd.clone(),
+          runtime.executable_registry.clone(),
+          runtime.hook_engine(),
+        );
+        executor.bind_context(ToolExecutionContext {
+          session_id: id.clone(),
+          cwd,
+        });
+        executor
+      },
       approval_service: ApprovalService::new(yolo, runtime.auto_approve()),
       compaction_service: CompactionService::new(runtime.compaction_config().clone()),
       runtime,
@@ -186,6 +198,7 @@ impl SessionActor {
       agent_loop_state: AgentLoopState::Idle,
       max_steps_per_turn: DEFAULT_MAX_STEPS_PER_TURN,
       plan_mode,
+      stop_hook_active: false,
     }
   }
 
@@ -225,6 +238,34 @@ impl SessionActor {
     info!("SessionActor {} stopped", self.id);
   }
 
+  /// Trigger `UserPromptSubmit` hooks.
+  ///
+  /// Returns `Some(reason)` if any hook blocked the prompt, or `None` if the
+  /// prompt should proceed.
+  async fn run_user_prompt_submit_hook(&self, content: &str) -> Option<String> {
+    let results = self
+      .runtime
+      .hook_engine()
+      .trigger(
+        HookEventType::UserPromptSubmit,
+        content,
+        hook_events::user_prompt_submit(&self.id, &self.runtime.args.work_dir, content),
+      )
+      .await;
+
+    for result in results {
+      if let HookDecision::Block { reason } = result.decision {
+        return Some(if reason.is_empty() {
+          "Prompt blocked by hook.".to_string()
+        } else {
+          reason
+        });
+      }
+    }
+
+    None
+  }
+
   /// Handle a command from the handle
   /// Returns false if the actor should shutdown
   async fn handle_command(&mut self, cmd: SessionCommand) -> bool {
@@ -250,6 +291,16 @@ impl SessionActor {
           self.wire_publisher.send(WireMessage::Error {
             message: "Cannot send message while another request is in progress".to_string(),
           });
+          return true;
+        }
+
+        // Trigger UserPromptSubmit hooks; hooks may block the prompt.
+        if let Some(reason) = self.run_user_prompt_submit_hook(&content).await {
+          self.wire_publisher.send(WireMessage::TurnBegin);
+          self
+            .wire_publisher
+            .send(WireMessage::ContentChunk { text: reason });
+          self.wire_publisher.send(WireMessage::TurnEnd);
           return true;
         }
 
@@ -496,11 +547,45 @@ impl SessionActor {
 
   /// End the current turn.
   ///
-  /// Resets agent-loop state and sends `TurnEnd` to the UI.
+  /// Resets agent-loop state and sends `TurnEnd` to the UI. Then triggers the
+  /// `Stop` lifecycle hook; if it blocks with a reason, that reason is injected
+  /// as a new user message and one additional turn is run.
   async fn agent_loop_end(&mut self) {
     info!("Session {}: Turn ended", self.id);
     self.agent_loop_state = AgentLoopState::Idle;
     self.wire_publisher.send(WireMessage::TurnEnd);
+
+    // --- Stop hook (max 1 re-trigger to prevent infinite loop) ---
+    if !self.stop_hook_active {
+      let results = self
+        .runtime
+        .hook_engine()
+        .trigger(
+          HookEventType::Stop,
+          "",
+          hook_events::stop(&self.id, &self.runtime.args.work_dir, false),
+        )
+        .await;
+      for result in results {
+        if let HookDecision::Block { reason } = result.decision
+          && !reason.is_empty()
+        {
+          self.stop_hook_active = true;
+          let user_msg = self.context.push_user(&reason).clone();
+          self.persistence.stage_message(&self.id, &user_msg);
+          self.meta.update_title_from_message(&user_msg);
+          self.meta.updated_at = Local::now();
+          self.persistence.stage_meta(&self.meta);
+          let _ = self.persistence.flush();
+          self.current_response.clear();
+          self.current_thinking.clear();
+          self.pending_tool_calls.clear();
+          Box::pin(self.start_turn()).await;
+          self.stop_hook_active = false;
+          return;
+        }
+      }
+    }
   }
 
   /// Start a chat stream with the current messages, with retry support.

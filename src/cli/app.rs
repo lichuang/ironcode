@@ -8,6 +8,7 @@ use ratatui::Frame;
 use crate::cli::Args;
 use crate::cli::runtime::Runtime;
 use crate::error::Result;
+use crate::hooks::{HookEventType, events as hook_events};
 use crate::llm::{ChatSession, Question};
 use crate::session::{SessionMode, SessionStore};
 use crate::tui::FrameRequester;
@@ -128,7 +129,7 @@ pub struct App {
   pub(crate) runtime: Arc<Runtime>,
 
   /// Chat session for LLM communication (initialized when first chat starts)
-  chat_session: Option<ChatSession>,
+  pub(crate) chat_session: Option<ChatSession>,
   /// Wire subscriber for receiving events from the session actor
   wire_subscriber: tokio::sync::broadcast::Receiver<WireMessage>,
   /// Current LLM response chunks being accumulated (for streaming display)
@@ -143,7 +144,7 @@ impl App {
   /// * `data_dir` - The data directory for loading system prompt (data_dir/prompts/system.md)
   /// * `args` - Command line arguments for session control
   /// * `session_store` - Persistent session storage
-  pub fn new(data_dir: &Path, args: &Args, runtime: Arc<Runtime>) -> Result<Self> {
+  pub async fn new(data_dir: &Path, args: &Args, runtime: Arc<Runtime>) -> Result<Self> {
     let mut data = AppData::new();
 
     let system_prompt = runtime.render_system_prompt();
@@ -167,7 +168,7 @@ impl App {
       runtime.clone(),
       system_prompt,
       session_store,
-      mode,
+      mode.clone(),
       wire_publisher,
     )?;
 
@@ -196,6 +197,21 @@ impl App {
 
     // Publish notifications for terminal tasks discovered during recovery
     runtime.publish_task_notifications();
+
+    // Trigger SessionStart hook (awaited; result does not block UI).
+    let session_source = if matches!(mode, SessionMode::New) {
+      "startup"
+    } else {
+      "resume"
+    };
+    let _ = runtime
+      .hook_engine()
+      .trigger(
+        HookEventType::SessionStart,
+        session_source,
+        hook_events::session_start(&session_handle.id, &runtime.args.work_dir, session_source),
+      )
+      .await;
 
     // Create ChatView directly
     let chat_view = ChatView::new(&data, session_handle, runtime.clone());

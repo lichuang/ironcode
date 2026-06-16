@@ -3,6 +3,7 @@ mod cli;
 mod config;
 mod error;
 mod history;
+mod hooks;
 mod llm;
 mod notification;
 mod session;
@@ -27,7 +28,10 @@ use log::{info, warn};
 use cli::{App, Args, runtime::Runtime};
 use config::Config;
 use config::loader::{data_dir, load_config_from_dir};
+use hooks::{HookEventType, events as hook_events};
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::time::timeout;
 use tui::{Tui, TuiEvent, init_terminal, restore_terminal};
 
 // Re-export error types for convenience
@@ -149,13 +153,29 @@ async fn main() -> Result<()> {
   let runtime = Arc::new(Runtime::new(&data_dir, Arc::new(config))?);
 
   // Create app state
-  let mut app = App::new(&data_dir, &args, runtime)?;
+  let mut app = App::new(&data_dir, &args, runtime).await?;
 
   // Give the view a frame requester for animations
   app.set_frame_requester(tui.frame_requester());
 
   // Run the main event loop
   let result = run_app(&mut tui, &mut app).await;
+
+  // Trigger SessionEnd hook (best-effort, 5s timeout).
+  let session_id = app
+    .chat_session
+    .as_ref()
+    .map(|s| s.handle.id.clone())
+    .unwrap_or_default();
+  let _ = timeout(
+    Duration::from_secs(5),
+    app.runtime.hook_engine().trigger(
+      HookEventType::SessionEnd,
+      "exit",
+      hook_events::session_end(&session_id, &app.runtime.args.work_dir, "exit"),
+    ),
+  )
+  .await;
 
   // Cleanup: kill any active background tasks
   app.cleanup_background_tasks();

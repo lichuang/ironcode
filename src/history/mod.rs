@@ -519,6 +519,7 @@ mod tests {
       mcp: crate::config::McpConfig::default(),
       background: crate::config::BackgroundConfig::default(),
       notifications: crate::config::NotificationConfig::default(),
+      hooks: Vec::new(),
     }
   }
 
