@@ -518,6 +518,7 @@ mod tests {
       auto_approve: Vec::new(),
       mcp: crate::config::McpConfig::default(),
       background: crate::config::BackgroundConfig::default(),
+      notifications: crate::config::NotificationConfig::default(),
     }
   }
 

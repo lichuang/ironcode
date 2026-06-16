@@ -4,6 +4,7 @@ mod config;
 mod error;
 mod history;
 mod llm;
+mod notification;
 mod session;
 mod tools;
 mod tui;

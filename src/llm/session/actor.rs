@@ -21,6 +21,9 @@ use crate::error::Result;
 use crate::llm::provider::LLMProvider;
 use crate::llm::providers::KimiProvider;
 use crate::llm::types::{ChatConfig, Message, ToolCall};
+use crate::notification::llm::{
+  build_notification_message, extract_notification_ids, is_notification_message,
+};
 use crate::session::{SessionMeta, SessionMode, SessionStore};
 use crate::utils::plan::{plan_file_path, read_plan};
 use crate::utils::token_counter::estimate_llm_messages_tokens;
@@ -69,7 +72,26 @@ use super::persistence::SessionPersistence;
 use super::stream::{StreamManager, format_user_friendly_error};
 use super::tool_exec::ToolExecutor;
 use super::{Question, QuestionOption, SessionCommand, SessionEvent, SessionHandle};
+use crate::notification::NotificationManager;
 use crate::wire::{WireMessage, WirePublisher};
+
+/// Acknowledge any notification IDs embedded in the given messages.
+///
+/// Used on session resume to avoid redelivering notifications that are already
+/// part of the persisted context. Mirrors kimi-cli's `extract_notification_ids`.
+fn ack_notification_ids_in_context(manager: &NotificationManager, messages: &[Message]) {
+  for msg in messages {
+    if msg.role != crate::llm::types::Role::User {
+      continue;
+    }
+    if !is_notification_message(&msg.content) {
+      continue;
+    }
+    for id in extract_notification_ids(&msg.content) {
+      manager.ack("llm", &id);
+    }
+  }
+}
 
 /// Internal state of the session actor
 struct SessionActor {
@@ -133,6 +155,12 @@ impl SessionActor {
     let max_context_size = provider.max_context_size();
     let yolo = meta.yolo;
     let plan_mode = meta.plan_mode;
+
+    // Ack any notification IDs that are already present in the resumed
+    // context so they are not redelivered to the LLM.
+    // This mirrors kimi-cli's extract_notification_ids behaviour.
+    ack_notification_ids_in_context(&runtime.notification_manager(), &messages);
+
     Self {
       id,
       context: Context::from_messages(messages),
@@ -485,7 +513,21 @@ impl SessionActor {
   /// followed by tenacity-style exponential backoff.
   /// Start streaming the current context messages via the StreamManager.
   async fn start_stream(&mut self) {
+    // Deliver pending LLM notifications: claim, append to context as user
+    // messages, then ack. This mirrors kimi-cli's behaviour where
+    // notifications are user-role messages interleaved with history.
+    let manager = self.runtime.background_manager();
+    self
+      .runtime
+      .notification_manager()
+      .deliver_pending("llm", 8, |view| {
+        let text = build_notification_message(view, Some(&*manager));
+        self.context.messages_mut().push(Message::user(text));
+        Ok::<(), std::convert::Infallible>(())
+      });
+
     let messages = self.context.messages().to_vec();
+
     match self.stream_manager.start(messages).await {
       Ok(rx) => {
         self.stream_rx = Some(rx);

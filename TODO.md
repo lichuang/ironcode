@@ -113,8 +113,8 @@
 - [x] Task output storage and retrieval
 - [x] TaskStop approval flow (kill should request user approval like kimi-cli)
 - [x] `/task` slash command infrastructure (TUI slash commands for background tasks)
-- [ ] Worker recovery on app restart (scan task dirs, reconnect to running workers)
-- [ ] Notification store and LLM context delivery
+- [x] Worker recovery on app restart (scan task dirs, reconnect to running workers)
+- [x] Notification store and LLM context delivery
   - Design `Notification` data model (category, severity, title, body, payload)
   - Notification persistence (JSONL or SQLite) per session
   - Polling mechanism in `SessionActor` or `App` to detect new terminal tasks
@@ -178,6 +178,8 @@
   - Child produces final `Message::assistant` → parent injects as `Message::system` or tool result
 - [ ] Concurrent task execution limits
   - Configurable `max_concurrent_subagents` (default 3)
+- [ ] Background agent task lifecycle integration
+  - Required by: Background Task & Notification System — agent task recovery on restart
 
 #### 10. Checkpoint / D-Mail System
 - [ ] Context snapshot saving mechanism
@@ -300,10 +302,10 @@
 
 | Metric | Count |
 |--------|-------|
-| **Total Tasks** | 105 |
-| **Completed** | 38 |
-| **Remaining** | 67 |
-| **Progress** | 36.2% |
+| **Total Tasks** | 106 |
+| **Completed** | 40 |
+| **Remaining** | 66 |
+| **Progress** | 37.7% |
 
 > **Note:** This summary must be updated whenever tasks are completed. After each batch of completions, recalculate the counts and percentage to keep the document accurate.
 

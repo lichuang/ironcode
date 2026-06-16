@@ -176,6 +176,26 @@ impl App {
 
     // Bind background task manager to this session
     runtime.background_manager.bind_session(&session_handle.id);
+    runtime
+      .notification_manager
+      .bind_session(&session_handle.id);
+
+    // Recover stale background tasks from previous sessions
+    let recovered = runtime.background_manager.recover();
+    if recovered > 0 {
+      data
+        .chat_history
+        .push(crate::view::chat::messages::ChatMessage::System {
+          content: format!(
+            "Recovered {} background task(s) from a previous session.",
+            recovered
+          ),
+          level: crate::view::chat::messages::SystemMessageLevel::Info,
+        });
+    }
+
+    // Publish notifications for terminal tasks discovered during recovery
+    runtime.publish_task_notifications();
 
     // Create ChatView directly
     let chat_view = ChatView::new(&data, session_handle, runtime.clone());
@@ -264,6 +284,42 @@ impl App {
         }
         Err(_) => break,
       }
+    }
+
+    // Deliver pending shell notifications as system messages.
+    let shell_delivered = self
+      .runtime
+      .notification_manager()
+      .deliver_pending("shell", 8, |view| {
+        self
+          .data
+          .chat_history
+          .push(crate::view::chat::messages::ChatMessage::System {
+            content: format!("{}\n\n{}", view.event.title, view.event.body),
+            level: match view.event.severity {
+              crate::notification::NotificationSeverity::Error => {
+                crate::view::chat::messages::SystemMessageLevel::Error
+              }
+              crate::notification::NotificationSeverity::Warning => {
+                crate::view::chat::messages::SystemMessageLevel::Warning
+              }
+              _ => crate::view::chat::messages::SystemMessageLevel::Info,
+            },
+          });
+        Ok::<(), std::convert::Infallible>(())
+      });
+    if !shell_delivered.is_empty() {
+      updated = true;
+    }
+
+    // Wire sink notifications are destined for ACP/web clients; in the TUI
+    // mode we simply claim and ack them so they do not remain pending forever.
+    let wire_delivered = self
+      .runtime
+      .notification_manager()
+      .deliver_pending("wire", 8, |_view| Ok::<(), std::convert::Infallible>(()));
+    if !wire_delivered.is_empty() {
+      updated = true;
     }
 
     if updated && let Some(ref fr) = self.frame_requester {

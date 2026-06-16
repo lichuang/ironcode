@@ -287,28 +287,40 @@ impl BackgroundTaskManager {
   // -------------------------------------------------------------------------
 
   /// Scan for stale tasks and mark them lost.
-  #[allow(dead_code)]
-  pub fn recover(&self) {
+  ///
+  /// Called on app restart to reconnect with the on-disk task state.
+  /// Returns the number of tasks that were updated.
+  pub fn recover(&self) -> usize {
     let stale_after_s = self.config.worker_stale_after_ms / 1000;
     let Some(store) = self.store() else {
-      return;
+      return 0;
     };
     let now = now_secs();
+    let mut updated = 0;
     for view in store.list_views() {
       if is_terminal_status(view.runtime.status) {
         continue;
       }
 
-      let last_progress = view
+      // Fast-path: if the worker or child PID is known and dead, mark lost immediately.
+      let pid_dead = view
         .runtime
-        .heartbeat_at
-        .or(view.runtime.started_at)
-        .or(Some(view.runtime.updated_at))
-        .or(Some(view.spec.created_at))
-        .unwrap_or(now);
+        .worker_pid
+        .or(view.runtime.child_pid)
+        .is_some_and(|pid| !is_process_alive(pid));
 
-      if now - last_progress <= stale_after_s as f64 {
-        continue;
+      if !pid_dead {
+        let last_progress = view
+          .runtime
+          .heartbeat_at
+          .or(view.runtime.started_at)
+          .or(Some(view.runtime.updated_at))
+          .or(Some(view.spec.created_at))
+          .unwrap_or(now);
+
+        if now - last_progress <= stale_after_s as f64 {
+          continue;
+        }
       }
 
       // Re-read runtime to narrow race window
@@ -316,15 +328,18 @@ impl BackgroundTaskManager {
       if is_terminal_status(fresh.status) {
         continue;
       }
-      let fresh_progress = fresh
-        .heartbeat_at
-        .or(fresh.started_at)
-        .or(Some(fresh.updated_at))
-        .or(Some(view.spec.created_at))
-        .unwrap_or(now);
 
-      if now - fresh_progress <= stale_after_s as f64 {
-        continue;
+      if !pid_dead {
+        let fresh_progress = fresh
+          .heartbeat_at
+          .or(fresh.started_at)
+          .or(Some(fresh.updated_at))
+          .or(Some(view.spec.created_at))
+          .unwrap_or(now);
+
+        if now - fresh_progress <= stale_after_s as f64 {
+          continue;
+        }
       }
 
       let mut runtime = fresh;
@@ -340,7 +355,9 @@ impl BackgroundTaskManager {
           .or_else(|| Some("Killed during recovery".to_string()));
       } else {
         runtime.status = TaskStatus::Lost;
-        runtime.failure_reason = if runtime.heartbeat_at.is_none() {
+        runtime.failure_reason = if pid_dead {
+          Some("Background worker process exited".to_string())
+        } else if runtime.heartbeat_at.is_none() {
           Some("Background worker never heartbeat after startup".to_string())
         } else {
           Some("Background worker heartbeat expired".to_string())
@@ -351,8 +368,110 @@ impl BackgroundTaskManager {
         "Marked background task {} as {} during recovery",
         view.spec.id, runtime.status
       );
+      updated += 1;
     }
+    updated
   }
+
+  /// Reconcile on-disk task state with the UI.
+  ///
+  /// Runs `recover()`, publishes terminal-task notifications, and returns
+  /// the terminal tasks.
+  pub fn reconcile(
+    &self,
+    notification_manager: &crate::notification::NotificationManager,
+  ) -> Vec<TaskView> {
+    let _updated = self.recover();
+    let terminal: Vec<TaskView> = self
+      .list_tasks(false, usize::MAX)
+      .unwrap_or_default()
+      .into_iter()
+      .filter(|v| is_terminal_status(v.runtime.status))
+      .collect();
+    for view in &terminal {
+      publish_terminal_notification(notification_manager, view);
+    }
+    terminal
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Notification helpers
+// ---------------------------------------------------------------------------
+
+fn publish_terminal_notification(
+  manager: &crate::notification::NotificationManager,
+  view: &TaskView,
+) {
+  use crate::notification::models::{NotificationEvent, NotificationSeverity};
+
+  let status = view.runtime.status;
+  let status_str = status.to_string();
+  let terminal_reason: &str = if view.runtime.timed_out {
+    "timed_out"
+  } else {
+    status_str.as_str()
+  };
+
+  let (severity, title) = match terminal_reason {
+    "completed" => (
+      NotificationSeverity::Success,
+      format!("Background task completed: {}", view.spec.description),
+    ),
+    "timed_out" => (
+      NotificationSeverity::Error,
+      format!("Background task timed out: {}", view.spec.description),
+    ),
+    "failed" => (
+      NotificationSeverity::Error,
+      format!("Background task failed: {}", view.spec.description),
+    ),
+    "killed" => (
+      NotificationSeverity::Warning,
+      format!("Background task stopped: {}", view.spec.description),
+    ),
+    "lost" => (
+      NotificationSeverity::Warning,
+      format!("Background task lost: {}", view.spec.description),
+    ),
+    _ => return,
+  };
+
+  let mut body_lines = vec![
+    format!("Task ID: {}", view.spec.id),
+    format!("Status: {}", status),
+    format!("Description: {}", view.spec.description),
+  ];
+  if terminal_reason != status.to_string() {
+    body_lines.push(format!("Terminal reason: {}", terminal_reason));
+  }
+  if let Some(code) = view.runtime.exit_code {
+    body_lines.push(format!("Exit code: {}", code));
+  }
+  if let Some(ref reason) = view.runtime.failure_reason {
+    body_lines.push(format!("Failure reason: {}", reason));
+  }
+
+  let event = NotificationEvent {
+    version: 1,
+    id: manager.new_id(),
+    category: "task".to_string(),
+    event_type: format!("task.{}", terminal_reason),
+    source_kind: "background_task".to_string(),
+    source_id: view.spec.id.clone(),
+    title,
+    body: body_lines.join("\n"),
+    severity,
+    created_at: now_secs(),
+    payload: serde_json::to_value(view).unwrap_or_default(),
+    targets: crate::notification::models::default_notification_targets(),
+    dedupe_key: Some(format!(
+      "background_task:{}:{}",
+      view.spec.id, terminal_reason
+    )),
+  };
+
+  manager.publish(event);
 }
 
 // ---------------------------------------------------------------------------
@@ -364,6 +483,20 @@ fn now_secs() -> f64 {
     .duration_since(UNIX_EPOCH)
     .unwrap_or_default()
     .as_secs_f64()
+}
+
+/// Check whether a process with the given PID is still alive.
+#[cfg(unix)]
+fn is_process_alive(pid: u32) -> bool {
+  unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
+#[cfg(not(unix))]
+fn is_process_alive(pid: u32) -> bool {
+  // On Windows we fall back to heartbeat-based stale detection.
+  // A full implementation would use OpenProcess + GetExitCodeProcess.
+  let _ = pid;
+  true
 }
 
 #[cfg(unix)]
@@ -384,4 +517,120 @@ fn best_effort_kill(pid: u32) {
   // On Windows we rely on the control file + worker's own control loop.
   // Direct cross-process signaling is more complex on Windows.
   let _ = pid;
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::background::models::{TaskRuntime, TaskSpec, TaskStatus};
+  use std::time::{SystemTime, UNIX_EPOCH};
+
+  fn now_secs() -> f64 {
+    SystemTime::now()
+      .duration_since(UNIX_EPOCH)
+      .unwrap_or_default()
+      .as_secs_f64()
+  }
+
+  #[test]
+  fn test_recover_marks_stale_task_as_lost() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = BackgroundConfig {
+      max_running_tasks: 10,
+      worker_heartbeat_interval_ms: 5000,
+      wait_poll_interval_ms: 1000,
+      kill_grace_period_ms: 5000,
+      worker_stale_after_ms: 1000, // 1s stale threshold for test
+      read_max_bytes: 1024,
+      notification_tail_lines: 20,
+    };
+    let manager = BackgroundTaskManager::new(tmp.path().to_path_buf(), config);
+    manager.bind_session("test-session");
+
+    // Create a task directly via the store
+    let store = manager.store().unwrap();
+    let spec = TaskSpec {
+      version: 1,
+      id: "bash-test-001".to_string(),
+      kind: "bash".to_string(),
+      session_id: "test-session".to_string(),
+      description: "Test task".to_string(),
+      tool_call_id: "call-1".to_string(),
+      command: "sleep 10".to_string(),
+      shell_name: "bash".to_string(),
+      shell_path: "/bin/bash".to_string(),
+      cwd: "/".to_string(),
+      timeout_s: Some(60),
+      created_at: now_secs() - 10.0,
+    };
+    store.create_task(&spec);
+
+    // Set runtime to Running with an old heartbeat
+    let mut runtime = TaskRuntime::default();
+    runtime.status = TaskStatus::Running;
+    runtime.worker_pid = Some(999999); // Non-existent PID
+    runtime.heartbeat_at = Some(now_secs() - 5.0);
+    runtime.updated_at = now_secs() - 5.0;
+    store.write_runtime(&spec.id, &runtime);
+
+    // Recover should mark the stale task as lost
+    let updated = manager.recover();
+    assert_eq!(updated, 1);
+
+    let view = store.merged_view(&spec.id).unwrap();
+    assert_eq!(view.runtime.status, TaskStatus::Lost);
+    assert!(view.runtime.finished_at.is_some());
+    assert!(
+      view
+        .runtime
+        .failure_reason
+        .as_ref()
+        .unwrap()
+        .contains("worker")
+    );
+  }
+
+  #[test]
+  fn test_recover_skips_terminal_tasks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = BackgroundConfig {
+      max_running_tasks: 10,
+      worker_heartbeat_interval_ms: 5000,
+      wait_poll_interval_ms: 1000,
+      kill_grace_period_ms: 5000,
+      worker_stale_after_ms: 1000,
+      read_max_bytes: 1024,
+      notification_tail_lines: 20,
+    };
+    let manager = BackgroundTaskManager::new(tmp.path().to_path_buf(), config);
+    manager.bind_session("test-session");
+
+    let store = manager.store().unwrap();
+    let spec = TaskSpec {
+      version: 1,
+      id: "bash-test-002".to_string(),
+      kind: "bash".to_string(),
+      session_id: "test-session".to_string(),
+      description: "Completed task".to_string(),
+      tool_call_id: "call-2".to_string(),
+      command: "echo done".to_string(),
+      shell_name: "bash".to_string(),
+      shell_path: "/bin/bash".to_string(),
+      cwd: "/".to_string(),
+      timeout_s: Some(60),
+      created_at: now_secs() - 10.0,
+    };
+    store.create_task(&spec);
+
+    let mut runtime = TaskRuntime::default();
+    runtime.status = TaskStatus::Completed;
+    runtime.finished_at = Some(now_secs() - 5.0);
+    store.write_runtime(&spec.id, &runtime);
+
+    let updated = manager.recover();
+    assert_eq!(updated, 0);
+
+    let view = store.merged_view(&spec.id).unwrap();
+    assert_eq!(view.runtime.status, TaskStatus::Completed);
+  }
 }

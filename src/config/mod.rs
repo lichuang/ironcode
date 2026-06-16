@@ -89,6 +89,10 @@ pub struct Config {
   /// Background task configuration
   #[serde(default)]
   pub background: BackgroundConfig,
+
+  /// Notification delivery configuration
+  #[serde(default)]
+  pub notifications: NotificationConfig,
 }
 
 impl Default for Config {
@@ -107,6 +111,7 @@ impl Default for Config {
       auto_approve: Vec::new(),
       mcp: McpConfig::default(),
       background: BackgroundConfig::default(),
+      notifications: NotificationConfig::default(),
     }
   }
 }
@@ -453,6 +458,34 @@ impl Default for BackgroundConfig {
       read_max_bytes: DEFAULT_READ_MAX_BYTES,
       notification_tail_lines: DEFAULT_NOTIFICATION_TAIL_LINES,
       worker_stale_after_ms: DEFAULT_WORKER_STALE_AFTER_MS,
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Notification configuration
+// ---------------------------------------------------------------------------
+
+/// Default stale threshold before a claimed notification is reset to pending.
+const DEFAULT_NOTIFICATION_CLAIM_STALE_AFTER_MS: u64 = 15_000;
+
+/// Notification delivery configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotificationConfig {
+  /// Time in milliseconds after which a claimed but un-acked notification
+  /// is reset to pending so it can be retried.
+  #[serde(default = "default_notification_claim_stale_after_ms")]
+  pub claim_stale_after_ms: u64,
+}
+
+fn default_notification_claim_stale_after_ms() -> u64 {
+  DEFAULT_NOTIFICATION_CLAIM_STALE_AFTER_MS
+}
+
+impl Default for NotificationConfig {
+  fn default() -> Self {
+    Self {
+      claim_stale_after_ms: DEFAULT_NOTIFICATION_CLAIM_STALE_AFTER_MS,
     }
   }
 }

@@ -177,7 +177,7 @@ pub struct TaskConsumerState {
 // ---------------------------------------------------------------------------
 
 /// A merged view of all task state.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct TaskView {
   pub spec: TaskSpec,
   pub runtime: TaskRuntime,

@@ -13,6 +13,7 @@ use crate::config::{
   ProviderConfig, RetryConfig,
 };
 use crate::error::Result;
+use crate::notification::NotificationManager;
 use crate::tools::handlers::{
   AskUserQuestionHandler, EnterPlanModeHandler, ExitPlanModeHandler, FetchURLHandler, GlobHandler,
   GrepHandler, ReadFileHandler, ReplaceFileHandler, SearchWebHandler, SetTodoListHandler,
@@ -198,6 +199,8 @@ pub(crate) struct Runtime {
   pub executable_registry: Arc<ExecutableToolRegistry>,
   /// Background task manager (session is bound after session creation)
   pub background_manager: Arc<BackgroundTaskManager>,
+  /// Notification manager (session is bound after session creation)
+  pub notification_manager: Arc<NotificationManager>,
 }
 
 impl Runtime {
@@ -213,6 +216,10 @@ impl Runtime {
     let background_manager = Arc::new(BackgroundTaskManager::new(
       data_dir.to_path_buf(),
       config.background.clone(),
+    ));
+    let notification_manager = Arc::new(NotificationManager::new(
+      data_dir.to_path_buf(),
+      config.notifications.clone(),
     ));
 
     // Load executable tool registry first (handlers must be registered before checking)
@@ -231,6 +238,7 @@ impl Runtime {
       tool_registry,
       executable_registry,
       background_manager,
+      notification_manager,
     })
   }
 
@@ -253,6 +261,10 @@ impl Runtime {
       background_manager: Arc::new(BackgroundTaskManager::new(
         std::path::PathBuf::from("."),
         crate::config::BackgroundConfig::default(),
+      )),
+      notification_manager: Arc::new(NotificationManager::new(
+        std::path::PathBuf::from("."),
+        crate::config::NotificationConfig::default(),
       )),
     }
   }
@@ -437,6 +449,18 @@ impl Runtime {
   /// Get the background task manager.
   pub fn background_manager(&self) -> Arc<BackgroundTaskManager> {
     self.background_manager.clone()
+  }
+
+  /// Get the notification manager.
+  pub fn notification_manager(&self) -> Arc<NotificationManager> {
+    self.notification_manager.clone()
+  }
+
+  /// Publish notifications for all terminal background tasks.
+  pub fn publish_task_notifications(&self) {
+    self
+      .background_manager
+      .reconcile(&self.notification_manager);
   }
 
   /// Get a provider by name.

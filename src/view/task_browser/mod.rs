@@ -65,6 +65,8 @@ impl TaskBrowserView {
   }
 
   fn fetch_tasks(manager: &BackgroundTaskManager, active_only: bool) -> Vec<TaskView> {
+    // Reconcile on-disk state before listing (marks stale tasks as lost)
+    manager.recover();
     match manager.list_tasks(active_only, 100) {
       Ok(mut views) => {
         // Sort: non-terminal first (by creation time), then terminal (by finish time, newest first)
@@ -98,6 +100,8 @@ impl TaskBrowserView {
   }
 
   fn refresh(&mut self) {
+    // Reconcile terminal tasks and publish notifications before fetching
+    self.manager.reconcile(&self.runtime.notification_manager());
     self.tasks = Self::fetch_tasks(&self.manager, self.active_only);
     if self.selected_idx >= self.tasks.len() && !self.tasks.is_empty() {
       self.selected_idx = self.tasks.len() - 1;
