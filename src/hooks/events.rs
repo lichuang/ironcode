@@ -3,9 +3,17 @@
 //! These mirror the payloads produced by `kimi_cli.hooks.events` so that
 //! user-defined hooks see the same JSON shape regardless of implementation
 //! language.
+//!
+//! Every payload starts with the `base` fields:
+//! - `hook_event_name`: the PascalCase event name
+//! - `session_id`: the current session id
+//! - `cwd`: the current working directory
+//!
+//! Additional event-specific fields are merged on top.
 
 use serde_json::{Value, json};
 
+/// Build the common base object shared by all hook payloads.
 fn base(event: &str, session_id: &str, cwd: &str) -> Value {
   json!({
     "hook_event_name": event,

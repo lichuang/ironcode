@@ -1,5 +1,7 @@
 //! WireMessage definitions — the protocol spoken on the wire bus.
 
+use serde_json::Value;
+
 use crate::llm::Question;
 
 /// Messages emitted by the session actor and consumed by the UI layer.
@@ -100,6 +102,26 @@ pub enum WireMessage {
     content: String,
     /// The path to the plan file for reference.
     file_path: String,
+  },
+  /// A client-side hook request is waiting for a response.
+  HookRequest {
+    /// Request identifier.
+    id: String,
+    /// Event that triggered the hook.
+    event: String,
+    /// Matcher value (target) the hook was triggered against.
+    target: String,
+    /// Input payload sent to the client.
+    input_data: Value,
+  },
+  /// A response to a client-side hook request.
+  HookResponse {
+    /// Request identifier matching the `HookRequest`.
+    id: String,
+    /// Client decision: `"allow"` or `"block"`.
+    action: String,
+    /// Optional reason when blocked.
+    reason: String,
   },
   /// An error occurred.
   Error {

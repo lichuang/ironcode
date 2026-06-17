@@ -138,18 +138,23 @@
   - SessionEnd triggered on app exit with 5s timeout
 
 #### 17b. Hook Engine — remaining kimi-cli parity gaps
-- [ ] Wire / client-side hook subscriptions
+- [x] Wire / client-side hook subscriptions (engine side)
   - `WireHookSubscription` model and `HookEngine::add_wire_subscriptions`
   - Dispatch wire hooks to client via `WireHookHandle` and await response
-- [ ] Hook telemetry and lifecycle callbacks
-  - `on_triggered` / `on_resolved` callbacks
+- [x] Wire server integration for client-side hooks
+  - `WireMessage::HookRequest` / `WireMessage::HookResponse` protocol messages
+  - `WireBusHookDispatcher` routes requests over the wire bus and resolves handles from responses
+  - UI auto-responds `allow` to hook requests (placeholder for future user-prompt integration)
+- [x] Hook telemetry and lifecycle callbacks
+  - `on_triggered` / `on_resolved` callbacks on `HookEngine`
   - Deduplicate server-side hooks by `command`
   - `HookEngine::details()` for UI display
-- [ ] Remaining event trigger points
-  - `StopFailure` when graceful stop fails
-  - `PreCompact` / `PostCompact` around context compaction
+- [x] Remaining event trigger points
+  - `StopFailure` on non-retryable stream errors / interruptions
+  - `PreCompact` (awaited) / `PostCompact` (fire-and-forget) around context compaction
   - `Notification` when notifications are delivered to sinks
-  - `SubagentStart` / `SubagentStop` once subagent system exists
+- [ ] `SubagentStart` / `SubagentStop` hooks
+  - Blocked on subagent/multi-agent system (Phase 3)
 
 #### 18. Plan Mode
 - [x] `EnterPlanMode` / `ExitPlanMode` tools
@@ -317,10 +322,10 @@
 
 | Metric | Count |
 |--------|-------|
-| **Total Tasks** | 109 |
-| **Completed** | 44 |
-| **Remaining** | 65 |
-| **Progress** | 40.4% |
+| **Total Tasks** | 111 |
+| **Completed** | 48 |
+| **Remaining** | 63 |
+| **Progress** | 43.2% |
 
 > **Note:** This summary must be updated whenever tasks are completed. After each batch of completions, recalculate the counts and percentage to keep the document accurate.
 

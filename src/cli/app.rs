@@ -8,7 +8,8 @@ use ratatui::Frame;
 use crate::cli::Args;
 use crate::cli::runtime::Runtime;
 use crate::error::Result;
-use crate::hooks::{HookEventType, events as hook_events};
+use crate::hooks::wire::WireBusHookDispatcher;
+use crate::hooks::{HookEventType, events as hook_events, wire::WireHookResponse};
 use crate::llm::{ChatSession, Question};
 use crate::session::{SessionMode, SessionStore};
 use crate::tui::FrameRequester;
@@ -41,6 +42,10 @@ pub struct AppData {
   pub(crate) plan_mode: bool,
   /// Pending pager output to display (set by TaskBrowserView, consumed by run_app)
   pub(crate) pending_pager_output: Option<String>,
+  /// Channel used to respond to client-side (wire) hook requests.
+  /// When a `WireMessage::HookRequest` is received, the UI sends an allow/block
+  /// response via this sender.
+  pub(crate) hook_response_tx: Option<tokio::sync::mpsc::UnboundedSender<WireHookResponse>>,
 }
 
 /// Compaction warning information
@@ -99,6 +104,7 @@ impl AppData {
       pending_questions: None,
       plan_mode: false,
       pending_pager_output: None,
+      hook_response_tx: None,
     }
   }
 }
@@ -163,6 +169,15 @@ impl App {
     let wire_bus = WireBus::new(WireBus::DEFAULT_CAPACITY);
     let wire_publisher = wire_bus.publisher();
     let wire_subscriber = wire_bus.subscriber();
+
+    // Wire up the client-side hook dispatcher. The UI will auto-respond allow
+    // to hook requests for now; a future enhancement can prompt the user.
+    let (wire_hook_dispatcher, hook_response_tx) =
+      WireBusHookDispatcher::new(wire_publisher.clone());
+    runtime
+      .hook_engine()
+      .set_dispatcher(Arc::new(wire_hook_dispatcher));
+    data.hook_response_tx = Some(hook_response_tx);
 
     let (chat_session, messages) = ChatSession::create_or_resume(
       runtime.clone(),
@@ -410,6 +425,19 @@ impl App {
           content: format!("## Plan\n\n{}\n\n_Plan file: {}_", content, file_path),
           level: SystemMessageLevel::Info,
         });
+      }
+      WireMessage::HookRequest { id, .. } => {
+        // Auto-respond allow for now. A future UI can prompt the user.
+        if let Some(ref tx) = self.data.hook_response_tx {
+          let _ = tx.send(WireHookResponse {
+            id,
+            action: "allow".to_string(),
+            reason: String::new(),
+          });
+        }
+      }
+      WireMessage::HookResponse { .. } => {
+        // Responses are consumed by the wire hook dispatcher task.
       }
     }
   }

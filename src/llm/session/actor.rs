@@ -238,6 +238,39 @@ impl SessionActor {
     info!("SessionActor {} stopped", self.id);
   }
 
+  /// Trigger `Notification` hooks for notifications delivered to a sink.
+  fn run_notification_hooks(&self, sink: &str, views: &[crate::notification::NotificationView]) {
+    for view in views {
+      let _handle = self.runtime.hook_engine().trigger_fire_and_forget(
+        HookEventType::Notification,
+        view.event.event_type.clone(),
+        hook_events::notification(
+          &self.id,
+          &self.runtime.args.work_dir,
+          sink,
+          &view.event.event_type,
+          &view.event.title,
+          &view.event.body,
+          &format!("{:?}", view.event.severity).to_lowercase(),
+        ),
+      );
+    }
+  }
+
+  /// Trigger `StopFailure` hook when graceful turn execution fails.
+  fn run_stop_failure_hook(&self, error_type: &str, error_message: &str) {
+    let _handle = self.runtime.hook_engine().trigger_fire_and_forget(
+      HookEventType::StopFailure,
+      error_type.to_string(),
+      hook_events::stop_failure(
+        &self.id,
+        &self.runtime.args.work_dir,
+        error_type,
+        error_message,
+      ),
+    );
+  }
+
   /// Trigger `UserPromptSubmit` hooks.
   ///
   /// Returns `Some(reason)` if any hook blocked the prompt, or `None` if the
@@ -460,7 +493,7 @@ impl SessionActor {
         threshold: trigger.threshold,
         max_context_size: trigger.max_context_size,
       });
-      self.execute_compaction().await;
+      self.execute_compaction(&trigger).await;
     }
   }
 
@@ -468,7 +501,27 @@ impl SessionActor {
   ///
   /// Uses the configured compaction strategy to compress message history.
   /// Updates the session store and notifies the UI of completion.
-  async fn execute_compaction(&mut self) {
+  /// Triggers `PreCompact` before and `PostCompact` after compaction.
+  async fn execute_compaction(
+    &mut self,
+    trigger: &crate::llm::session::compaction::CompactionTrigger,
+  ) {
+    let trigger_reason = "token_threshold";
+    let _ = self
+      .runtime
+      .hook_engine()
+      .trigger(
+        HookEventType::PreCompact,
+        trigger_reason,
+        hook_events::pre_compact(
+          &self.id,
+          &self.runtime.args.work_dir,
+          trigger_reason,
+          trigger.current_tokens,
+        ),
+      )
+      .await;
+
     if let Some(result) = self.compaction_service.execute(self.context.messages_mut()) {
       info!(
         "Session {}: Compaction completed - {} messages -> {} messages, ~{} tokens",
@@ -482,6 +535,17 @@ impl SessionActor {
         after: result.message_count_after,
         tokens: result.new_token_count,
       });
+
+      let _handle = self.runtime.hook_engine().trigger_fire_and_forget(
+        HookEventType::PostCompact,
+        trigger_reason.to_string(),
+        hook_events::post_compact(
+          &self.id,
+          &self.runtime.args.work_dir,
+          trigger_reason,
+          result.new_token_count,
+        ),
+      );
     }
   }
 
@@ -602,7 +666,7 @@ impl SessionActor {
     // messages, then ack. This mirrors kimi-cli's behaviour where
     // notifications are user-role messages interleaved with history.
     let manager = self.runtime.background_manager();
-    self
+    let delivered = self
       .runtime
       .notification_manager()
       .deliver_pending("llm", 8, |view| {
@@ -610,6 +674,7 @@ impl SessionActor {
         self.context.messages_mut().push(Message::user(text));
         Ok::<(), std::convert::Infallible>(())
       });
+    self.run_notification_hooks("llm", &delivered);
 
     let messages = self.context.messages().to_vec();
 
@@ -787,6 +852,7 @@ impl SessionActor {
             self.start_stream().await;
           }
         } else {
+          self.run_stop_failure_hook("StreamInterrupted", error);
           self.wire_publisher.send(WireMessage::Error {
             message: format_user_friendly_error(error),
           });
@@ -797,6 +863,7 @@ impl SessionActor {
       }
       SessionEvent::Error(err) => {
         error!("Session {}: Stream error: {}", self.id, err);
+        self.run_stop_failure_hook("StreamError", err);
         self.state = ActorState::Idle;
         self.stream_rx = None;
         self.current_response.clear();

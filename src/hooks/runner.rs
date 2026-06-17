@@ -4,6 +4,10 @@
 //! produce a structured decision on stdout. Exit code 2 means "block";
 //! exit 0 with JSON `{ "hookSpecificOutput": { "permissionDecision": "deny" } }`
 //! also blocks.
+//!
+//! This module is intentionally fail-open: any spawn error, timeout, or
+//! unexpected non-zero exit is treated as `Allow` so that a misbehaving
+//! hook cannot silently block all operations.
 
 use std::process::Stdio;
 use std::time::Duration;
@@ -23,6 +27,9 @@ pub enum HookDecision {
 }
 
 /// Result of executing a single hook.
+///
+/// Keeps both the final `decision` and the raw process output so callers
+/// can log or display diagnostic information.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct HookResult {
@@ -104,6 +111,7 @@ pub async fn run_hook(
   };
 
   // Feed stdin in a background task so wait_with_output can consume stdout/stderr.
+  // Closing stdin explicitly avoids deadlocks with commands that wait for EOF.
   if let Some(mut stdin) = child.stdin.take() {
     tokio::spawn(async move {
       let _ = stdin.write_all(&input_json).await;
@@ -132,6 +140,12 @@ pub async fn run_hook(
   }
 }
 
+/// Parse a completed hook process output into a `HookResult`.
+///
+/// Decision priority:
+/// 1. Exit code 2 -> `Block` with `stderr` as reason.
+/// 2. Exit code 0 + JSON stdout with `permissionDecision == "deny"` -> `Block`.
+/// 3. Everything else -> `Allow`.
 fn parse_hook_output(output: std::process::Output) -> HookResult {
   let stdout = String::from_utf8_lossy(&output.stdout).to_string();
   let stderr = String::from_utf8_lossy(&output.stderr).to_string();

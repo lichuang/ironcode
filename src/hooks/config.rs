@@ -2,6 +2,11 @@
 //!
 //! Hooks are user-defined shell commands registered in `config.toml` under
 //! `[[hooks]]` and triggered at specific lifecycle events.
+//!
+//! Each hook specifies the event it listens to, a shell command to run, an
+//! optional regex matcher to filter targets, and a timeout. The command
+//! receives a JSON payload on stdin and communicates its decision via exit
+//! code or structured stdout.
 
 use serde::{Deserialize, Serialize};
 
@@ -52,17 +57,29 @@ impl std::fmt::Display for HookEventType {
   }
 }
 
-/// A single hook definition loaded from config.
+/// A single server-side hook definition loaded from `config.toml`.
+///
+/// Server-side hooks are executed as local shell commands. The command
+/// receives the event payload on stdin and may block the operation by
+/// exiting with code 2 or by printing a structured `deny` decision.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HookDef {
   /// Which lifecycle event triggers this hook.
   pub event: HookEventType,
   /// Shell command to execute. Receives JSON on stdin.
   pub command: String,
-  /// Optional regex pattern to filter targets. Empty matches everything.
+  /// Optional regex pattern to filter targets.
+  ///
+  /// The value matched against depends on the event:
+  /// - `PreToolUse` / `PostToolUse`: tool name
+  /// - `UserPromptSubmit`: the prompt text
+  /// - `Notification`: the notification's `event_type`
+  /// - most others: empty string
+  ///
+  /// An empty pattern matches every target.
   #[serde(default)]
   pub matcher: String,
-  /// Timeout in seconds.
+  /// Timeout in seconds. Fail-open on timeout.
   #[serde(default = "default_hook_timeout")]
   pub timeout: u64,
 }
