@@ -138,6 +138,7 @@ fn merge_configs(base: Config, override_: Config) -> Config {
     background: override_.background,
     notifications: override_.notifications,
     hooks: override_.hooks,
+    git_context: override_.git_context,
   }
 }
 
@@ -497,6 +498,7 @@ supports_streaming = true
       background: crate::config::BackgroundConfig::default(),
       notifications: crate::config::NotificationConfig::default(),
       hooks: Vec::new(),
+      git_context: crate::git_context::GitContextConfig::default(),
     };
     let result = validate_config(&config);
     assert!(result.is_err());
@@ -727,5 +729,66 @@ auto_approve = ["navigate"]
     unsafe {
       env::remove_var("MCP_TEST_KEY");
     }
+  }
+
+  #[test]
+  fn test_parse_git_context_config() {
+    use crate::git_context::GitContextConfig;
+
+    let toml = r#"
+default_model = "openai/gpt-4o"
+
+[providers.openai]
+type = "openai-compatible"
+base_url = "https://api.openai.com/v1"
+
+[models."openai/gpt-4o"]
+provider = "openai"
+model = "gpt-4o"
+
+[git_context]
+enabled = false
+timeout_seconds = 3
+max_dirty_files = 10
+max_log_commits = 5
+max_branches = 8
+max_diff_stat_lines = 25
+"#;
+
+    let config: Config = from_str(toml).expect("Failed to parse TOML with git_context config");
+    assert_eq!(
+      config.git_context,
+      GitContextConfig {
+        enabled: false,
+        timeout_seconds: 3,
+        max_dirty_files: 10,
+        max_log_commits: 5,
+        max_branches: 8,
+        max_diff_stat_lines: 25,
+      }
+    );
+  }
+
+  #[test]
+  fn test_git_context_config_defaults() {
+    let toml = r#"
+default_model = "openai/gpt-4o"
+
+[providers.openai]
+type = "openai-compatible"
+base_url = "https://api.openai.com/v1"
+
+[models."openai/gpt-4o"]
+provider = "openai"
+model = "gpt-4o"
+"#;
+
+    let config: Config = from_str(toml).expect("Failed to parse TOML");
+    assert!(config.git_context.enabled);
+    assert_eq!(config.git_context.timeout_seconds, 5);
+    assert_eq!(config.git_context.max_dirty_files, 20);
+    assert_eq!(config.git_context.max_log_commits, 20);
+    assert_eq!(config.git_context.max_branches, 20);
+    assert_eq!(config.git_context.max_diff_stat_lines, 50);
   }
 }

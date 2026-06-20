@@ -123,6 +123,39 @@ max_tokens = 4096
 supports_streaming = true
 
 # =============================================================================
+# Git Context - Auto-inject repository state into the system prompt
+# =============================================================================
+
+# When enabled, IronCode detects the git repository containing the working
+# directory and appends a concise repository snapshot to the system prompt.
+# The snapshot is refreshed at session start and after any mutating tool call.
+
+[git_context]
+# Whether git context injection is enabled.
+# Default: true
+enabled = true
+
+# Per-command timeout when running git commands.
+# Default: 5 seconds
+timeout_seconds = 5
+
+# Maximum number of dirty files listed before truncating.
+# Default: 20
+max_dirty_files = 20
+
+# Maximum number of recent commits included in the snapshot.
+# Default: 20
+max_log_commits = 20
+
+# Maximum number of branches listed before truncating.
+# Default: 20
+max_branches = 20
+
+# Maximum number of lines for each diff stat block.
+# Default: 50
+max_diff_stat_lines = 50
+
+# =============================================================================
 # Compaction - Automatic context compression settings
 # =============================================================================
 
@@ -169,7 +202,7 @@ level = "info"        # Options: "trace", "debug", "info", "warn", "error"
 # Configuration is compatible with kimi-cli's MCP format.
 #
 # You can define servers inline in this TOML file, or reference an external
-# JSON config file (e.g., one shared with kimi-cli or Claude Desktop).
+# JSON config file (e.g. one shared with kimi-cli or Claude Desktop).
 
 [mcp]
 # Optional: load servers from an external JSON file (kimi-cli compatible format)

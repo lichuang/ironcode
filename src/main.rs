@@ -2,6 +2,7 @@ mod background;
 mod cli;
 mod config;
 mod error;
+mod git_context;
 mod history;
 mod hooks;
 mod llm;

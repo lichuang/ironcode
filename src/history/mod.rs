@@ -520,6 +520,7 @@ mod tests {
       background: crate::config::BackgroundConfig::default(),
       notifications: crate::config::NotificationConfig::default(),
       hooks: Vec::new(),
+      git_context: crate::git_context::GitContextConfig::default(),
     }
   }
 

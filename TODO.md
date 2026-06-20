@@ -36,7 +36,7 @@
 16. **Background Task & Notification System** - Async workers with heartbeat and LLM context delivery
 17. ~~**Hook Engine**~~ [x] COMPLETED - Extensible PreToolUse/PostToolUse/UserPromptSubmit/Stop hooks with config-defined shell commands
 18. **Plan Mode** - Structured planning with EnterPlanMode/ExitPlanMode tools
-19. **Git Context Integration** - Auto-inject git status/diff into system prompt
+19. **Git Context Integration** - `src/git_context.rs` collection utility implemented and reserved for future `explore` subagent use; intentionally not injected into main-agent system prompt to match kimi-cli
 20. **Think Tool** - Explicit reasoning tool for complex problem-solving
 21. ~~**Wire Protocol Foundation**~~ [x] COMPLETED - WireBus (broadcast) + 19 WireMessage types decouple LLM from UI
 22. **Plugin System** - Dynamic external tool loading
@@ -170,14 +170,20 @@
 - [x] Session-scoped plan file path injection into plan handlers
 
 #### 19. Git Context Integration
-- [ ] Auto-detect git repository (walk up from cwd to find `.git`)
-- [ ] Inject git status/diff summary into system prompt
-  - Limit diff length (e.g., max 200 lines) to avoid token bloat
-  - Refresh strategy: on session start + after file-modifying tool executions
-  - Format: markdown code block with `git status --short` + `git diff --cached --stat`
-- [ ] Git context for explore/codebase analysis
-  - `git log --oneline -n 20` for recent history
-  - `git branch -a` for branch awareness
+- [x] Collection utility implemented in `src/git_context.rs`
+  - Auto-detect git repository via `git rev-parse --is-inside-work-tree`
+  - Collect git status/diff/log/branches into markdown block
+  - Limit diff stat lines via `max_diff_stat_lines` config
+  - Format: markdown code block with `git status --short`, `git diff --stat`, `git diff --cached --stat`, `git log --oneline`, and `git branch -a`
+  - Remote URL sanitization for known public hosts only
+- [x] Config support in `Config.git_context` and `etc/config.toml.example`
+- [ ] Wire collection into `explore` subagent prompt construction
+  - **Blocked on subagent system** (Phase 3)
+  - Mirrors kimi-cli: `collect_git_context(work_dir)` prepended to explore subagent prompt
+- [ ] Remove `#![allow(dead_code)]` from `src/git_context.rs` once subagent integration is done
+- [ ] Main-agent system-prompt injection intentionally **not implemented**
+  - Removed to match kimi-cli behavior
+  - No refresh-after-mutating-tools loop
 
 ---
 
@@ -322,10 +328,10 @@
 
 | Metric | Count |
 |--------|-------|
-| **Total Tasks** | 111 |
-| **Completed** | 48 |
+| **Total Tasks** | 113 |
+| **Completed** | 50 |
 | **Remaining** | 63 |
-| **Progress** | 43.2% |
+| **Progress** | 44.2% |
 
 > **Note:** This summary must be updated whenever tasks are completed. After each batch of completions, recalculate the counts and percentage to keep the document accurate.
 

@@ -742,7 +742,7 @@ mod tests {
     let t = triggered.clone();
     let r = resolved.clone();
 
-    let mut engine = HookEngine::new(
+    let engine = HookEngine::new(
       vec![HookDef::new(HookEventType::PreToolUse, "exit 0")],
       None,
     );

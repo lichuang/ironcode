@@ -11,6 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use tokio::time::Duration;
 
+use crate::git_context::GitContextConfig;
 use crate::hooks::HookDef;
 
 /// Default value for history max_size (1MB).
@@ -99,6 +100,10 @@ pub struct Config {
   /// User-defined lifecycle hooks
   #[serde(default)]
   pub hooks: Vec<HookDef>,
+
+  /// Git repository context injection settings
+  #[serde(default)]
+  pub git_context: GitContextConfig,
 }
 
 impl Default for Config {
@@ -119,6 +124,7 @@ impl Default for Config {
       background: BackgroundConfig::default(),
       notifications: NotificationConfig::default(),
       hooks: Vec::new(),
+      git_context: GitContextConfig::default(),
     }
   }
 }
