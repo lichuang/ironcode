@@ -15,6 +15,7 @@ use tokio::sync::mpsc;
 
 use super::approval::{ApprovalDecision, ApprovalService};
 use super::compaction::CompactionService;
+use super::plan_injection::PlanModeInjectionState;
 use super::state::ActorState;
 use crate::cli::runtime::Runtime;
 use crate::error::Result;
@@ -26,7 +27,7 @@ use crate::notification::llm::{
   build_notification_message, extract_notification_ids, is_notification_message,
 };
 use crate::session::{SessionMeta, SessionMode, SessionStore};
-use crate::utils::plan::{plan_file_path, read_plan};
+use crate::utils::plan::{get_or_create_slug, plan_file_path, read_plan, seed_slug_cache};
 use crate::utils::token_counter::estimate_llm_messages_tokens;
 
 /// Maximum characters to display in user input log preview
@@ -139,6 +140,10 @@ struct SessionActor {
   max_steps_per_turn: usize,
   /// Whether plan mode is active (read-only tools only).
   plan_mode: bool,
+  /// Stable identifier for the current planning session.
+  plan_session_id: Option<String>,
+  /// Dynamic plan-mode reminder injection state.
+  plan_injection_state: PlanModeInjectionState,
   /// Guard to prevent recursive Stop hook re-triggering.
   stop_hook_active: bool,
 }
@@ -158,6 +163,12 @@ impl SessionActor {
     let max_context_size = provider.max_context_size();
     let yolo = meta.yolo;
     let plan_mode = meta.plan_mode;
+    let plan_session_id = meta.plan_session_id.clone();
+
+    // Pre-warm the slug cache so the persisted slug survives process restarts.
+    if let (Some(psid), Some(slug)) = (&plan_session_id, &meta.plan_slug) {
+      seed_slug_cache(psid, slug);
+    }
 
     // Ack any notification IDs that are already present in the resumed
     // context so they are not redelivered to the LLM.
@@ -198,6 +209,14 @@ impl SessionActor {
       agent_loop_state: AgentLoopState::Idle,
       max_steps_per_turn: DEFAULT_MAX_STEPS_PER_TURN,
       plan_mode,
+      plan_session_id,
+      plan_injection_state: {
+        let mut state = PlanModeInjectionState::default();
+        if plan_mode {
+          state.schedule_activation();
+        }
+        state
+      },
       stop_hook_active: false,
     }
   }
@@ -676,6 +695,19 @@ impl SessionActor {
       });
     self.run_notification_hooks("llm", &delivered);
 
+    // Inject plan-mode reminders while plan mode is active.
+    if let Some(reminder) = self.plan_injection_state.collect(
+      self.plan_mode,
+      self.get_plan_file_path().as_ref(),
+      self.context.messages(),
+    ) {
+      let wrapped = format!(
+        "<system-reminder>\n{}\n</system-reminder>",
+        reminder.content
+      );
+      self.context.messages_mut().push(Message::user(wrapped));
+    }
+
     let messages = self.context.messages().to_vec();
 
     match self.stream_manager.start(messages).await {
@@ -965,12 +997,16 @@ impl SessionActor {
         arguments: tool_call.arguments.clone(),
       });
 
-      // Plan mode: reject non-read-only tools immediately
-      if self.plan_mode && !self.is_tool_allowed_in_plan_mode(&tool_call.name) {
+      // Plan mode: reject non-read-only tools immediately, unless the tool
+      // is writing to the current plan file.
+      if self.plan_mode
+        && !self.is_tool_allowed_in_plan_mode(&tool_call.name)
+        && !self.is_plan_file_target(tool_call)
+      {
         let error_msg = format!(
           "Tool '{}' is not available in plan mode. \
            Only read-only tools (ReadFile, Glob, Grep, SearchWeb, FetchURL) \
-           are allowed while planning.",
+           and edits to the plan file are allowed while planning.",
           tool_call.name
         );
         self.wire_publisher.send(WireMessage::ToolCallEnd {
@@ -1013,11 +1049,11 @@ impl SessionActor {
             self.execute_tool_batch(std::mem::take(&mut batch)).await;
           }
           self.handle_plan_mode_transition(true).await;
-          let plan_path = plan_file_path(&self.id, None);
+          let plan_path = self.get_plan_file_path().unwrap_or_default();
           let output = format!(
             "Plan mode activated (auto-approved in non-interactive mode).\n\
              Plan file: {}\n\
-             Workflow: identify key questions about the codebase → \
+             Workflow: identify key questions about the codebase → 
              use Agent(subagent_type='explore') to investigate if needed → \
              design approach → \
              modify the plan file with WriteFile or StrReplaceFile \
@@ -1112,8 +1148,8 @@ impl SessionActor {
         };
 
         // Read the plan file
-        let plan_path = plan_file_path(&self.id, None);
-        let plan_content = read_plan(&self.id, None);
+        let plan_path = self.get_plan_file_path().unwrap_or_default();
+        let plan_content = self.read_current_plan();
 
         if plan_content.is_none() {
           let error_msg = format!(
@@ -1296,7 +1332,15 @@ impl SessionActor {
       }
 
       let diff_preview = self.tool_executor.preview(tool_call).await;
-      match self.approval_service.decide(tool_call, diff_preview) {
+
+      // Plan file writes are auto-approved; everything else goes through policy.
+      let decision = if self.is_plan_file_target(tool_call) {
+        ApprovalDecision::Approved
+      } else {
+        self.approval_service.decide(tool_call, diff_preview)
+      };
+
+      match decision {
         ApprovalDecision::Approved => {
           batch.push(tool_call);
         }
@@ -1436,6 +1480,14 @@ impl SessionActor {
       if !self.plan_mode {
         self.plan_mode = true;
         self.meta.plan_mode = true;
+        // Allocate a stable plan session ID and slug on first activation.
+        if self.plan_session_id.is_none() {
+          let plan_session_id = uuid::Uuid::new_v4().to_string().replace('-', "");
+          let slug = get_or_create_slug(&plan_session_id);
+          self.plan_session_id = Some(plan_session_id.clone());
+          self.meta.plan_session_id = Some(plan_session_id);
+          self.meta.plan_slug = Some(slug);
+        }
         self.persistence.stage_meta(&self.meta);
         let _ = self.persistence.flush();
         self
@@ -1446,6 +1498,10 @@ impl SessionActor {
     } else if self.plan_mode {
       self.plan_mode = false;
       self.meta.plan_mode = false;
+      // Clear plan session state when exiting.
+      self.plan_session_id = None;
+      self.meta.plan_session_id = None;
+      self.meta.plan_slug = None;
       self.persistence.stage_meta(&self.meta);
       let _ = self.persistence.flush();
       self
@@ -1453,6 +1509,22 @@ impl SessionActor {
         .send(WireMessage::PlanModeChanged { active: false });
       info!("Session {}: Exited plan mode", self.id);
     }
+  }
+
+  /// Get the plan file path for the current planning session.
+  fn get_plan_file_path(&self) -> Option<PathBuf> {
+    self
+      .plan_session_id
+      .as_ref()
+      .map(|id| plan_file_path(id, None))
+  }
+
+  /// Read the current plan file content, if any.
+  fn read_current_plan(&self) -> Option<String> {
+    self
+      .plan_session_id
+      .as_ref()
+      .and_then(|id| read_plan(id, None))
   }
 
   /// Returns true if the given tool is allowed in plan mode.
@@ -1468,6 +1540,24 @@ impl SessionActor {
       "ExitPlanMode",
     ];
     ALLOWED.contains(&tool_name)
+  }
+
+  /// Returns true if the tool call targets the current plan file.
+  fn is_plan_file_target(&self, tool_call: &ToolCall) -> bool {
+    if !matches!(tool_call.name.as_str(), "WriteFile" | "ReplaceFile") {
+      return false;
+    }
+    let Some(plan_path) = self.get_plan_file_path() else {
+      return false;
+    };
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let Some(target_path) = extract_tool_path_argument(&tool_call.arguments, cwd.as_path()) else {
+      return false;
+    };
+    match std::fs::canonicalize(&target_path) {
+      Ok(canonical) => canonical == plan_path,
+      Err(_) => target_path == plan_path,
+    }
   }
 
   /// Execute a single tool call and store the result.
@@ -1821,7 +1911,7 @@ impl SessionActor {
     }
 
     let tool_call = &tool_calls[current_index];
-    let plan_path = plan_file_path(&self.id, None);
+    let plan_path = self.get_plan_file_path().unwrap_or_default();
 
     // Map answer: index 0 = Yes, index 1 = No
     let approved = !dismissed && answers.first().and_then(|a| a.first()).copied() == Some(0);
@@ -1922,8 +2012,8 @@ impl SessionActor {
     }
 
     let tool_call = &tool_calls[current_index];
-    let plan_path = plan_file_path(&self.id, None);
-    let plan_content = read_plan(&self.id, None).unwrap_or_default();
+    let plan_path = self.get_plan_file_path().unwrap_or_default();
+    let plan_content = self.read_current_plan().unwrap_or_default();
 
     // Map answer index to option label
     let choice = if dismissed || answers.is_empty() {
@@ -2188,6 +2278,26 @@ struct ExitPlanModeArgs {
 
 fn parse_exit_plan_mode_args(arguments: &str) -> std::result::Result<ExitPlanModeArgs, String> {
   serde_json::from_str(arguments).map_err(|e| format!("JSON parse error: {}", e))
+}
+
+// ---------------------------------------------------------------------------
+// Plan file target detection
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, serde::Deserialize)]
+struct ToolPathArg {
+  path: String,
+}
+
+/// Extract and resolve the `path` argument from a WriteFile/ReplaceFile call.
+fn extract_tool_path_argument(arguments: &str, cwd: &std::path::Path) -> Option<PathBuf> {
+  let args: ToolPathArg = serde_json::from_str(arguments).ok()?;
+  let path = PathBuf::from(&args.path);
+  Some(if path.is_absolute() {
+    path
+  } else {
+    cwd.join(&path)
+  })
 }
 
 /// ChatSession that runs as an actor

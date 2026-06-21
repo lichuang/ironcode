@@ -35,7 +35,7 @@
 15. ~~**YOLO Mode**~~ [x] COMPLETED - Auto-approve all operations with session-level persistence
 16. **Background Task & Notification System** - Async workers with heartbeat and LLM context delivery
 17. ~~**Hook Engine**~~ [x] COMPLETED - Extensible PreToolUse/PostToolUse/UserPromptSubmit/Stop hooks with config-defined shell commands
-18. **Plan Mode** - Structured planning with EnterPlanMode/ExitPlanMode tools
+18. ~~**Plan Mode**~~ [x] COMPLETED - Structured planning with EnterPlanMode/ExitPlanMode, hero-slug plan files, plan-file auto-approval, and dynamic reminders
 19. **Git Context Integration** - `src/git_context.rs` collection utility implemented and reserved for future `explore` subagent use; intentionally not injected into main-agent system prompt to match kimi-cli
 20. **Think Tool** - Explicit reasoning tool for complex problem-solving
 21. ~~**Wire Protocol Foundation**~~ [x] COMPLETED - WireBus (broadcast) + 19 WireMessage types decouple LLM from UI
@@ -159,15 +159,24 @@
 #### 18. Plan Mode
 - [x] `EnterPlanMode` / `ExitPlanMode` tools
 - [x] Plan session isolation and state persistence
-- [ ] Plan slug tracking in session state
+- [x] Plan `session_id` + hero `slug` tracking in `SessionMeta`
+  - Slug is generated from a curated hero name list, matching kimi-cli's `tools/plan/heroes.py`
+  - Plan file path: `~/.ironcode/plans/{slug}.md`
+  - Slug cache is seeded on session resume so the path survives process restarts
 - [x] EnterPlanMode handler blocking user confirmation (via SessionActor interception)
-- [x] ExitPlanMode plan content reading from `~/.ironcode/plans/{session_id}.md`
+- [x] ExitPlanMode plan content reading from the slug-based plan file path
 - [x] ExitPlanMode plan approval UI — Approve / Reject / Reject and Exit (+ custom options)
 - [x] PlanDisplay wire message for rendering plan content in TUI
 - [ ] QuestionRequest "other" option support (Revise free-text input) — TUI does not support free-text answers yet
 - [x] YOLO mode auto-approve logic for EnterPlanMode/ExitPlanMode
+- [x] Plan file writes auto-approved during plan mode
+  - `WriteFile` / `ReplaceFile` targeting the current plan file skip approval
+  - All other writes remain blocked in plan mode
+- [x] Dynamic plan-mode reminder injection
+  - Full reminder on first plan-mode step and after every 5 assistant turns
+  - Sparse reminder in between
+  - Re-entry reminder when resuming a session already in plan mode
 - [ ] `/plan` slash command (toggle/view/clear) — requires slash command infrastructure
-- [x] Session-scoped plan file path injection into plan handlers
 
 #### 19. Git Context Integration
 - [x] Collection utility implemented in `src/git_context.rs`
@@ -328,10 +337,10 @@
 
 | Metric | Count |
 |--------|-------|
-| **Total Tasks** | 113 |
-| **Completed** | 50 |
-| **Remaining** | 63 |
-| **Progress** | 44.2% |
+| **Total Tasks** | 114 |
+| **Completed** | 52 |
+| **Remaining** | 62 |
+| **Progress** | 45.6% |
 
 > **Note:** This summary must be updated whenever tasks are completed. After each batch of completions, recalculate the counts and percentage to keep the document accurate.
 

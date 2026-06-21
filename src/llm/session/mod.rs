@@ -9,6 +9,7 @@ pub mod approval;
 pub mod compaction;
 pub mod context;
 pub mod persistence;
+pub mod plan_injection;
 pub mod state;
 pub mod stream;
 pub mod tool_exec;

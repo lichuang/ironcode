@@ -61,6 +61,12 @@ pub struct SessionMeta {
   /// Whether plan mode is active for this session
   #[serde(default)]
   pub plan_mode: bool,
+  /// Stable identifier for the current planning session.
+  #[serde(default)]
+  pub plan_session_id: Option<String>,
+  /// Hero slug used to derive the plan file path.
+  #[serde(default)]
+  pub plan_slug: Option<String>,
 }
 
 impl SessionMeta {
@@ -75,6 +81,8 @@ impl SessionMeta {
       system_prompt: system_prompt.into(),
       yolo: false,
       plan_mode: false,
+      plan_session_id: None,
+      plan_slug: None,
     }
   }
 
