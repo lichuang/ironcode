@@ -477,6 +477,11 @@ impl SessionActor {
         true
       }
 
+      SessionCommand::PlanSlashCommand { subcmd } => {
+        self.handle_plan_slash_command(&subcmd).await;
+        true
+      }
+
       SessionCommand::Shutdown => {
         info!("Session {}: Shutdown requested", self.id);
         self.wire_publisher.send(WireMessage::Error {
@@ -1469,6 +1474,84 @@ impl SessionActor {
           self.persistence.stage_message(&self.id, &tool_msg);
           let _ = self.persistence.flush();
           error!("Session {}: Tool {} failed: {}", self.id, tool_call.name, e);
+        }
+      }
+    }
+  }
+
+  /// Handle a `/plan` slash command from the UI.
+  async fn handle_plan_slash_command(&mut self, subcmd: &str) {
+    let subcmd = subcmd.trim().to_lowercase();
+
+    match subcmd.as_str() {
+      "on" => {
+        self.handle_plan_mode_transition(true).await;
+        let path = self
+          .get_plan_file_path()
+          .map(|p| p.display().to_string())
+          .unwrap_or_default();
+        self.wire_publisher.send(WireMessage::Text {
+          text: format!("Plan mode ON. Plan file: {}", path),
+        });
+      }
+      "off" => {
+        self.handle_plan_mode_transition(false).await;
+        self.wire_publisher.send(WireMessage::Text {
+          text: "Plan mode OFF. All tools are now available.".to_string(),
+        });
+      }
+      "view" => {
+        let plan_path = self.get_plan_file_path();
+        match self.read_current_plan() {
+          Some(content) => {
+            self.wire_publisher.send(WireMessage::PlanDisplay {
+              content,
+              file_path: plan_path
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
+            });
+          }
+          None => {
+            self.wire_publisher.send(WireMessage::Text {
+              text: "No plan file found for this session.".to_string(),
+            });
+          }
+        }
+      }
+      "clear" => {
+        if let Some(path) = self.get_plan_file_path()
+          && path.exists()
+          && let Err(e) = std::fs::remove_file(&path)
+        {
+          self.wire_publisher.send(WireMessage::Error {
+            message: format!("Failed to clear plan file: {}", e),
+          });
+          return;
+        }
+        self.wire_publisher.send(WireMessage::Text {
+          text: "Plan cleared.".to_string(),
+        });
+      }
+      _ => {
+        // Default: toggle
+        let new_state = !self.plan_mode;
+        self.handle_plan_mode_transition(new_state).await;
+        if self.plan_mode {
+          let path = self
+            .get_plan_file_path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+          self.wire_publisher.send(WireMessage::Text {
+            text: format!(
+              "Plan mode ON. Write your plan to: {}\n\
+               Use ExitPlanMode when done, or /plan off to exit manually.",
+              path
+            ),
+          });
+        } else {
+          self.wire_publisher.send(WireMessage::Text {
+            text: "Plan mode OFF. All tools are now available.".to_string(),
+          });
         }
       }
     }

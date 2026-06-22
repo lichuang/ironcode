@@ -426,6 +426,12 @@ impl App {
           level: SystemMessageLevel::Info,
         });
       }
+      WireMessage::Text { text } => {
+        self.data.chat_history.push(ChatMessage::System {
+          content: text,
+          level: SystemMessageLevel::Info,
+        });
+      }
       WireMessage::HookRequest { id, .. } => {
         // Auto-respond allow for now. A future UI can prompt the user.
         if let Some(ref tx) = self.data.hook_response_tx {

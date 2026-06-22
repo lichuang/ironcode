@@ -91,6 +91,8 @@ pub enum WireMessage {
   },
   /// The current turn has ended.
   TurnEnd,
+  /// Generic text/status message from the actor to the UI.
+  Text { text: String },
   /// Plan mode state has changed.
   PlanModeChanged {
     /// Whether plan mode is now active.

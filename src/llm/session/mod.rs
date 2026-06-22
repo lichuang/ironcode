@@ -76,6 +76,8 @@ pub enum SessionCommand {
   },
   /// Enable YOLO mode for the current session (persisted to meta)
   EnableSessionYolo,
+  /// Execute a `/plan` slash command (on|off|view|clear|toggle)
+  PlanSlashCommand { subcmd: String },
   /// Shutdown the session actor
   Shutdown,
 }
@@ -208,6 +210,13 @@ impl SessionHandle {
     let _ = self.cmd_tx.send(SessionCommand::EnableSessionYolo);
   }
 
+  /// Send a `/plan` slash command to the session actor
+  pub fn plan_slash_command(&self, subcmd: impl Into<String>) {
+    let _ = self.cmd_tx.send(SessionCommand::PlanSlashCommand {
+      subcmd: subcmd.into(),
+    });
+  }
+
   /// Send answers to pending structured questions
   pub fn answer_questions(
     &self,
@@ -228,5 +237,23 @@ impl SessionHandle {
   /// Create a test session handle with a given command sender.
   pub fn test_new(id: String, cmd_tx: mpsc::UnboundedSender<SessionCommand>) -> Self {
     Self { id, cmd_tx }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn test_plan_slash_command_sends_command() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let handle = SessionHandle::test_new("test".to_string(), tx);
+
+    handle.plan_slash_command("view");
+
+    match rx.try_recv() {
+      Ok(SessionCommand::PlanSlashCommand { subcmd }) => assert_eq!(subcmd, "view"),
+      other => panic!("Expected PlanSlashCommand, got {:?}", other),
+    }
   }
 }

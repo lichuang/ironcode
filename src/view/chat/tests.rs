@@ -445,7 +445,7 @@ fn test_slash_completion_basic() {
   // Type '/'
   view.handle_key(&mut AppData::new(), KeyEvent::from(KeyCode::Char('/')));
   assert!(view.slash_completion.active);
-  assert_eq!(view.slash_completion.filtered.len(), 3);
+  assert_eq!(view.slash_completion.filtered.len(), 4);
 
   // Type 't' → "/t"
   view.handle_key(&mut AppData::new(), KeyEvent::from(KeyCode::Char('t')));
@@ -525,7 +525,7 @@ fn test_slash_completion_navigation_and_accept() {
   // Type "/" to show all commands
   view.handle_key(&mut AppData::new(), KeyEvent::from(KeyCode::Char('/')));
   assert!(view.slash_completion.active);
-  assert_eq!(view.slash_completion.filtered.len(), 3);
+  assert_eq!(view.slash_completion.filtered.len(), 4);
   assert_eq!(view.slash_completion.selected, 0);
 
   // Press Down to select next item

@@ -176,7 +176,7 @@
   - Full reminder on first plan-mode step and after every 5 assistant turns
   - Sparse reminder in between
   - Re-entry reminder when resuming a session already in plan mode
-- [ ] `/plan` slash command (toggle/view/clear) — requires slash command infrastructure
+- [x] `/plan` slash command (toggle/view/clear) — routes through `SessionCommand::PlanSlashCommand`, actor handles on/off/view/clear and emits `WireMessage::Text` / `PlanDisplay` feedback
 
 #### 19. Git Context Integration
 - [x] Collection utility implemented in `src/git_context.rs`
@@ -338,9 +338,9 @@
 | Metric | Count |
 |--------|-------|
 | **Total Tasks** | 114 |
-| **Completed** | 52 |
-| **Remaining** | 62 |
-| **Progress** | 45.6% |
+| **Completed** | 53 |
+| **Remaining** | 61 |
+| **Progress** | 46.5% |
 
 > **Note:** This summary must be updated whenever tasks are completed. After each batch of completions, recalculate the counts and percentage to keep the document accurate.
 

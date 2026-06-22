@@ -15,6 +15,10 @@ pub const SLASH_COMMANDS: &[SlashCommandInfo] = &[
     description: "Browse and manage background tasks",
   },
   SlashCommandInfo {
+    name: "plan",
+    description: "Toggle plan mode. Usage: /plan [on|off|view|clear]",
+  },
+  SlashCommandInfo {
     name: "clear",
     description: "Clear conversation context",
   },
@@ -97,5 +101,22 @@ mod tests {
   fn test_parse_slash_command_case_insensitive() {
     let cmd = parse_slash_command("/TASK").unwrap();
     assert_eq!(cmd.name, "task");
+  }
+
+  #[test]
+  fn test_parse_slash_command_plan_no_args() {
+    let cmd = parse_slash_command("/plan").unwrap();
+    assert_eq!(cmd.name, "plan");
+    assert_eq!(cmd.args, "");
+  }
+
+  #[test]
+  fn test_parse_slash_command_plan_with_args() {
+    let cmd = parse_slash_command("/plan on").unwrap();
+    assert_eq!(cmd.name, "plan");
+    assert_eq!(cmd.args, "on");
+
+    let cmd = parse_slash_command("/plan view").unwrap();
+    assert_eq!(cmd.args, "view");
   }
 }

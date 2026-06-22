@@ -279,6 +279,10 @@ impl ChatView {
           self.runtime.clone(),
         )))
       }
+      "plan" => {
+        self.session_handle.plan_slash_command(cmd.args.trim());
+        None
+      }
       "clear" | "reset" => {
         data.chat_history.clear();
         data.chat_history.push(ChatMessage::System {
