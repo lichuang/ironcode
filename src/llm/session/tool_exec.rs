@@ -8,6 +8,7 @@ use serde_json::Value;
 
 use crate::hooks::{HookDecision, HookEngine, HookEventType, events};
 use crate::llm::types::ToolCall;
+use crate::subagents::ToolPolicy;
 use crate::tools::{ExecutableToolRegistry, ToolError, ToolInvocation, ToolPayload};
 
 /// Context needed to build hook payloads.
@@ -23,6 +24,7 @@ pub struct ToolExecutor {
   registry: Arc<ExecutableToolRegistry>,
   hook_engine: Arc<HookEngine>,
   ctx: Option<ToolExecutionContext>,
+  tool_policy: Option<ToolPolicy>,
 }
 
 impl ToolExecutor {
@@ -36,6 +38,7 @@ impl ToolExecutor {
       registry,
       hook_engine,
       ctx: None,
+      tool_policy: None,
     }
   }
 
@@ -44,7 +47,21 @@ impl ToolExecutor {
     self.ctx = Some(ctx);
   }
 
+  /// Enforce a tool policy for this executor.
+  pub fn set_tool_policy(&mut self, policy: ToolPolicy) {
+    self.tool_policy = Some(policy);
+  }
+
   pub async fn execute(&self, tool_call: &ToolCall) -> Result<String, ToolError> {
+    if let Some(policy) = &self.tool_policy
+      && !policy.allows(&tool_call.name)
+    {
+      return Err(ToolError::RespondToModel(format!(
+        "Tool '{}' is not available to this subagent.",
+        tool_call.name
+      )));
+    }
+
     self.run_pre_tool_use_hook(tool_call).await?;
 
     let invocation = ToolInvocation::new(

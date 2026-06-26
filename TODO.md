@@ -20,7 +20,7 @@
 
 1. ~~**Persistent Sessions & Context**~~ [x] COMPLETED - JSONL session store + metadata + auto-save
 2. ~~**Context Compaction**~~ [x] COMPLETED - Automatic context compression with rolling window strategy
-3. **Subagent/Multi-agent System** - Task tool + LaborMarket
+3. ~~**Subagent/Multi-agent System**~~ [x] PARTIAL - Foreground `Agent` tool + LaborMarket + builtin coder/explore/plan agents; background agents and dynamic registration remain
 4. **MCP Full Support** - `kimi mcp` management CLI
 5. **Web UI** - FastAPI + WebSocket backend
 6. **Skill System** - Standard skills + Flow skills (Mermaid/D2)
@@ -36,7 +36,7 @@
 16. **Background Task & Notification System** - Async workers with heartbeat and LLM context delivery
 17. ~~**Hook Engine**~~ [x] COMPLETED - Extensible PreToolUse/PostToolUse/UserPromptSubmit/Stop hooks with config-defined shell commands
 18. ~~**Plan Mode**~~ [x] COMPLETED - Structured planning with EnterPlanMode/ExitPlanMode, hero-slug plan files, plan-file auto-approval, and dynamic reminders
-19. **Git Context Integration** - `src/git_context.rs` collection utility implemented and reserved for future `explore` subagent use; intentionally not injected into main-agent system prompt to match kimi-cli
+19. ~~**Git Context Integration**~~ [x] COMPLETED - `src/git_context.rs` collector; wired into `explore` subagent prompt; intentionally not injected into main-agent system prompt to match kimi-cli
 20. **Think Tool** - Explicit reasoning tool for complex problem-solving
 21. ~~**Wire Protocol Foundation**~~ [x] COMPLETED - WireBus (broadcast) + 19 WireMessage types decouple LLM from UI
 22. **Plugin System** - Dynamic external tool loading
@@ -200,21 +200,26 @@
 **Goal:** Complex task processing capabilities
 
 #### 9. Subagent / Multi-Agent System
-- [ ] Task tool design (create subtasks)
-  - `Agent` tool parameters: `subagent_type`, `prompt`, `description`, `timeout`, `model_override`
-- [ ] Agent pool management (LaborMarket pattern)
-  - `LaborMarket` registry: builtin types + dynamically registered types
-  - `AgentTypeDefinition`: name, system_prompt, tool_policy, max_steps
-- [ ] Parent-child session isolation and communication
+- [x] Task tool design (create subtasks)
+  - `Agent` tool handler with parameters: `subagent_type`, `prompt`, `description`, `timeout`, `model`
+  - Foreground execution returns formatted summary to parent as tool result
+- [x] Agent pool management (LaborMarket pattern)
+  - `LaborMarket` registry of builtin types loaded from `src/agents/default/*.yaml`
+  - `AgentTypeDefinition`: name, description, role_additional, tool_policy, default_model
+  - Builtin types: `coder`, `explore`, `plan`
+- [x] Parent-child session isolation and communication
   - Child `SessionActor` runs in separate tokio task with own `Context`
-  - Communication via `WireBus` (child publishes `SubagentEvent`, parent subscribes)
-  - OR reuse existing `mpsc` channel if WireBus latency is unacceptable
-- [ ] Sub-agent result aggregation
-  - Child produces final `Message::assistant` → parent injects as `Message::system` or tool result
+  - Subagent gets filtered `ToolRegistry`, optional model override, and `ToolPolicy` enforcement
+  - `WireMessage::SubagentEvent` added for future nested UI rendering
+- [x] Sub-agent result aggregation
+  - Parent awaits child turn completion and returns final assistant content as `ToolOutput::success`
 - [ ] Concurrent task execution limits
   - Configurable `max_concurrent_subagents` (default 3)
+- [ ] Dynamic agent registration from custom `--agent-file`
 - [ ] Background agent task lifecycle integration
-  - Required by: Background Task & Notification System — agent task recovery on restart
+  - `run_in_background=true` path via `BackgroundTaskManager`
+  - Agent task recovery on restart
+  - Terminal notifications delivered to parent session
 
 #### 10. Checkpoint / D-Mail System
 - [ ] Context snapshot saving mechanism
@@ -337,10 +342,10 @@
 
 | Metric | Count |
 |--------|-------|
-| **Total Tasks** | 114 |
-| **Completed** | 53 |
-| **Remaining** | 61 |
-| **Progress** | 46.5% |
+| **Total Tasks** | 115 |
+| **Completed** | 57 |
+| **Remaining** | 58 |
+| **Progress** | 49.6% |
 
 > **Note:** This summary must be updated whenever tasks are completed. After each batch of completions, recalculate the counts and percentage to keep the document accurate.
 

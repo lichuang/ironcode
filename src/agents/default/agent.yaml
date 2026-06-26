@@ -1,0 +1,7 @@
+subagents:
+  - name: coder
+    path: ./coder.yaml
+  - name: explore
+    path: ./explore.yaml
+  - name: plan
+    path: ./plan.yaml

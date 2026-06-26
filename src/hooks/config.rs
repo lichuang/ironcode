@@ -36,6 +36,10 @@ pub enum HookEventType {
   PostCompact,
   /// When a notification is delivered to a sink.
   Notification,
+  /// When a subagent starts.
+  SubagentStart,
+  /// When a subagent stops.
+  SubagentStop,
 }
 
 impl std::fmt::Display for HookEventType {
@@ -52,6 +56,8 @@ impl std::fmt::Display for HookEventType {
       HookEventType::PreCompact => "PreCompact",
       HookEventType::PostCompact => "PostCompact",
       HookEventType::Notification => "Notification",
+      HookEventType::SubagentStart => "SubagentStart",
+      HookEventType::SubagentStop => "SubagentStop",
     };
     write!(f, "{}", s)
   }

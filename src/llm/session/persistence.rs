@@ -7,7 +7,7 @@ use crate::llm::types::Message;
 use crate::session::{SessionMeta, SessionStore};
 
 pub struct SessionPersistence {
-  store: Arc<SessionStore>,
+  store: Option<Arc<SessionStore>>,
   message_buffer: Vec<(String, Message)>,
   meta_buffer: Option<SessionMeta>,
 }
@@ -15,7 +15,16 @@ pub struct SessionPersistence {
 impl SessionPersistence {
   pub fn new(store: Arc<SessionStore>) -> Self {
     Self {
-      store,
+      store: Some(store),
+      message_buffer: Vec::new(),
+      meta_buffer: None,
+    }
+  }
+
+  /// Create an in-memory-only persistence layer for subagents.
+  pub fn new_in_memory() -> Self {
+    Self {
+      store: None,
       message_buffer: Vec::new(),
       meta_buffer: None,
     }
@@ -33,16 +42,23 @@ impl SessionPersistence {
 
   pub fn reset_messages(&mut self, session_id: &str, messages: &[Message]) {
     self.message_buffer.clear();
-    let _ = self.store.reset_messages(session_id, messages);
+    if let Some(store) = &self.store {
+      let _ = store.reset_messages(session_id, messages);
+    }
   }
 
   /// Flush staged messages and meta to disk.
   pub fn flush(&mut self) -> Result<()> {
+    let Some(store) = &self.store else {
+      self.message_buffer.clear();
+      self.meta_buffer = None;
+      return Ok(());
+    };
     for (sid, msg) in self.message_buffer.drain(..) {
-      self.store.append_message(&sid, &msg)?;
+      store.append_message(&sid, &msg)?;
     }
     if let Some(meta) = self.meta_buffer.take() {
-      self.store.update_meta(&meta)?;
+      store.update_meta(&meta)?;
     }
     Ok(())
   }

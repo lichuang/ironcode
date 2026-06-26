@@ -27,6 +27,7 @@ use crate::notification::llm::{
   build_notification_message, extract_notification_ids, is_notification_message,
 };
 use crate::session::{SessionMeta, SessionMode, SessionStore};
+use crate::subagents::ToolPolicy;
 use crate::utils::plan::{get_or_create_slug, plan_file_path, read_plan, seed_slug_cache};
 use crate::utils::token_counter::estimate_llm_messages_tokens;
 
@@ -95,6 +96,28 @@ fn ack_notification_ids_in_context(manager: &NotificationManager, messages: &[Me
   }
 }
 
+/// Configuration for constructing a SessionActor.
+struct SessionActorConfig {
+  /// Session or agent instance id.
+  id: String,
+  /// LLM provider.
+  provider: Box<dyn LLMProvider>,
+  /// Initial messages (including system prompt).
+  messages: Vec<Message>,
+  /// Wire publisher for outgoing events.
+  wire_publisher: WirePublisher,
+  /// Command receiver.
+  cmd_rx: mpsc::UnboundedReceiver<SessionCommand>,
+  /// Optional session store for persistence. None for in-memory subagents.
+  session_store: Option<Arc<SessionStore>>,
+  /// Session metadata.
+  meta: SessionMeta,
+  /// Runtime context.
+  runtime: Arc<Runtime>,
+  /// Tool policy for subagents. None for root agents.
+  tool_policy: Option<ToolPolicy>,
+}
+
 /// Internal state of the session actor
 struct SessionActor {
   /// Session ID
@@ -149,21 +172,28 @@ struct SessionActor {
 }
 
 impl SessionActor {
-  #[allow(clippy::too_many_arguments)]
-  fn new(
-    id: String,
-    provider: Box<dyn LLMProvider>,
-    messages: Vec<Message>,
-    wire_publisher: WirePublisher,
-    cmd_rx: mpsc::UnboundedReceiver<SessionCommand>,
-    session_store: Arc<SessionStore>,
-    meta: SessionMeta,
-    runtime: Arc<Runtime>,
-  ) -> Self {
+  fn new(config: SessionActorConfig) -> Self {
+    let SessionActorConfig {
+      id,
+      provider,
+      messages,
+      wire_publisher,
+      cmd_rx,
+      session_store,
+      meta,
+      runtime,
+      tool_policy,
+    } = config;
+
     let max_context_size = provider.max_context_size();
     let yolo = meta.yolo;
-    let plan_mode = meta.plan_mode;
-    let plan_session_id = meta.plan_session_id.clone();
+    let is_subagent = session_store.is_none();
+    let plan_mode = if is_subagent { false } else { meta.plan_mode };
+    let plan_session_id = if is_subagent {
+      None
+    } else {
+      meta.plan_session_id.clone()
+    };
 
     // Pre-warm the slug cache so the persisted slug survives process restarts.
     if let (Some(psid), Some(slug)) = (&plan_session_id, &meta.plan_slug) {
@@ -173,7 +203,14 @@ impl SessionActor {
     // Ack any notification IDs that are already present in the resumed
     // context so they are not redelivered to the LLM.
     // This mirrors kimi-cli's extract_notification_ids behaviour.
-    ack_notification_ids_in_context(&runtime.notification_manager(), &messages);
+    if !is_subagent {
+      ack_notification_ids_in_context(&runtime.notification_manager(), &messages);
+    }
+
+    let persistence = match session_store {
+      Some(store) => SessionPersistence::new(store),
+      None => SessionPersistence::new_in_memory(),
+    };
 
     Self {
       id: id.clone(),
@@ -185,9 +222,9 @@ impl SessionActor {
       stream_rx: None,
       stream_manager: StreamManager::new(provider, runtime.retry_config()),
       pending_tool_calls: Vec::new(),
-      persistence: SessionPersistence::new(session_store),
-      meta,
       precise_token_count: None,
+      persistence,
+      meta,
       max_context_size,
       tool_executor: {
         let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -200,6 +237,9 @@ impl SessionActor {
           session_id: id.clone(),
           cwd,
         });
+        if let Some(policy) = tool_policy {
+          executor.set_tool_policy(policy);
+        }
         executor
       },
       approval_service: ApprovalService::new(yolo, runtime.auto_approve()),
@@ -2413,7 +2453,7 @@ impl ChatSession {
     messages: Vec<Message>,
     wire_publisher: WirePublisher,
   ) -> Result<(Self, Vec<Message>)> {
-    let provider = Self::create_provider(&runtime)?;
+    let provider = Self::create_provider(&runtime, None)?;
 
     let session = Self::start_with_messages(
       id,
@@ -2453,24 +2493,41 @@ impl ChatSession {
     }
   }
 
-  /// Create LLM provider from configuration
+  /// Create LLM provider from configuration.
   ///
-  /// # Arguments
-  /// * `config` - The application configuration
-  pub(crate) fn create_provider(runtime: &Runtime) -> Result<Box<dyn LLMProvider>> {
+  /// If `model_alias` is `Some`, uses that model's configuration; otherwise
+  /// uses the configured default model.
+  pub(crate) fn create_provider(
+    runtime: &Runtime,
+    model_alias: Option<&str>,
+  ) -> Result<Box<dyn LLMProvider>> {
     let tool_registry = runtime.tool_registry.clone();
 
-    // Get default model configuration
-    let model_config = runtime
-      .default_model_config()
-      .ok_or(crate::config::Error::MissingDefaultModel)?;
+    // Resolve model configuration
+    let (model_alias, model_config) = match model_alias {
+      Some(alias) => (
+        alias.to_string(),
+        runtime
+          .config
+          .get_model(alias)
+          .ok_or(crate::config::Error::ModelNotFound {
+            model: alias.to_string(),
+          })?,
+      ),
+      None => (
+        runtime.default_model(),
+        runtime
+          .default_model_config()
+          .ok_or(crate::config::Error::MissingDefaultModel)?,
+      ),
+    };
 
     // Get provider configuration
     let provider = runtime
       .get_provider(&model_config.provider)
       .ok_or_else(|| crate::config::Error::ProviderNotFound {
         provider: model_config.provider.clone(),
-        model: runtime.default_model(),
+        model: model_alias.clone(),
       })?;
 
     // Resolve API key (may contain env var references like ${OPENAI_API_KEY})
@@ -2495,7 +2552,7 @@ impl ChatSession {
     // Currently only enable for kimi-for-coding model
     let coding_agent = model_config.model == "kimi-for-coding";
 
-    // Get max context size from default model config
+    // Get max context size from model config
     let max_context_size = model_config
       .max_context_size
       .unwrap_or(crate::config::DEFAULT_MAX_CONTEXT_SIZE);
@@ -2514,7 +2571,7 @@ impl ChatSession {
         return Err(
           crate::config::Error::ProviderNotFound {
             provider: provider.provider_type.clone(),
-            model: runtime.default_model(),
+            model: model_alias,
           }
           .into(),
         );
@@ -2532,7 +2589,7 @@ impl ChatSession {
     meta: SessionMeta,
     wire_publisher: WirePublisher,
   ) -> Result<Self> {
-    let provider = Self::create_provider(&runtime)?;
+    let provider = Self::create_provider(&runtime, None)?;
     let system_prompt = system_prompt.into();
     let messages = vec![Message::system(system_prompt.clone())];
 
@@ -2552,6 +2609,42 @@ impl ChatSession {
     Ok(session)
   }
 
+  /// Start an in-memory subagent session with a filtered tool policy.
+  ///
+  /// Returns a handle and the command sender. The caller is responsible for
+  /// driving the session via commands and consuming wire events.
+  pub fn start_subagent(
+    agent_id: String,
+    provider: Box<dyn LLMProvider>,
+    messages: Vec<Message>,
+    runtime: Arc<Runtime>,
+    wire_publisher: WirePublisher,
+    tool_policy: Option<ToolPolicy>,
+  ) -> SessionHandle {
+    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+    let meta = SessionMeta::new(agent_id.clone(), "");
+
+    let handle = SessionHandle {
+      id: agent_id.clone(),
+      cmd_tx,
+    };
+
+    let actor = SessionActor::new(SessionActorConfig {
+      id: agent_id,
+      provider,
+      messages,
+      wire_publisher,
+      cmd_rx,
+      session_store: None,
+      meta,
+      runtime,
+      tool_policy,
+    });
+    tokio::spawn(actor.run());
+
+    handle
+  }
+
   /// Internal: start session with given messages and persistence
   fn start_with_messages(
     id: String,
@@ -2569,16 +2662,17 @@ impl ChatSession {
       cmd_tx,
     };
 
-    let actor = SessionActor::new(
+    let actor = SessionActor::new(SessionActorConfig {
       id,
       provider,
       messages,
       wire_publisher,
       cmd_rx,
-      session_store,
+      session_store: Some(session_store),
       meta,
       runtime,
-    );
+      tool_policy: None,
+    });
     tokio::spawn(actor.run());
 
     Self { handle }

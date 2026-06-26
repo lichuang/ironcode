@@ -15,10 +15,11 @@ use crate::config::{
 use crate::error::Result;
 use crate::hooks::HookEngine;
 use crate::notification::NotificationManager;
+use crate::subagents::{LaborMarket, ToolPolicy};
 use crate::tools::handlers::{
-  AskUserQuestionHandler, EnterPlanModeHandler, ExitPlanModeHandler, FetchURLHandler, GlobHandler,
-  GrepHandler, ReadFileHandler, ReplaceFileHandler, SearchWebHandler, SetTodoListHandler,
-  TaskListHandler, TaskOutputHandler, TaskStopHandler, WriteFileHandler,
+  AgentHandler, AskUserQuestionHandler, EnterPlanModeHandler, ExitPlanModeHandler, FetchURLHandler,
+  GlobHandler, GrepHandler, ReadFileHandler, ReplaceFileHandler, SearchWebHandler,
+  SetTodoListHandler, TaskListHandler, TaskOutputHandler, TaskStopHandler, WriteFileHandler,
 };
 use crate::tools::{ExecutableToolRegistry, ToolRegistry};
 
@@ -60,6 +61,9 @@ pub enum Error {
 
   #[error("Tool '{tool_name}' is defined in prompts but no handler is implemented")]
   MissingToolHandler { tool_name: String },
+
+  #[error("Failed to load built-in subagent types: {0}")]
+  LaborMarket(#[source] anyhow::Error),
 }
 
 impl Error {
@@ -183,13 +187,44 @@ impl RuntimeArgs {
   }
 }
 
+/// Role of the runtime in the agent hierarchy.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) enum RuntimeRole {
+  /// Root agent runtime.
+  #[default]
+  Root,
+  /// Subagent runtime.
+  Subagent {
+    /// Stable subagent instance id.
+    agent_id: String,
+    /// Subagent type name.
+    subagent_type: String,
+  },
+}
+
+impl RuntimeRole {
+  /// Returns true if this is a root runtime.
+  pub fn is_root(&self) -> bool {
+    matches!(self, RuntimeRole::Root)
+  }
+
+  /// Returns the subagent id if this is a subagent runtime.
+  #[allow(dead_code)]
+  pub fn agent_id(&self) -> Option<&str> {
+    match self {
+      RuntimeRole::Root => None,
+      RuntimeRole::Subagent { agent_id, .. } => Some(agent_id),
+    }
+  }
+}
+
 /// Runtime holds the effective configuration, system prompt template, arguments,
 /// and tool registries. All fields are loaded at startup and are read-only during
 /// the session.
 #[derive(Debug, Clone)]
 pub(crate) struct Runtime {
   /// Effective configuration (user config + CLI overrides applied)
-  config: Arc<Config>,
+  pub(crate) config: Arc<Config>,
   /// Template arguments for substitution
   pub args: RuntimeArgs,
   /// The raw system prompt template (before substitution)
@@ -204,6 +239,12 @@ pub(crate) struct Runtime {
   pub notification_manager: Arc<NotificationManager>,
   /// Lifecycle hook engine
   pub hook_engine: Arc<HookEngine>,
+  /// Built-in subagent type registry
+  pub labor_market: Arc<LaborMarket>,
+  /// Role of this runtime.
+  pub role: RuntimeRole,
+  /// Optional model alias override for subagents.
+  pub model_override: Option<String>,
 }
 
 impl Runtime {
@@ -228,9 +269,17 @@ impl Runtime {
       config.hooks.clone(),
       std::env::current_dir().ok(),
     ));
+    let labor_market = Arc::new(LaborMarket::load_builtin().map_err(Error::LaborMarket)?);
+
+    // Create the Agent handler first; it is bound to Runtime after construction
+    // to break the cyclic dependency (Runtime owns the registry, Agent needs Runtime).
+    let agent_handler = Arc::new(AgentHandler::new());
 
     // Load executable tool registry first (handlers must be registered before checking)
-    let executable_registry = Arc::new(Self::load_executable_tools(&background_manager));
+    let executable_registry = Arc::new(Self::load_executable_tools(
+      &background_manager,
+      agent_handler.clone(),
+    ));
 
     // Load tool definitions from Markdown files
     let tool_registry = Arc::new(Self::load_tools(data_dir)?);
@@ -238,7 +287,7 @@ impl Runtime {
     // Check that all defined tools have corresponding handlers
     Self::validate_tool_handlers(&tool_registry, &executable_registry)?;
 
-    Ok(Self {
+    let runtime = Self {
       config,
       args,
       system_prompt_template,
@@ -247,7 +296,15 @@ impl Runtime {
       background_manager,
       notification_manager,
       hook_engine,
-    })
+      labor_market,
+      role: RuntimeRole::Root,
+      model_override: None,
+    };
+
+    // Bind the runtime to the Agent handler now that it is fully constructed.
+    let _ = agent_handler.bind_runtime(Arc::new(runtime.clone()));
+
+    Ok(runtime)
   }
 
   #[cfg(test)]
@@ -275,12 +332,19 @@ impl Runtime {
         crate::config::NotificationConfig::default(),
       )),
       hook_engine: Arc::new(HookEngine::empty()),
+      labor_market: Arc::new(LaborMarket::new()),
+      role: RuntimeRole::Root,
+      model_override: None,
     }
   }
 
   /// Load and initialize the executable tool registry with all handlers
-  fn load_executable_tools(manager: &Arc<BackgroundTaskManager>) -> ExecutableToolRegistry {
+  fn load_executable_tools(
+    manager: &Arc<BackgroundTaskManager>,
+    agent_handler: Arc<AgentHandler>,
+  ) -> ExecutableToolRegistry {
     let mut registry = ExecutableToolRegistry::new();
+    registry.register("Agent", Box::new(agent_handler));
     registry.register("ReadFile", Box::new(ReadFileHandler::new()));
     registry.register("WriteFile", Box::new(WriteFileHandler::new()));
     registry.register("ReplaceFile", Box::new(ReplaceFileHandler::new()));
@@ -490,6 +554,50 @@ impl Runtime {
   /// Get the retry configuration.
   pub fn retry_config(&self) -> RetryConfig {
     self.config.retry.clone()
+  }
+
+  /// Set the runtime role (used in tests).
+  #[cfg(test)]
+  pub fn set_role(&mut self, role: RuntimeRole) {
+    self.role = role;
+  }
+
+  /// Create a child runtime for a subagent instance.
+  pub fn copy_for_subagent(
+    &self,
+    agent_id: String,
+    subagent_type: String,
+    model_override: Option<String>,
+    tool_policy: &ToolPolicy,
+  ) -> Self {
+    let allowed_tools: Vec<String> = match tool_policy.mode {
+      crate::subagents::ToolPolicyMode::Inherit => self
+        .tool_registry
+        .all()
+        .iter()
+        .map(|t| t.name.clone())
+        .collect(),
+      crate::subagents::ToolPolicyMode::Allowlist => tool_policy.tools.clone(),
+    };
+
+    let tool_registry = Arc::new(self.tool_registry.filter(&allowed_tools));
+
+    Self {
+      config: self.config.clone(),
+      args: self.args.clone(),
+      system_prompt_template: self.system_prompt_template.clone(),
+      tool_registry,
+      executable_registry: self.executable_registry.clone(),
+      background_manager: self.background_manager.clone(),
+      notification_manager: self.notification_manager.clone(),
+      hook_engine: self.hook_engine.clone(),
+      labor_market: self.labor_market.clone(),
+      role: RuntimeRole::Subagent {
+        agent_id,
+        subagent_type,
+      },
+      model_override,
+    }
   }
 
   /// Render the system prompt with all template variables substituted

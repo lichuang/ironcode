@@ -105,6 +105,17 @@ pub enum WireMessage {
     /// The path to the plan file for reference.
     file_path: String,
   },
+  /// An event emitted by a subagent and forwarded to the parent UI.
+  SubagentEvent {
+    /// Tool call id of the parent `Agent` invocation.
+    parent_tool_call_id: String,
+    /// Subagent instance id.
+    agent_id: String,
+    /// Subagent type name.
+    subagent_type: String,
+    /// The wrapped subagent wire message.
+    event: Box<WireMessage>,
+  },
   /// A client-side hook request is waiting for a response.
   HookRequest {
     /// Request identifier.

@@ -117,6 +117,44 @@ impl ToolRegistry {
   pub fn load_from_dir(dir: impl AsRef<Path>) -> Result<Self> {
     loader::load_tools_from_dir(dir)
   }
+
+  /// Return a new registry containing only the allowed tool names.
+  pub fn filter(&self, allowed: &[String]) -> Self {
+    let mut filtered = Self::new();
+    for (name, tool) in &self.tools {
+      if allowed.iter().any(|a| a == name) {
+        filtered.add(tool.clone());
+      }
+    }
+    filtered
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn test_tool_registry_filter() {
+    let mut registry = ToolRegistry::new();
+    registry.add(Tool::new_with_no_handler(
+      "ReadFile",
+      "Read a file",
+      serde_json::Value::Object(serde_json::Map::new()),
+      false,
+    ));
+    registry.add(Tool::new_with_no_handler(
+      "WriteFile",
+      "Write a file",
+      serde_json::Value::Object(serde_json::Map::new()),
+      false,
+    ));
+
+    let filtered = registry.filter(&["ReadFile".to_string()]);
+    assert_eq!(filtered.len(), 1);
+    assert!(filtered.get("ReadFile").is_some());
+    assert!(filtered.get("WriteFile").is_none());
+  }
 }
 
 // ============================================================================

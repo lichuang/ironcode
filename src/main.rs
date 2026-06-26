@@ -8,6 +8,7 @@ mod hooks;
 mod llm;
 mod notification;
 mod session;
+mod subagents;
 mod tools;
 mod tui;
 mod utils;

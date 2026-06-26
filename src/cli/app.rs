@@ -432,6 +432,11 @@ impl App {
           level: SystemMessageLevel::Info,
         });
       }
+      WireMessage::SubagentEvent { .. } => {
+        // TODO: render nested subagent tool calls under the parent Agent block.
+        // For now, child interactive requests are forwarded directly by the
+        // parent SessionActor; non-interactive child events are ignored here.
+      }
       WireMessage::HookRequest { id, .. } => {
         // Auto-respond allow for now. A future UI can prompt the user.
         if let Some(ref tx) = self.data.hook_response_tx {
