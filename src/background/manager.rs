@@ -1,19 +1,19 @@
 //! Background task manager — creation, lifecycle, and querying.
 
+use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::Mutex;
 
 use log::{info, warn};
 use tokio::time::sleep;
 
 use crate::config::BackgroundConfig;
+use crate::utils::time::now_secs;
 
 use super::ids::generate_task_id;
-use super::models::{
-  TaskOutputChunk, TaskSpec, TaskStatus, TaskView, Timestamp, is_terminal_status,
-};
+use super::models::{TaskOutputChunk, TaskSpec, TaskStatus, TaskView, is_terminal_status};
 use super::store::BackgroundTaskStore;
 use std::time::Duration;
 
@@ -26,6 +26,8 @@ pub struct BackgroundTaskManager {
   data_dir: PathBuf,
   session_id: std::sync::Mutex<Option<String>>,
   config: BackgroundConfig,
+  /// In-process background agent tasks currently running.
+  live_agent_tasks: Mutex<HashMap<String, tokio::task::AbortHandle>>,
 }
 
 impl BackgroundTaskManager {
@@ -37,6 +39,7 @@ impl BackgroundTaskManager {
       data_dir,
       session_id: std::sync::Mutex::new(None),
       config,
+      live_agent_tasks: Mutex::new(HashMap::new()),
     }
   }
 
@@ -50,7 +53,7 @@ impl BackgroundTaskManager {
     *self.session_id.lock().unwrap() = Some(session_id.to_string());
   }
 
-  fn store(&self) -> Option<BackgroundTaskStore> {
+  pub(crate) fn store(&self) -> Option<BackgroundTaskStore> {
     let session_id = self.session_id.lock().unwrap().clone()?;
     let tasks_dir = self
       .data_dir
@@ -130,6 +133,81 @@ impl BackgroundTaskManager {
     }
 
     Ok(store.merged_view(&task_id).unwrap())
+  }
+
+  /// Create a new agent background task.
+  ///
+  /// The task is persisted on disk but the actual execution is started by the
+  /// caller (usually `AgentHandler`) as an in-process tokio task. This lets
+  /// agent tasks share the parent's `ApprovalRuntime` and other resources.
+  pub fn create_agent_task(
+    &self,
+    description: &str,
+    tool_call_id: &str,
+    timeout_s: Option<u64>,
+    kind_payload: serde_json::Value,
+    config_dir: Option<String>,
+  ) -> Result<TaskView, String> {
+    let store = self
+      .store()
+      .ok_or("Background tasks not available: no session bound")?;
+
+    let session_id = self.session_id.lock().unwrap().clone().unwrap();
+    let task_id = generate_task_id("agent");
+
+    let active_count = store
+      .list_views()
+      .into_iter()
+      .filter(|v| !is_terminal_status(v.runtime.status))
+      .count();
+    if active_count >= self.config.max_running_tasks {
+      return Err(format!(
+        "Maximum number of concurrent background tasks ({}) reached",
+        self.config.max_running_tasks
+      ));
+    }
+
+    let spec = TaskSpec::new_agent(
+      &task_id,
+      &session_id,
+      description,
+      tool_call_id,
+      timeout_s,
+      kind_payload,
+      config_dir,
+    );
+
+    store.create_task(&spec);
+    info!("Created background agent task {}: {}", task_id, description);
+
+    // Mark as starting; the caller is responsible for spawning the runner.
+    let mut runtime = store.read_runtime(&task_id);
+    runtime.status = TaskStatus::Starting;
+    runtime.updated_at = now_secs();
+    store.write_runtime(&task_id, &runtime);
+
+    Ok(store.merged_view(&task_id).unwrap())
+  }
+
+  /// Register an in-process agent task handle so the manager can abort it on
+  /// `kill` and account for it during recovery.
+  pub fn register_agent_task(&self, task_id: &str, abort_handle: tokio::task::AbortHandle) {
+    self
+      .live_agent_tasks
+      .lock()
+      .unwrap()
+      .insert(task_id.to_string(), abort_handle);
+  }
+
+  /// Mark an agent task as no longer tracked by this manager instance.
+  pub fn unregister_agent_task(&self, task_id: &str) {
+    self.live_agent_tasks.lock().unwrap().remove(task_id);
+  }
+
+  /// Return true if the given task is an in-process agent task currently
+  /// tracked by this manager instance.
+  fn is_live_agent_task(&self, task_id: &str) -> bool {
+    self.live_agent_tasks.lock().unwrap().contains_key(task_id)
   }
 
   fn launch_worker(&self, task_dir: &PathBuf) -> Result<u32, std::io::Error> {
@@ -247,7 +325,26 @@ impl BackgroundTaskManager {
     control.force = false;
     store.write_control(task_id, &control);
 
-    // Best-effort signal the child process directly
+    // For in-process agent tasks, abort the tokio task directly and mark the
+    // runtime Killed. The aborted future will not run its own finalization, so
+    // we finalize synchronously here.
+    let is_live_agent = view.spec.kind.is_agent() && self.is_live_agent_task(task_id);
+    if is_live_agent {
+      if let Some(handle) = self.live_agent_tasks.lock().unwrap().remove(task_id) {
+        handle.abort();
+      }
+      let mut runtime = store.read_runtime(task_id);
+      if !is_terminal_status(runtime.status) {
+        runtime.status = TaskStatus::Killed;
+        runtime.interrupted = true;
+        runtime.finished_at = Some(now_secs());
+        runtime.updated_at = runtime.finished_at.unwrap();
+        runtime.failure_reason = Some(reason.to_string());
+        store.write_runtime(task_id, &runtime);
+      }
+    }
+
+    // Best-effort signal the child process directly (bash tasks)
     if let Some(child_pid) = view.runtime.child_pid {
       best_effort_kill(child_pid);
     }
@@ -301,6 +398,11 @@ impl BackgroundTaskManager {
     let mut updated = 0;
     for view in store.list_views() {
       if is_terminal_status(view.runtime.status) {
+        continue;
+      }
+
+      // In-process agent tasks that are still tracked by this instance are alive.
+      if view.spec.kind.is_agent() && self.is_live_agent_task(&view.spec.id) {
         continue;
       }
 
@@ -480,13 +582,6 @@ fn publish_terminal_notification(
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn now_secs() -> Timestamp {
-  SystemTime::now()
-    .duration_since(UNIX_EPOCH)
-    .unwrap_or_default()
-    .as_secs()
-}
-
 /// Check whether a process with the given PID is still alive.
 #[cfg(unix)]
 fn is_process_alive(pid: u32) -> bool {
@@ -524,15 +619,9 @@ fn best_effort_kill(pid: u32) {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::background::models::{TaskRuntime, TaskSpec, TaskStatus};
-  use std::time::{SystemTime, UNIX_EPOCH};
-
-  fn now_secs() -> Timestamp {
-    SystemTime::now()
-      .duration_since(UNIX_EPOCH)
-      .unwrap_or_default()
-      .as_secs()
-  }
+  use crate::background::models::{
+    BashTaskParams, TaskRuntime, TaskSpec, TaskSpecKind, TaskStatus,
+  };
 
   #[test]
   fn test_recover_marks_stale_task_as_lost() {
@@ -554,14 +643,15 @@ mod tests {
     let spec = TaskSpec {
       version: 1,
       id: "bash-test-001".to_string(),
-      kind: "bash".to_string(),
       session_id: "test-session".to_string(),
       description: "Test task".to_string(),
       tool_call_id: "call-1".to_string(),
-      command: "sleep 10".to_string(),
-      shell_name: "bash".to_string(),
-      shell_path: "/bin/bash".to_string(),
-      cwd: "/".to_string(),
+      kind: TaskSpecKind::Bash(BashTaskParams {
+        command: "sleep 10".to_string(),
+        shell_name: "bash".to_string(),
+        shell_path: "/bin/bash".to_string(),
+        cwd: "/".to_string(),
+      }),
       timeout_s: Some(60),
       created_at: now_secs() - 10,
     };
@@ -611,14 +701,15 @@ mod tests {
     let spec = TaskSpec {
       version: 1,
       id: "bash-test-002".to_string(),
-      kind: "bash".to_string(),
       session_id: "test-session".to_string(),
       description: "Completed task".to_string(),
       tool_call_id: "call-2".to_string(),
-      command: "echo done".to_string(),
-      shell_name: "bash".to_string(),
-      shell_path: "/bin/bash".to_string(),
-      cwd: "/".to_string(),
+      kind: TaskSpecKind::Bash(BashTaskParams {
+        command: "echo done".to_string(),
+        shell_name: "bash".to_string(),
+        shell_path: "/bin/bash".to_string(),
+        cwd: "/".to_string(),
+      }),
       timeout_s: Some(60),
       created_at: now_secs() - 10,
     };

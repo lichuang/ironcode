@@ -63,7 +63,16 @@ pub struct CompactionWarning {
 /// Pending tool call awaiting user approval
 #[derive(Debug, Clone)]
 pub struct PendingApproval {
+  /// Approval runtime request id.
+  pub approval_id: String,
+  /// Session or agent that initiated the request.
+  #[allow(dead_code)]
+  pub source_id: String,
+  /// Optional source kind, e.g. "background_agent".
+  #[allow(dead_code)]
+  pub source_kind: Option<String>,
   /// Tool call ID
+  #[allow(dead_code)]
   pub tool_call_id: String,
   /// Tool name
   pub name: String,
@@ -79,6 +88,7 @@ pub struct PendingApproval {
 #[derive(Debug, Clone)]
 pub struct PendingQuestions {
   /// Tool call ID
+  #[allow(dead_code)]
   pub tool_call_id: String,
   /// Questions to present
   pub questions: Vec<Question>,
@@ -169,6 +179,25 @@ impl App {
     let wire_bus = WireBus::new(WireBus::DEFAULT_CAPACITY);
     let wire_publisher = wire_bus.publisher();
     let wire_subscriber = wire_bus.subscriber();
+
+    // Forward approval requests from any session (root or subagent) to the UI.
+    let (approval_tx, mut approval_rx) = tokio::sync::mpsc::unbounded_channel();
+    let approval_publisher = wire_publisher.clone();
+    runtime.approval_runtime().bind_ui(approval_tx);
+    tokio::spawn(async move {
+      while let Some(req) = approval_rx.recv().await {
+        approval_publisher.send(crate::wire::WireMessage::ApprovalRequest {
+          approval_id: req.approval_id,
+          source_id: req.source_id,
+          source_kind: req.source_kind,
+          id: req.tool_call_id,
+          name: req.name,
+          diff_preview: req.diff_preview,
+          position: req.position,
+          total: req.total,
+        });
+      }
+    });
 
     // Wire up the client-side hook dispatcher. The UI will auto-respond allow
     // to hook requests for now; a future enhancement can prompt the user.
@@ -376,13 +405,26 @@ impl App {
       }
       WireMessage::TurnEnd => self.on_stream_completed(),
       WireMessage::ApprovalRequest {
+        approval_id,
+        source_id,
+        source_kind,
         id,
         name,
         diff_preview,
         position,
         total,
       } => {
-        self.on_approval_needed(id, name, String::new(), diff_preview, position, total);
+        self.on_approval_needed(
+          approval_id,
+          source_id,
+          source_kind,
+          id,
+          name,
+          String::new(),
+          diff_preview,
+          position,
+          total,
+        );
       }
       WireMessage::QuestionsAsked {
         tool_call_id,
@@ -565,9 +607,13 @@ impl App {
     self.data.streaming_response = Arc::new(Vec::new());
   }
 
+  #[allow(clippy::too_many_arguments)]
   fn on_approval_needed(
     &mut self,
-    id: String,
+    approval_id: String,
+    source_id: String,
+    source_kind: Option<String>,
+    tool_call_id: String,
     name: String,
     _arguments: String,
     diff_preview: Option<String>,
@@ -575,7 +621,10 @@ impl App {
     total: usize,
   ) {
     self.data.pending_approval = Some(PendingApproval {
-      tool_call_id: id,
+      approval_id,
+      source_id,
+      source_kind,
+      tool_call_id,
       name,
       diff_preview,
       position,

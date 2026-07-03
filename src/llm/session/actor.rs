@@ -17,6 +17,7 @@ use super::approval::{ApprovalDecision, ApprovalService};
 use super::compaction::CompactionService;
 use super::plan_injection::PlanModeInjectionState;
 use super::state::ActorState;
+use crate::approval::ApprovalResult;
 use crate::cli::runtime::Runtime;
 use crate::error::Result;
 use crate::hooks::{HookDecision, HookEventType, events as hook_events};
@@ -134,6 +135,8 @@ struct SessionActor {
   current_thinking: String,
   /// Event receiver for the current stream (if any)
   stream_rx: Option<mpsc::UnboundedReceiver<SessionEvent>>,
+  /// Receiver for an in-flight approval request.
+  approval_rx: Option<tokio::sync::oneshot::Receiver<crate::approval::ApprovalResult>>,
   /// Stream manager for LLM streaming with retry
   stream_manager: StreamManager,
   /// Tool call buffer for accumulating tool calls during streaming
@@ -169,6 +172,8 @@ struct SessionActor {
   plan_injection_state: PlanModeInjectionState,
   /// Guard to prevent recursive Stop hook re-triggering.
   stop_hook_active: bool,
+  /// Whether this actor is running a subagent session.
+  is_subagent: bool,
 }
 
 impl SessionActor {
@@ -220,6 +225,7 @@ impl SessionActor {
       current_response: String::new(),
       current_thinking: String::new(),
       stream_rx: None,
+      approval_rx: None,
       stream_manager: StreamManager::new(provider, runtime.retry_config()),
       pending_tool_calls: Vec::new(),
       precise_token_count: None,
@@ -258,6 +264,7 @@ impl SessionActor {
         state
       },
       stop_hook_active: false,
+      is_subagent,
     }
   }
 
@@ -282,6 +289,17 @@ impl SessionActor {
           }
         } => {
           self.handle_stream_event(event).await;
+        }
+
+        // Process approval responses if a request is in flight
+        Some(result) = async {
+          match &mut self.approval_rx {
+            Some(rx) => rx.await.ok(),
+            None => pending().await,
+          }
+        } => {
+          self.approval_rx = None;
+          self.handle_approval_result(result).await;
         }
 
         // If no streaming and channel closed, exit
@@ -979,14 +997,9 @@ impl SessionActor {
         diff_preview,
       } => {
         // ApprovalNeeded is never emitted by the stream task,
-        // but the match must be exhaustive.
-        self.wire_publisher.send(WireMessage::ApprovalRequest {
-          id: id.clone(),
-          name: name.clone(),
-          diff_preview: diff_preview.clone(),
-          position: 1,
-          total: 1,
-        });
+        // but the match must be exhaustive. If it were emitted, it would be
+        // handled through the ApprovalRuntime like any other approval request.
+        let _ = (id, name, diff_preview);
       }
       SessionEvent::QuestionsAsked {
         tool_call_id,
@@ -1409,13 +1422,7 @@ impl SessionActor {
             approved_indices: vec![],
             rejected_indices: vec![],
           };
-          self.wire_publisher.send(WireMessage::ApprovalRequest {
-            id: tool_call_id,
-            name,
-            diff_preview,
-            position: i + 1,
-            total: tool_calls.len(),
-          });
+          self.submit_approval_request(tool_call_id, name, diff_preview, i + 1, tool_calls.len());
           return;
         }
       }
@@ -1734,6 +1741,76 @@ impl SessionActor {
     }
   }
 
+  /// Submit an approval request to the cross-session ApprovalRuntime.
+  ///
+  /// Stores the returned oneshot receiver so the actor's run loop can await the
+  /// user's response without blocking command processing.
+  fn submit_approval_request(
+    &mut self,
+    tool_call_id: String,
+    name: String,
+    diff_preview: Option<String>,
+    position: usize,
+    total: usize,
+  ) {
+    let source_kind = if self.is_subagent() {
+      Some("subagent".to_string())
+    } else {
+      None
+    };
+    let (_approval_id, rx) = self.runtime.approval_runtime().submit_request(
+      self.id.clone(),
+      source_kind,
+      tool_call_id,
+      name,
+      diff_preview,
+      position,
+      total,
+    );
+    self.approval_rx = Some(rx);
+  }
+
+  /// Returns true if this actor is running a subagent session.
+  fn is_subagent(&self) -> bool {
+    self.is_subagent
+  }
+
+  /// Handle the result of an approval request resolved by the ApprovalRuntime.
+  async fn handle_approval_result(&mut self, result: ApprovalResult) {
+    let (tool_calls, current_index, approved_indices, rejected_indices) =
+      match mem::replace(&mut self.state, ActorState::Idle) {
+        ActorState::WaitingApproval {
+          tool_calls,
+          current_index,
+          approved_indices,
+          rejected_indices,
+        } => (
+          tool_calls,
+          current_index,
+          approved_indices,
+          rejected_indices,
+        ),
+        _ => {
+          error!(
+            "Session {}: Received approval result but no tool execution is pending",
+            self.id
+          );
+          return;
+        }
+      };
+
+    self
+      .apply_approval_decision(
+        tool_calls,
+        current_index,
+        approved_indices,
+        rejected_indices,
+        result.approved,
+        result.reject_remaining,
+      )
+      .await;
+  }
+
   /// Handle user approval or denial of a pending tool call.
   ///
   /// Records the decision in the approval queue and advances to the next tool
@@ -1745,7 +1822,7 @@ impl SessionActor {
     approved: bool,
     reject_remaining: bool,
   ) {
-    let (tool_calls, current_index, mut approved_indices, mut rejected_indices) =
+    let (tool_calls, current_index, approved_indices, rejected_indices) =
       match mem::replace(&mut self.state, ActorState::Idle) {
         ActorState::WaitingApproval {
           tool_calls,
@@ -1768,7 +1845,6 @@ impl SessionActor {
       };
 
     let tool_call = &tool_calls[current_index];
-
     if tool_call.id != tool_call_id {
       error!(
         "Session {}: Approval tool_call_id mismatch: expected {}, got {}",
@@ -1782,6 +1858,30 @@ impl SessionActor {
       };
       return;
     }
+
+    self
+      .apply_approval_decision(
+        tool_calls,
+        current_index,
+        approved_indices,
+        rejected_indices,
+        approved,
+        reject_remaining,
+      )
+      .await;
+  }
+
+  /// Apply an approval decision to the current tool and advance the queue.
+  async fn apply_approval_decision(
+    &mut self,
+    tool_calls: Vec<ToolCall>,
+    current_index: usize,
+    mut approved_indices: Vec<usize>,
+    mut rejected_indices: Vec<usize>,
+    approved: bool,
+    reject_remaining: bool,
+  ) {
+    let tool_call = &tool_calls[current_index];
 
     if approved {
       info!(
@@ -1865,13 +1965,7 @@ impl SessionActor {
             approved_indices,
             rejected_indices,
           };
-          self.wire_publisher.send(WireMessage::ApprovalRequest {
-            id: next_id,
-            name: next_name,
-            diff_preview: next_diff,
-            position: i + 1,
-            total,
-          });
+          self.submit_approval_request(next_id, next_name, next_diff, i + 1, total);
           return;
         }
         ApprovalDecision::Approved => {
@@ -2620,9 +2714,11 @@ impl ChatSession {
     runtime: Arc<Runtime>,
     wire_publisher: WirePublisher,
     tool_policy: Option<ToolPolicy>,
+    yolo: bool,
   ) -> SessionHandle {
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-    let meta = SessionMeta::new(agent_id.clone(), "");
+    let mut meta = SessionMeta::new(agent_id.clone(), "");
+    meta.yolo = yolo;
 
     let handle = SessionHandle {
       id: agent_id.clone(),

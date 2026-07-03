@@ -20,7 +20,7 @@
 
 1. ~~**Persistent Sessions & Context**~~ [x] COMPLETED - JSONL session store + metadata + auto-save
 2. ~~**Context Compaction**~~ [x] COMPLETED - Automatic context compression with rolling window strategy
-3. ~~**Subagent/Multi-agent System**~~ [x] PARTIAL - Foreground `Agent` tool + LaborMarket + builtin coder/explore/plan agents; background agents and dynamic registration remain
+3. ~~**Subagent/Multi-agent System**~~ [x] PARTIAL - Foreground and background `Agent` tool + LaborMarket + builtin coder/explore/plan agents; concurrent limits and dynamic registration remain
 4. **MCP Full Support** - `kimi mcp` management CLI
 5. **Web UI** - FastAPI + WebSocket backend
 6. **Skill System** - Standard skills + Flow skills (Mermaid/D2)
@@ -153,8 +153,8 @@
   - `StopFailure` on non-retryable stream errors / interruptions
   - `PreCompact` (awaited) / `PostCompact` (fire-and-forget) around context compaction
   - `Notification` when notifications are delivered to sinks
-- [ ] `SubagentStart` / `SubagentStop` hooks
-  - Blocked on subagent/multi-agent system (Phase 3)
+- [x] `SubagentStart` / `SubagentStop` hooks
+  - Triggered by foreground and background `Agent` tool invocations
 
 #### 18. Plan Mode
 - [x] `EnterPlanMode` / `ExitPlanMode` tools
@@ -186,10 +186,9 @@
   - Format: markdown code block with `git status --short`, `git diff --stat`, `git diff --cached --stat`, `git log --oneline`, and `git branch -a`
   - Remote URL sanitization for known public hosts only
 - [x] Config support in `Config.git_context` and `etc/config.toml.example`
-- [ ] Wire collection into `explore` subagent prompt construction
-  - **Blocked on subagent system** (Phase 3)
-  - Mirrors kimi-cli: `collect_git_context(work_dir)` prepended to explore subagent prompt
-- [ ] Remove `#![allow(dead_code)]` from `src/git_context.rs` once subagent integration is done
+- [x] Wire collection into `explore` subagent prompt construction
+  - `collect_git_context(work_dir)` prepended to explore subagent prompt for both foreground and background execution
+- [x] Remove `#![allow(dead_code)]` from `src/git_context.rs`
 - [ ] Main-agent system-prompt injection intentionally **not implemented**
   - Removed to match kimi-cli behavior
   - No refresh-after-mutating-tools loop
@@ -216,10 +215,12 @@
 - [ ] Concurrent task execution limits
   - Configurable `max_concurrent_subagents` (default 3)
 - [ ] Dynamic agent registration from custom `--agent-file`
-- [ ] Background agent task lifecycle integration
-  - `run_in_background=true` path via `BackgroundTaskManager`
-  - Agent task recovery on restart
-  - Terminal notifications delivered to parent session
+- [x] Background agent task lifecycle integration
+  - `run_in_background=true` path via `BackgroundTaskManager::create_agent_task`
+  - Agent tasks run in-process as tokio tasks and share the parent's `ApprovalRuntime`
+  - Interactive tool approvals from background agents surface in the parent's TUI
+  - Agent task recovery on restart via existing `BackgroundTaskManager::recover()`
+  - Terminal notifications delivered to parent session via existing `reconcile()`
 
 #### 10. Checkpoint / D-Mail System
 - [ ] Context snapshot saving mechanism
@@ -343,9 +344,9 @@
 | Metric | Count |
 |--------|-------|
 | **Total Tasks** | 115 |
-| **Completed** | 57 |
-| **Remaining** | 58 |
-| **Progress** | 49.6% |
+| **Completed** | 61 |
+| **Remaining** | 54 |
+| **Progress** | 53.0% |
 
 > **Note:** This summary must be updated whenever tasks are completed. After each batch of completions, recalculate the counts and percentage to keep the document accurate.
 

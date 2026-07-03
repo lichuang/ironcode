@@ -1,3 +1,4 @@
+mod approval;
 mod background;
 mod cli;
 mod config;
@@ -152,7 +153,7 @@ async fn main() -> Result<()> {
   let mut tui = Tui::new()?;
 
   // Create runtime (loads system prompt, tool registries, etc.)
-  let runtime = Arc::new(Runtime::new(&data_dir, Arc::new(config))?);
+  let runtime = Arc::new(Runtime::new(&data_dir, Arc::new(config), &config_file_dir)?);
 
   // Create app state
   let mut app = App::new(&data_dir, &args, runtime).await?;

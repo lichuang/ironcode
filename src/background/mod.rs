@@ -12,6 +12,7 @@
 //! - `consumer.json`: consumer viewing state
 //! - `output.log`: captured stdout/stderr
 
+pub mod agent_worker;
 pub mod ids;
 pub mod manager;
 pub mod models;

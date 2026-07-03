@@ -4,8 +4,8 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-/// Unix timestamp in seconds.
-pub type Timestamp = u64;
+pub use crate::utils::time::Timestamp;
+use crate::utils::time::now_secs;
 
 // ---------------------------------------------------------------------------
 // Task status
@@ -61,16 +61,10 @@ pub fn is_terminal_status(status: TaskStatus) -> bool {
 // Task spec
 // ---------------------------------------------------------------------------
 
-/// Specification for a background task — immutable after creation.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct TaskSpec {
-  pub version: i32,
-  pub id: String,
-  pub kind: String,
-  pub session_id: String,
-  pub description: String,
-  pub tool_call_id: String,
-  /// The shell command to execute (bash-only for now).
+/// Parameters specific to a bash background task.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BashTaskParams {
+  /// The shell command to execute.
   pub command: String,
   /// Shell name (e.g., "bash").
   pub shell_name: String,
@@ -78,6 +72,64 @@ pub struct TaskSpec {
   pub shell_path: String,
   /// Working directory for the command.
   pub cwd: String,
+}
+
+/// Parameters specific to an agent background task.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentTaskParams {
+  /// Kind-specific payload (subagent launch spec).
+  pub kind_payload: serde_json::Value,
+  /// Configuration directory used to reconstruct the runtime.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub config_dir: Option<String>,
+}
+
+/// Kind of a background task.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TaskSpecKind {
+  Bash(BashTaskParams),
+  Agent(AgentTaskParams),
+}
+
+impl TaskSpecKind {
+  /// Return the canonical string representation.
+  pub fn as_str(&self) -> &'static str {
+    match self {
+      Self::Bash(_) => "bash",
+      Self::Agent(_) => "agent",
+    }
+  }
+
+  /// Return true if this is a bash task.
+  #[allow(dead_code)]
+  pub fn is_bash(&self) -> bool {
+    matches!(self, Self::Bash(_))
+  }
+
+  /// Return true if this is an agent task.
+  pub fn is_agent(&self) -> bool {
+    matches!(self, Self::Agent(_))
+  }
+}
+
+impl std::fmt::Display for TaskSpecKind {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_str(self.as_str())
+  }
+}
+
+/// Specification for a background task — immutable after creation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskSpec {
+  pub version: i32,
+  pub id: String,
+  pub session_id: String,
+  pub description: String,
+  pub tool_call_id: String,
+  /// Kind-specific parameters, flattened into the top-level JSON.
+  #[serde(flatten)]
+  pub kind: TaskSpecKind,
   /// Timeout in seconds (None = no timeout).
   pub timeout_s: Option<u64>,
   /// Creation timestamp (seconds since UNIX epoch).
@@ -100,17 +152,67 @@ impl TaskSpec {
     Self {
       version: 1,
       id: id.into(),
-      kind: "bash".to_string(),
       session_id: session_id.into(),
       description: description.into(),
       tool_call_id: tool_call_id.into(),
-      command: command.into(),
-      shell_name: shell_name.into(),
-      shell_path: shell_path.into(),
-      cwd: cwd.into(),
+      kind: TaskSpecKind::Bash(BashTaskParams {
+        command: command.into(),
+        shell_name: shell_name.into(),
+        shell_path: shell_path.into(),
+        cwd: cwd.into(),
+      }),
       timeout_s,
       created_at: now_secs(),
     }
+  }
+
+  /// Create an agent-kind task spec.
+  #[allow(clippy::too_many_arguments)]
+  pub fn new_agent(
+    id: impl Into<String>,
+    session_id: impl Into<String>,
+    description: impl Into<String>,
+    tool_call_id: impl Into<String>,
+    timeout_s: Option<u64>,
+    kind_payload: serde_json::Value,
+    config_dir: Option<String>,
+  ) -> Self {
+    Self {
+      version: 1,
+      id: id.into(),
+      session_id: session_id.into(),
+      description: description.into(),
+      tool_call_id: tool_call_id.into(),
+      kind: TaskSpecKind::Agent(AgentTaskParams {
+        kind_payload,
+        config_dir,
+      }),
+      timeout_s,
+      created_at: now_secs(),
+    }
+  }
+
+  /// Return bash-specific parameters if this is a bash task.
+  pub fn bash_params(&self) -> Option<&BashTaskParams> {
+    match &self.kind {
+      TaskSpecKind::Bash(params) => Some(params),
+      _ => None,
+    }
+  }
+
+  /// Return agent-specific parameters if this is an agent task.
+  #[allow(dead_code)]
+  pub fn agent_params(&self) -> Option<&AgentTaskParams> {
+    match &self.kind {
+      TaskSpecKind::Agent(params) => Some(params),
+      _ => None,
+    }
+  }
+}
+
+impl Default for TaskSpec {
+  fn default() -> Self {
+    Self::new("", "", "", "", "", "", "", "", None)
   }
 }
 
@@ -211,10 +313,3 @@ pub struct TaskOutputChunk {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-fn now_secs() -> Timestamp {
-  std::time::SystemTime::now()
-    .duration_since(std::time::UNIX_EPOCH)
-    .unwrap_or_default()
-    .as_secs()
-}

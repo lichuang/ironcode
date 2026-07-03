@@ -6,6 +6,7 @@ use std::sync::Arc;
 use chrono::Local;
 use log::{debug, info, warn};
 
+use crate::approval::ApprovalRuntime;
 use crate::background::BackgroundTaskManager;
 use crate::config::loader::{data_dir, system_prompt_path};
 use crate::config::{
@@ -239,12 +240,16 @@ pub(crate) struct Runtime {
   pub notification_manager: Arc<NotificationManager>,
   /// Lifecycle hook engine
   pub hook_engine: Arc<HookEngine>,
+  /// Cross-session approval runtime
+  pub approval_runtime: Arc<ApprovalRuntime>,
   /// Built-in subagent type registry
   pub labor_market: Arc<LaborMarket>,
   /// Role of this runtime.
   pub role: RuntimeRole,
   /// Optional model alias override for subagents.
   pub model_override: Option<String>,
+  /// Configuration directory used to load `config.toml`.
+  pub(crate) config_dir: PathBuf,
 }
 
 impl Runtime {
@@ -253,7 +258,11 @@ impl Runtime {
   /// Loads system prompt from data_dir/prompts/system.md
   /// Loads tools from data_dir/prompts/tools/
   /// Returns empty string if prompt file doesn't exist
-  pub(crate) fn new(data_dir: &Path, config: Arc<Config>) -> Result<Self> {
+  pub(crate) fn new(
+    data_dir: &Path,
+    config: Arc<Config>,
+    config_dir: impl Into<PathBuf>,
+  ) -> Result<Self> {
     let system_prompt_template = Self::load_system_prompt_template(data_dir);
     let args = RuntimeArgs::new()?;
 
@@ -269,6 +278,7 @@ impl Runtime {
       config.hooks.clone(),
       std::env::current_dir().ok(),
     ));
+    let approval_runtime = Arc::new(ApprovalRuntime::new());
     let labor_market = Arc::new(LaborMarket::load_builtin().map_err(Error::LaborMarket)?);
 
     // Create the Agent handler first; it is bound to Runtime after construction
@@ -296,9 +306,11 @@ impl Runtime {
       background_manager,
       notification_manager,
       hook_engine,
+      approval_runtime,
       labor_market,
       role: RuntimeRole::Root,
       model_override: None,
+      config_dir: config_dir.into(),
     };
 
     // Bind the runtime to the Agent handler now that it is fully constructed.
@@ -310,6 +322,7 @@ impl Runtime {
   #[cfg(test)]
   pub(crate) fn for_test(config: Config) -> Self {
     Self {
+      config_dir: std::path::PathBuf::from("."),
       config: Arc::new(config),
       args: RuntimeArgs {
         now: String::new(),
@@ -332,6 +345,7 @@ impl Runtime {
         crate::config::NotificationConfig::default(),
       )),
       hook_engine: Arc::new(HookEngine::empty()),
+      approval_runtime: Arc::new(ApprovalRuntime::new()),
       labor_market: Arc::new(LaborMarket::new()),
       role: RuntimeRole::Root,
       model_override: None,
@@ -519,6 +533,16 @@ impl Runtime {
     self.config.background.clone()
   }
 
+  /// Get the configuration directory.
+  pub fn config_dir(&self) -> &Path {
+    &self.config_dir
+  }
+
+  /// Get the approval runtime.
+  pub fn approval_runtime(&self) -> Arc<ApprovalRuntime> {
+    self.approval_runtime.clone()
+  }
+
   /// Get the background task manager.
   pub fn background_manager(&self) -> Arc<BackgroundTaskManager> {
     self.background_manager.clone()
@@ -591,12 +615,14 @@ impl Runtime {
       background_manager: self.background_manager.clone(),
       notification_manager: self.notification_manager.clone(),
       hook_engine: self.hook_engine.clone(),
+      approval_runtime: self.approval_runtime.clone(),
       labor_market: self.labor_market.clone(),
       role: RuntimeRole::Subagent {
         agent_id,
         subagent_type,
       },
       model_override,
+      config_dir: self.config_dir.clone(),
     }
   }
 

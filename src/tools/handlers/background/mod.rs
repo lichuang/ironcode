@@ -18,8 +18,11 @@ pub fn format_task(view: &TaskView, include_command: bool) -> String {
     format!("status: {}", view.runtime.status),
     format!("description: {}", view.spec.description),
   ];
-  if include_command && !view.spec.command.is_empty() {
-    lines.push(format!("command: {}", view.spec.command));
+  if include_command
+    && let Some(params) = view.spec.bash_params()
+    && !params.command.is_empty()
+  {
+    lines.push(format!("command: {}", params.command));
   }
   if let Some(exit_code) = view.runtime.exit_code {
     lines.push(format!("exit_code: {}", exit_code));

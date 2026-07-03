@@ -5,9 +5,12 @@
 //! helpers for building child agents from YAML specs.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+
+use crate::utils::time::Timestamp;
 
 pub mod store;
 
@@ -87,7 +90,64 @@ pub struct AgentLaunchSpec {
   /// Effective model alias after resolution.
   pub effective_model: Option<String>,
   /// Creation timestamp (seconds since epoch).
-  pub created_at: f64,
+  pub created_at: Timestamp,
+}
+
+/// Persistent payload stored in a background task spec for agent-kind tasks.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AgentTaskPayload {
+  /// Stable agent instance id.
+  pub agent_id: String,
+  /// Subagent type name.
+  pub subagent_type: String,
+  /// User prompt given to the subagent.
+  pub prompt: String,
+  /// Optional model alias requested by the user/tool call.
+  pub model_override: Option<String>,
+  /// Effective model alias after resolution.
+  pub effective_model: Option<String>,
+  /// Tool policy enforced for the subagent.
+  pub tool_policy: ToolPolicy,
+  /// Human-readable task description.
+  pub description: String,
+  /// Whether this task resumed an existing agent instance.
+  #[serde(default)]
+  pub resumed: bool,
+  /// Timeout in seconds for the background task.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub timeout_s: Option<u64>,
+}
+
+/// Status of a subagent instance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentStatus {
+  /// Running in the foreground.
+  RunningForeground,
+  /// Running as a background task.
+  RunningBackground,
+  /// Completed successfully.
+  Completed,
+  /// Failed due to an error.
+  Failed,
+  /// Explicitly stopped.
+  Killed,
+  /// Worker lost (e.g., parent process exited).
+  Lost,
+}
+
+impl fmt::Display for SubagentStatus {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    let s = match self {
+      SubagentStatus::RunningForeground => "running_foreground",
+      SubagentStatus::RunningBackground => "running_background",
+      SubagentStatus::Completed => "completed",
+      SubagentStatus::Failed => "failed",
+      SubagentStatus::Killed => "killed",
+      SubagentStatus::Lost => "lost",
+    };
+    write!(f, "{}", s)
+  }
 }
 
 /// Persisted metadata for a subagent instance.
@@ -98,14 +158,14 @@ pub struct AgentInstanceRecord {
   pub agent_id: String,
   /// Subagent type name.
   pub subagent_type: String,
-  /// Human-readable status.
-  pub status: String,
+  /// Current status of the subagent instance.
+  pub status: SubagentStatus,
   /// Task description.
   pub description: String,
   /// Creation timestamp.
-  pub created_at: f64,
+  pub created_at: Timestamp,
   /// Last update timestamp.
-  pub updated_at: f64,
+  pub updated_at: Timestamp,
   /// Last background task id, if any.
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub last_task_id: Option<String>,

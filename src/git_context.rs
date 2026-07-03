@@ -1,11 +1,9 @@
-//! Git repository context collection for future subagent use.
+//! Git repository context collection for subagent use.
 //!
 //! This module mirrors the collection strategy used by kimi-cli's explore
 //! subagent (`kimi_cli/subagents/git_context.py`) and formats the result as a
-//! markdown block. It is intentionally kept for subagent prompt construction
-//! once the subagent system is implemented; kimi-cli does **not** inject git
-//! context into the main agent system prompt.
-#![allow(dead_code)]
+//! markdown block. It is wired into the explore subagent prompt; kimi-cli does
+//! **not** inject git context into the main agent system prompt.
 
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;

@@ -152,8 +152,10 @@ fn format_task_output(
     format!("description: {}", view.spec.description),
   ];
 
-  if !view.spec.command.is_empty() {
-    lines.push(format!("command: {}", view.spec.command));
+  if let Some(params) = view.spec.bash_params()
+    && !params.command.is_empty()
+  {
+    lines.push(format!("command: {}", params.command));
   }
 
   lines.extend([

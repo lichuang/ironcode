@@ -347,6 +347,16 @@ impl TaskBrowserView {
     f.render_widget(block, area);
 
     let text = if let Some(view) = self.selected_task() {
+      let (command, shell_name, shell_path, cwd) = match view.spec.bash_params() {
+        Some(p) => (
+          p.command.as_str(),
+          p.shell_name.as_str(),
+          p.shell_path.as_str(),
+          p.cwd.as_str(),
+        ),
+        None => ("N/A", "N/A", "N/A", "N/A"),
+      };
+
       let mut lines = vec![
         Line::from(vec![Span::styled("Task ID: ", Style::default().fg(MUTED))]),
         Line::from(vec![Span::styled(&view.spec.id, Style::default().fg(TEXT))]),
@@ -381,27 +391,21 @@ impl TaskBrowserView {
         Line::from(""),
         Line::from(vec![Span::styled("Kind: ", Style::default().fg(MUTED))]),
         Line::from(vec![Span::styled(
-          &view.spec.kind,
+          view.spec.kind.as_str(),
           Style::default().fg(TEXT),
         )]),
         Line::from(""),
         Line::from(vec![Span::styled("Command: ", Style::default().fg(MUTED))]),
-        Line::from(vec![Span::styled(
-          &view.spec.command,
-          Style::default().fg(TEXT),
-        )]),
+        Line::from(vec![Span::styled(command, Style::default().fg(TEXT))]),
         Line::from(""),
         Line::from(vec![Span::styled("Shell: ", Style::default().fg(MUTED))]),
         Line::from(vec![Span::styled(
-          format!("{} ({})", view.spec.shell_name, view.spec.shell_path),
+          format!("{} ({})", shell_name, shell_path),
           Style::default().fg(TEXT),
         )]),
         Line::from(""),
         Line::from(vec![Span::styled("CWD: ", Style::default().fg(MUTED))]),
-        Line::from(vec![Span::styled(
-          &view.spec.cwd,
-          Style::default().fg(TEXT),
-        )]),
+        Line::from(vec![Span::styled(cwd, Style::default().fg(TEXT))]),
       ];
 
       if let Some(started) = view.runtime.started_at {

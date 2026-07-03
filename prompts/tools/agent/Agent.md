@@ -32,7 +32,7 @@ description: Start a subagent instance to work on a focused task.
     },
     "run_in_background": {
       "type": "boolean",
-      "description": "Run the subagent in the background (not yet supported)",
+      "description": "Run the subagent as a background task. Use TaskList/TaskOutput/TaskStop to monitor it.",
       "default": false
     },
     "timeout": {

@@ -488,27 +488,31 @@ impl View for ChatView {
       match key.code {
         KeyCode::Char('y') | KeyCode::Enter => {
           self
-            .session_handle
-            .approve_tool_call(&approval.tool_call_id, true, false);
+            .runtime
+            .approval_runtime()
+            .respond(&approval.approval_id, true, false);
           data.pending_approval = None;
         }
         KeyCode::Char('n') | KeyCode::Esc => {
           self
-            .session_handle
-            .approve_tool_call(&approval.tool_call_id, false, false);
+            .runtime
+            .approval_runtime()
+            .respond(&approval.approval_id, false, false);
           data.pending_approval = None;
         }
         KeyCode::Char('a') => {
           self.session_handle.enable_session_yolo();
           self
-            .session_handle
-            .approve_tool_call(&approval.tool_call_id, true, false);
+            .runtime
+            .approval_runtime()
+            .respond(&approval.approval_id, true, false);
           data.pending_approval = None;
         }
         KeyCode::Char('q') => {
           self
-            .session_handle
-            .approve_tool_call(&approval.tool_call_id, false, true);
+            .runtime
+            .approval_runtime()
+            .respond(&approval.approval_id, false, true);
           data.pending_approval = None;
         }
         _ => {}

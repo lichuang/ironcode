@@ -5,15 +5,16 @@
 
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use log::{error, info};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::time::sleep;
 
-use super::models::{TaskStatus, Timestamp};
+use super::models::{TaskSpecKind, TaskStatus, Timestamp};
 use super::store::BackgroundTaskStore;
+use crate::utils::time::now_secs;
 
 /// Synchronous entry point for the worker process.
 pub fn run_background_task_worker(
@@ -22,29 +23,62 @@ pub fn run_background_task_worker(
   control_poll_interval_ms: u64,
   kill_grace_period_ms: u64,
 ) {
-  let rt = match tokio::runtime::Runtime::new() {
-    Ok(rt) => rt,
-    Err(e) => {
-      eprintln!("Failed to create tokio runtime: {}", e);
+  let task_id = task_dir
+    .file_name()
+    .and_then(|n| n.to_str())
+    .ok_or("Invalid task_dir")
+    .map_or_else(
+      |e| {
+        eprintln!("{}", e);
+        std::process::exit(1);
+      },
+      |s| s.to_string(),
+    );
+  let store = BackgroundTaskStore::new(task_dir.parent().unwrap().to_path_buf());
+
+  let spec = match store.read_spec(&task_id) {
+    Some(s) => s,
+    None => {
+      eprintln!("Spec not found for task {}", task_id);
       std::process::exit(1);
     }
   };
 
-  rt.block_on(async {
-    if let Err(e) = worker_main(
-      task_dir,
-      heartbeat_interval_ms,
-      control_poll_interval_ms,
-      kill_grace_period_ms,
-    )
-    .await
-    {
-      error!("Background worker error: {}", e);
+  match spec.kind {
+    TaskSpecKind::Agent(_) => {
+      crate::background::agent_worker::run_agent_task_worker(
+        task_dir,
+        heartbeat_interval_ms,
+        control_poll_interval_ms,
+        kill_grace_period_ms,
+      );
     }
-  });
+    TaskSpecKind::Bash(_) => {
+      let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+          eprintln!("Failed to create tokio runtime: {}", e);
+          std::process::exit(1);
+        }
+      };
+
+      rt.block_on(async {
+        if let Err(e) = bash_worker_main(
+          task_dir,
+          heartbeat_interval_ms,
+          control_poll_interval_ms,
+          kill_grace_period_ms,
+        )
+        .await
+        {
+          error!("Background worker error: {}", e);
+        }
+      });
+    }
+  }
 }
 
-async fn worker_main(
+async fn bash_worker_main(
   task_dir: PathBuf,
   heartbeat_interval_ms: u64,
   control_poll_interval_ms: u64,
@@ -61,6 +95,26 @@ async fn worker_main(
     .read_spec(&task_id)
     .ok_or_else(|| format!("Spec not found for task {}", task_id))?;
 
+  // Extract bash-specific parameters up front.
+  let params = match &spec.kind {
+    TaskSpecKind::Bash(params) => params,
+    TaskSpecKind::Agent(_) => {
+      let mut runtime = store.read_runtime(&task_id);
+      runtime.status = TaskStatus::Failed;
+      runtime.finished_at = Some(now_secs());
+      runtime.updated_at = runtime.finished_at.unwrap();
+      runtime.failure_reason = Some(format!(
+        "Bash worker received unsupported task kind: {}",
+        spec.kind
+      ));
+      store.write_runtime(&task_id, &runtime);
+      return Ok(());
+    }
+  };
+  let command = params.command.as_str();
+  let shell_path = params.shell_path.as_str();
+  let cwd = params.cwd.as_str();
+
   // Mark as starting
   let mut runtime = store.read_runtime(&task_id);
   runtime.status = TaskStatus::Starting;
@@ -70,7 +124,7 @@ async fn worker_main(
   runtime.updated_at = runtime.started_at.unwrap();
   store.write_runtime(&task_id, &runtime);
 
-  info!("Worker {} started for command: {}", task_id, spec.command);
+  info!("Worker {} started for command: {:?}", task_id, command);
 
   // Check early kill request
   let control = store.read_control(&task_id);
@@ -89,7 +143,7 @@ async fn worker_main(
   }
 
   // Validate spec
-  if spec.command.is_empty() || spec.shell_path.is_empty() || spec.cwd.is_empty() {
+  if command.is_empty() || shell_path.is_empty() || cwd.is_empty() {
     let mut runtime = store.read_runtime(&task_id);
     runtime.status = TaskStatus::Failed;
     runtime.finished_at = Some(now_secs());
@@ -115,10 +169,11 @@ async fn worker_main(
   };
 
   // Spawn shell process
-  let args = if spec.shell_name == "Windows PowerShell" {
-    (spec.shell_path.clone(), "-command", spec.command.clone())
+  let shell_name = params.shell_name.as_str();
+  let args = if shell_name == "Windows PowerShell" {
+    (shell_path.to_string(), "-command", command.to_string())
   } else {
-    (spec.shell_path.clone(), "-c", spec.command.clone())
+    (shell_path.to_string(), "-c", command.to_string())
   };
 
   let mut child = match Command::new(&args.0)
@@ -127,7 +182,7 @@ async fn worker_main(
     .stdin(Stdio::null())
     .stdout(Stdio::piped())
     .stderr(Stdio::piped())
-    .current_dir(&spec.cwd)
+    .current_dir(cwd)
     .kill_on_drop(false)
     .spawn()
   {
@@ -385,11 +440,4 @@ fn best_effort_kill(pid: u32, force: bool) {
 #[cfg(not(unix))]
 fn best_effort_kill(pid: u32, force: bool) {
   let _ = (pid, force);
-}
-
-fn now_secs() -> Timestamp {
-  SystemTime::now()
-    .duration_since(UNIX_EPOCH)
-    .unwrap_or_default()
-    .as_secs()
 }

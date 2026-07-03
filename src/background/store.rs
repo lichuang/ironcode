@@ -80,6 +80,14 @@ impl BackgroundTaskStore {
       .open(dir.join(OUTPUT_FILE));
   }
 
+  /// Append text to the task output log.
+  pub fn append_output(&self, task_id: &str, text: &str) {
+    let path = self.output_path(task_id);
+    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(&path) {
+      let _ = file.write_all(text.as_bytes());
+    }
+  }
+
   #[allow(dead_code)]
   pub fn write_spec(&self, spec: &TaskSpec) {
     let _ = atomic_write_json(&self.spec_path(&spec.id), spec);

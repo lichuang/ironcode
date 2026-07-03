@@ -157,17 +157,17 @@ mod tests {
     let record = AgentInstanceRecord {
       agent_id: "a123".to_string(),
       subagent_type: "coder".to_string(),
-      status: "running".to_string(),
+      status: super::super::SubagentStatus::RunningForeground,
       description: "test".to_string(),
-      created_at: 1.0,
-      updated_at: 2.0,
+      created_at: 1,
+      updated_at: 2,
       last_task_id: None,
       launch_spec: super::super::AgentLaunchSpec {
         agent_id: "a123".to_string(),
         subagent_type: "coder".to_string(),
         model_override: None,
         effective_model: None,
-        created_at: 1.0,
+        created_at: 1,
       },
     };
     store.save_meta(&record).unwrap();
